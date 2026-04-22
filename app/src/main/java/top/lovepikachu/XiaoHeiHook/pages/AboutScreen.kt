@@ -22,11 +22,10 @@ fun AboutScreen() {
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
+            .fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 原有的“关于”卡片内容
+
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
@@ -65,7 +64,7 @@ fun AboutScreen() {
             }
         }
 
-        Spacer(modifier = Modifier.height(50.dp))
+        Spacer(modifier = Modifier.height(200.dp))
 
         AnimatedPressIcon(
             painter = painterResource(id = R.drawable.nikocat),
@@ -78,7 +77,8 @@ fun AboutScreen() {
         Text(
             text = "Niko 在干什么呢 ~",
             modifier = Modifier
-                .align(Alignment.CenterHorizontally),
+                .align(Alignment.CenterHorizontally)
+                .padding(bottom = 180.dp),
             fontSize=12.sp
         )
     }
