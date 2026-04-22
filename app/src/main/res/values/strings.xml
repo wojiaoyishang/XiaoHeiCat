@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">XiaoHei Cat</string>
+    <string name="module_description">Meow Meow Meow</string>
+    <string name="module_not_active">模块未激活</string>
+    <string name="module_active">模块已激活</string>
+    <string name="activation_status">%s %s (API %d)</string>
+    <string name="fast_operation">快捷操作</string>
+</resources>
