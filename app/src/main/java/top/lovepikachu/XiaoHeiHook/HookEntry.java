@@ -25,11 +25,11 @@ public class HookEntry extends XposedModule {
 
     @Override
     public void onModuleLoaded(@NonNull ModuleLoadedParam param) {
-        log(Log.INFO, TAG, "onModuleLoaded: " + param.getProcessName());
-        log(Log.INFO, TAG, String.format(Locale.getDefault(), "framework: %s (%s) API %d", getFrameworkName(), getFrameworkVersionCode(), getApiVersion()));
-        log(Log.INFO, TAG, "system supported: " + hasProp(PROP_CAP_SYSTEM));
-        log(Log.INFO, TAG, "remote supported: " + hasProp(PROP_CAP_REMOTE));
-        log(Log.INFO, TAG, "api protection: " + hasProp(PROP_RT_API_PROTECTION));
+//        log(Log.INFO, TAG, "onModuleLoaded: " + param.getProcessName());
+//        log(Log.INFO, TAG, String.format(Locale.getDefault(), "framework: %s (%s) API %d", getFrameworkName(), getFrameworkVersionCode(), getApiVersion()));
+//        log(Log.INFO, TAG, "system supported: " + hasProp(PROP_CAP_SYSTEM));
+//        log(Log.INFO, TAG, "remote supported: " + hasProp(PROP_CAP_REMOTE));
+//        log(Log.INFO, TAG, "api protection: " + hasProp(PROP_RT_API_PROTECTION));
 
         prefs = getRemotePreferences("XiaoHeiHookSetting");
     }
@@ -37,10 +37,10 @@ public class HookEntry extends XposedModule {
     @Override
     @RequiresApi(Build.VERSION_CODES.Q)
     public void onPackageLoaded(@NonNull PackageLoadedParam param) {
-        log(Log.INFO, TAG, "onPackageLoaded: " + param.getPackageName());
-        log(Log.INFO, TAG, "default classloader is " + param.getDefaultClassLoader());
+//        log(Log.INFO, TAG, "onPackageLoaded: " + param.getPackageName());
+//        log(Log.INFO, TAG, "default classloader is " + param.getDefaultClassLoader());
 
-        if (prefs.getBoolean("七点工具箱VIP", false)) (new QidianToolset()).invoke(param, this);
+        if (prefs.getBoolean("七点工具箱 VIP", false)) (new QidianToolset()).invoke(param, this);
     }
 
     @Override

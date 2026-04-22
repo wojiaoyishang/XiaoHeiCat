@@ -15,17 +15,20 @@ import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.libxposed.service.XposedService
 import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 
 @Composable
 fun XposedSettingItem(
-    icon: ImageVector? = null,   // ← 现在可省略
+    icon: ImageVector? = null,
     title: String,
     subtitle: String,
     statusKey: String,
     packageName: String
 ) {
+    val moduleState by XiaoHeiApplication.moduleState.collectAsStateWithLifecycle()
+
     val prefs = remember { XiaoHeiApplication.remotePreferences }
 
     var status by remember {
@@ -55,7 +58,6 @@ fun XposedSettingItem(
 
                 BitmapPainter(bitmap.asImageBitmap())
             } catch (e: Exception) {
-                // 应用未安装或无图标 → 返回 null，后续会回退到默认图标
                 null
             }
         }
@@ -64,7 +66,7 @@ fun XposedSettingItem(
     }
 
     val effectiveIcon: ImageVector? = if (appPainter == null) {
-        icon ?: Icons.Default.Star   // 未加载到应用图标时使用传入的 icon 或默认 Star
+        icon ?: Icons.Default.Star
     } else {
         null
     }
@@ -85,6 +87,6 @@ fun XposedSettingItem(
                 XiaoHeiApplication.xposedService?.removeScope(listOf(packageName))
             }
         },
-        enabled = XiaoHeiApplication.isModuleActivated
+        enabled = moduleState.isActivated
     )
 }

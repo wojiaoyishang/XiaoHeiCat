@@ -4,24 +4,24 @@ import android.app.Application
 import android.content.SharedPreferences
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class XiaoHeiApplication : Application() {
 
+    data class ModuleState(
+        val isActivated: Boolean = false,
+        val frameworkName: String? = null,
+        val frameworkVersion: String? = null,
+        val frameworkAPIVersion: Int? = null
+    )
+
     companion object {
-        // 模块激活状态标志位（供 UI 及其他组件读取）
-        var isModuleActivated: Boolean = false
-            private set
+        private val _moduleState = MutableStateFlow(ModuleState())
+        val moduleState: StateFlow<ModuleState> = _moduleState.asStateFlow()
 
         var xposedService: XposedService? = null
-            private set
-
-        var frameworkName: String? = null
-            private set
-
-        var frameworkVersion: String? = null
-            private set
-
-        var frameworkAPIVersion: Int? = null
             private set
 
         var remotePreferences: SharedPreferences? = null
@@ -35,28 +35,25 @@ class XiaoHeiApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // 注册 Xposed 服务监听器
         XposedServiceHelper.registerListener(object : XposedServiceHelper.OnServiceListener {
 
             override fun onServiceBind(service: XposedService) {
-                isModuleActivated = true
+                _moduleState.value = ModuleState(
+                    isActivated = true,
+                    frameworkName = service.frameworkName,
+                    frameworkVersion = service.frameworkVersion,
+                    frameworkAPIVersion = service.getApiVersion()
+                )
 
                 xposedService = service
-                frameworkName = service.frameworkName
-                frameworkVersion = service.frameworkVersion
-                frameworkAPIVersion = service.getApiVersion()
-
                 remotePreferences = getRemotePreferences()
             }
 
             override fun onServiceDied(service: XposedService) {
-                isModuleActivated = false
+                _moduleState.value = ModuleState(isActivated = false)
                 xposedService = null
                 remotePreferences = null
-                frameworkName = null
-                frameworkVersion = null
             }
-
         })
     }
 }

@@ -78,7 +78,7 @@ fun AboutScreen() {
             text = "Niko 在干什么呢 ~",
             modifier = Modifier
                 .align(Alignment.CenterHorizontally)
-                .padding(bottom = 180.dp),
+                .padding(bottom = 250.dp),
             fontSize=12.sp
         )
     }

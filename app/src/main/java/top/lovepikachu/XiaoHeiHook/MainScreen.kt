@@ -30,21 +30,12 @@ import top.lovepikachu.XiaoHeiHook.pages.AboutScreen
 import top.lovepikachu.XiaoHeiHook.pages.AppsScreen
 import top.lovepikachu.XiaoHeiHook.pages.HomeScreen
 
-
 sealed class BottomNavScreen(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
     abstract val index: Int
 
-    data object Home : BottomNavScreen("首页", Icons.Filled.Home) {
-        override val index: Int = 0
-    }
-
-    data object Apps : BottomNavScreen("应用", Icons.Filled.Apps) {
-        override val index: Int = 1
-    }
-
-    data object About : BottomNavScreen("关于", Icons.Filled.Info) {
-        override val index: Int = 2
-    }
+    data object Home : BottomNavScreen("首页", Icons.Filled.Home) { override val index: Int = 0 }
+    data object Apps : BottomNavScreen("应用", Icons.Filled.Apps) { override val index: Int = 1 }
+    data object About : BottomNavScreen("关于", Icons.Filled.Info) { override val index: Int = 2 }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,33 +43,33 @@ sealed class BottomNavScreen(val title: String, val icon: androidx.compose.ui.gr
 fun MainScreen() {
 
     val currentScreen = remember { mutableStateOf<BottomNavScreen>(BottomNavScreen.Home) }
-
-    // ==================== 下滑隐藏、上滑显示 ====================
     val isBottomBarVisible = remember { mutableStateOf(true) }
+    val coroutineScope = rememberCoroutineScope()
+
+    // ==================== 改进后的 NestedScrollConnection ====================
     val nestedScrollConnection = remember {
         object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                // 允许在顶部继续下拉（类似 pull-to-refresh）
+                if (available.y > 0 && !isBottomBarVisible.value) {
+                    isBottomBarVisible.value = true
+                }
+                return Offset.Zero
+            }
+
             override fun onPostScroll(
                 consumed: Offset,
                 available: Offset,
                 source: NestedScrollSource
             ): Offset {
-                val deltaY = consumed.y
-                if (deltaY < -30f) isBottomBarVisible.value = false
-                else if (deltaY > 30f) isBottomBarVisible.value = true
+                if (consumed.y < -15f) isBottomBarVisible.value = false
                 return Offset.Zero
             }
         }
     }
 
-    // ==================== HorizontalPager（左右滑动切换） ====================
-    val screens = listOf(
-        BottomNavScreen.Home,
-        BottomNavScreen.Apps,
-        BottomNavScreen.About
-    )
-
+    val screens = listOf(BottomNavScreen.Home, BottomNavScreen.Apps, BottomNavScreen.About)
     val pagerState = rememberPagerState(initialPage = currentScreen.value.index) { screens.size }
-    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(pagerState.currentPage) {
         currentScreen.value = screens[pagerState.currentPage]
@@ -91,7 +82,7 @@ fun MainScreen() {
             CenterAlignedTopAppBar(
                 title = {
                     Text(
-                        stringResource(R.string.app_name),  // XiaoHei Cat
+                        stringResource(R.string.app_name),
                         fontSize = 20.sp,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -107,21 +98,20 @@ fun MainScreen() {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            // ==================== 内容区域（全屏，无底部 padding） ====================
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = 88.dp),
-                pageSpacing = 0.dp
+                    .nestedScroll(nestedScrollConnection)
             ) { pageIndex ->
                 val screen = screens[pageIndex]
 
                 LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                        .nestedScroll(nestedScrollConnection),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+                    // 不再在这里加 nestedScroll
                 ) {
                     item {
                         when (screen) {
@@ -133,7 +123,7 @@ fun MainScreen() {
                 }
             }
 
-            // ==================== 可隐藏的底部导航栏 ====================
+            // ==================== 可隐藏的底部导航栏（绝对定位） ====================
             AnimatedVisibility(
                 visible = isBottomBarVisible.value,
                 enter = slideInVertically(initialOffsetY = { it }),
