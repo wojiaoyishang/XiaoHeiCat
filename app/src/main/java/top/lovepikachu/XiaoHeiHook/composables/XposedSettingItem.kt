@@ -2,6 +2,7 @@ package top.lovepikachu.XiaoHeiHook.composables
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.util.Log
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.runtime.Composable
@@ -48,8 +49,8 @@ fun XposedSettingItem(
                 val pm = context.packageManager
                 val drawable = pm.getApplicationIcon(packageName)
 
-                val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth else 48
-                val height = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight else 48
+                val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth else 64
+                val height = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight else 64
 
                 val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bitmap)
@@ -58,6 +59,7 @@ fun XposedSettingItem(
 
                 BitmapPainter(bitmap.asImageBitmap())
             } catch (e: Exception) {
+                Log.e("XiaoHeiHook", "获取图标失败: $packageName", e)
                 null
             }
         }

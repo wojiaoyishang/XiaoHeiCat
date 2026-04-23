@@ -21,6 +21,8 @@ public class QidianToolset {
         if (!"cn.am7code.tools".equals(param.getPackageName())) return;
 
         ClassLoader cl = param.getDefaultClassLoader();
+        String className = "pc.a";
+        String methodName = "d";
 
         try {
             Class<?> appClass = cl.loadClass("android.app.Application");
@@ -29,21 +31,20 @@ public class QidianToolset {
                 Object result = chain.proceed();
 
                 try {
-                    Class<?> jfA = cl.loadClass("jf.a");
-                    xp.log(Log.INFO, TAG, "Hook 七点工具箱类 jf.a 方法 c 。");
+                    Class<?> jfA = cl.loadClass(className);
+                    xp.log(Log.INFO, TAG, String.format("Hook 七点工具箱类 %s 方法 %s 。", className, methodName));
 
-                    // 现在 hook jf.a.c
-                    var cMethod = jfA.getDeclaredMethod("c");
+                    var cMethod = jfA.getDeclaredMethod(methodName);
                     xp.hook(cMethod).intercept(inner -> {
                         inner.proceed();
                         return true;
                     });
-                    xp.log(Log.INFO, TAG, "已 hook jf.a.c()");
+                    xp.log(Log.INFO, TAG, String.format("已 hook %s.%s()", className, methodName));
 
                 } catch (ClassNotFoundException e) {
-                    xp.log(Log.WARN, TAG, "找不到 jf.a.c() 方法，Hook 失败。");
+                    xp.log(Log.WARN, TAG, String.format("找不到 %s.%s() 方法，Hook 失败。", className, methodName));
                 } catch (Throwable t) {
-                    xp.log(Log.ERROR, TAG, "内部错误，Hook jf.a.c 失败", t);
+                    xp.log(Log.ERROR, TAG, String.format("内部错误，Hook %s.%s 方法 失败", className, methodName), t);
                 }
 
 
