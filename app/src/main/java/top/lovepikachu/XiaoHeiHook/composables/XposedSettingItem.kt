@@ -84,7 +84,10 @@ fun XposedSettingItem(
             if (newChecked) {
                 XiaoHeiApplication.xposedService?.requestScope(
                     listOf(packageName),
-                    object : XposedService.OnScopeEventListener {})
+                    object : XposedService.OnScopeEventListener {
+                        override fun onScopeRequestApproved(approved: MutableList<String>) = Unit
+                        override fun onScopeRequestFailed(message: String) = Unit
+                    })
             } else {
                 XiaoHeiApplication.xposedService?.removeScope(listOf(packageName))
             }

@@ -41,16 +41,28 @@ android {
 }
 
 dependencies {
-    implementation(libs.androidx.compose.animation)
+    // Jetpack Compose
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation("androidx.compose.animation:animation")
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+
+    // JS runtime
+    implementation("org.mozilla:rhino:1.9.1")
+
+    // URL script download
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Modern Xposed API
     compileOnly("io.github.libxposed:api:101.0.1")
     implementation("io.github.libxposed:service:101.0.0")
 
     // Jetpack Compose Material 3（精美 UI）
-    implementation("androidx.compose.material3:material3:1.3.1")
+    implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material:material-icons-extended")
 
     // 测试

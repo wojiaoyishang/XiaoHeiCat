@@ -44,6 +44,7 @@ fun MainScreen() {
 
     val currentScreen = remember { mutableStateOf<BottomNavScreen>(BottomNavScreen.Home) }
     val isBottomBarVisible = remember { mutableStateOf(true) }
+    var isAppDetailOpen by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     // ==================== 改进后的 NestedScrollConnection ====================
@@ -62,7 +63,9 @@ fun MainScreen() {
                 available: Offset,
                 source: NestedScrollSource
             ): Offset {
-                if (consumed.y < -15f) isBottomBarVisible.value = false
+                if (consumed.y < -15f && isBottomBarVisible.value) {
+                    isBottomBarVisible.value = false
+                }
                 return Offset.Zero
             }
         }
@@ -73,6 +76,9 @@ fun MainScreen() {
 
     LaunchedEffect(pagerState.currentPage) {
         currentScreen.value = screens[pagerState.currentPage]
+        if (screens[pagerState.currentPage] != BottomNavScreen.Apps) {
+            isAppDetailOpen = false
+        }
     }
 
     Scaffold(
@@ -98,26 +104,37 @@ fun MainScreen() {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // ==================== 内容区域（全屏，无底部 padding） ====================
+            // ==================== 内容区域（Apps 页面内置应用 LazyColumn，避免纵向列表嵌套） ====================
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .nestedScroll(nestedScrollConnection)
+                    .nestedScroll(nestedScrollConnection),
+                beyondViewportPageCount = screens.lastIndex
             ) { pageIndex ->
-                val screen = screens[pageIndex]
+                when (val screen = screens[pageIndex]) {
+                    BottomNavScreen.Apps -> {
+                        AppsScreen(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            onDetailModeChange = { isAppDetailOpen = it }
+                        )
+                    }
 
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
-                    // 不再在这里加 nestedScroll
-                ) {
-                    item {
-                        when (screen) {
-                            BottomNavScreen.Home -> HomeScreen()
-                            BottomNavScreen.Apps -> AppsScreen()
-                            BottomNavScreen.About -> AboutScreen()
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+                        ) {
+                            item {
+                                when (screen) {
+                                    BottomNavScreen.Home -> HomeScreen()
+                                    BottomNavScreen.About -> AboutScreen()
+                                    else -> Unit
+                                }
+                            }
                         }
                     }
                 }
@@ -125,7 +142,7 @@ fun MainScreen() {
 
             // ==================== 可隐藏的底部导航栏（绝对定位） ====================
             AnimatedVisibility(
-                visible = isBottomBarVisible.value,
+                visible = isBottomBarVisible.value && !isAppDetailOpen,
                 enter = slideInVertically(initialOffsetY = { it }),
                 exit = slideOutVertically(targetOffsetY = { it }),
                 modifier = Modifier.align(Alignment.BottomCenter)
