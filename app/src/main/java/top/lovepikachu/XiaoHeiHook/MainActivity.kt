@@ -36,4 +36,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onDestroy() {
+        val shouldTryKill = isFinishing && !isChangingConfigurations
+        super.onDestroy()
+
+        if (shouldTryKill) {
+            AppProcessExitHelper.scheduleKillIfWebIdeDisabled(
+                this,
+                reason = "MainActivity destroyed after task/app close"
+            )
+        }
+    }
 }

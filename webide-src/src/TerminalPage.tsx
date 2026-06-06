@@ -42,7 +42,7 @@ export function TerminalPage() {
 
   useEffect(() => {
     const el = consoleRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el) el.scrollTop = 0
   }, [lines])
 
   useEffect(() => {
@@ -123,7 +123,7 @@ export function TerminalPage() {
         <span className="terminal-status">{status ? `${status.server || 'WebIDE'} | ${status.host}:${status.port}` : '读取状态中'}</span>
       </div>
       <pre ref={consoleRef} className="terminal-console">
-        {lines.map((line) => (
+        {[...lines].reverse().map((line) => (
           <div key={line.id} className={line.type || ''}>{line.text}</div>
         ))}
       </pre>

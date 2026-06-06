@@ -71,13 +71,17 @@ export interface ReadScriptResponse {
 }
 
 export interface DebugEvent {
-  type: 'paused' | 'continuing' | 'continued' | 'resumed' | 'aborting' | 'aborted' | 'expired' | 'variablesUpdated' | 'log' | string
+  type: 'paused' | 'continuing' | 'continued' | 'resumed' | 'aborting' | 'aborted' | 'expired' | 'variablesUpdated' | 'evalResult' | 'log' | string
   pauseId?: string
   packageName?: string
   processName?: string
   scriptName?: string
+  scriptPath?: string
+  sourceName?: string
   breakpointName?: string
   threadName?: string
+  breakpointType?: string
+  line?: number
   time?: number
   pid?: number
   locals?: unknown
@@ -85,8 +89,20 @@ export interface DebugEvent {
   editableLocals?: boolean
   hasReturnValue?: boolean
   returnValue?: unknown
+  expression?: string
+  result?: unknown
+  ok?: boolean
+  text?: string | null
   error?: string
   status?: string
   active?: boolean
   updatedAt?: number
+}
+
+export interface DebugBreakpointsResponse {
+  ok: boolean
+  packageName: string
+  scriptPath?: string | null
+  lines: number[]
+  breakpoints?: Record<string, number[]>
 }

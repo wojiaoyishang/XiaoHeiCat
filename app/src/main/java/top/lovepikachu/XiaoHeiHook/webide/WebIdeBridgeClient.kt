@@ -92,6 +92,28 @@ class WebIdeBridgeClient(private val context: Context) {
 
     fun debugEnabled(packageName: String): Boolean = getBoolean(DebugProtocol.debugEnabledKey(packageName), false)
 
+    fun getDebugBreakpoints(packageName: String): JSONObject {
+        val b = call(
+            WebIdeBridgeProvider.METHOD_GET_DEBUG_BREAKPOINTS,
+            Bundle().apply { putString(WebIdeBridgeProvider.ARG_PACKAGE, packageName) }
+        )
+        val raw = b.getString("json") ?: "{}"
+        return JSONObject(raw)
+    }
+
+    fun setDebugBreakpoints(packageName: String, scriptPath: String, lines: org.json.JSONArray): JSONObject {
+        val b = callChecked(
+            WebIdeBridgeProvider.METHOD_SET_DEBUG_BREAKPOINTS,
+            Bundle().apply {
+                putString(WebIdeBridgeProvider.ARG_PACKAGE, packageName)
+                putString(WebIdeBridgeProvider.ARG_SCRIPT_PATH, scriptPath)
+                putString(WebIdeBridgeProvider.ARG_LINES_JSON, lines.toString())
+            }
+        )
+        return JSONObject(b.getString("json") ?: "{\"ok\":true}")
+    }
+
+
     fun sendDebugCommand(packageName: String, processName: String, pauseId: String, command: String, expression: String = "", payload: JSONObject = JSONObject()): JSONObject {
         val b = callChecked(
             WebIdeBridgeProvider.METHOD_SEND_DEBUG_COMMAND,

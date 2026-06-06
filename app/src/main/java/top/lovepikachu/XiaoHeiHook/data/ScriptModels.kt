@@ -20,6 +20,11 @@ data class ScriptMetadata(
     val runAt: String = "package-loaded",
     val grants: List<String> = emptyList(),
     val remoteName: String = "",
+    /**
+     * Relative path under Documents/XiaoHeiHook, e.g. qidian.js or folder/demo.js.
+     * This is the canonical key used by WebIDE, Rhino sourceName, and line breakpoints.
+     */
+    val path: String = "",
     val sourceMode: String = "local",
     val url: String = "",
     val urlRefreshOnApply: Boolean = false

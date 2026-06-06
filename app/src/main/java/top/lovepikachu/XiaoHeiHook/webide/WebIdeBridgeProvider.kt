@@ -38,6 +38,8 @@ class WebIdeBridgeProvider : ContentProvider() {
                 METHOD_SYNC_SCRIPTS -> syncScripts(extras)
                 METHOD_SET_DEBUG_ENABLED -> setDebugEnabled(extras)
                 METHOD_SEND_DEBUG_COMMAND -> sendDebugCommand(extras)
+                METHOD_GET_DEBUG_BREAKPOINTS -> getDebugBreakpoints(extras)
+                METHOD_SET_DEBUG_BREAKPOINTS -> setDebugBreakpoints(extras)
                 else -> errorBundle("Unsupported bridge method: $method")
             }
         } catch (e: Throwable) {
@@ -198,6 +200,44 @@ class WebIdeBridgeProvider : ContentProvider() {
             .putStringValue("command", command)
     }
 
+
+    private fun getDebugBreakpoints(extras: Bundle?): Bundle {
+        val packageName = extras?.getString(ARG_PACKAGE).orEmpty().trim()
+        if (packageName.isBlank()) return errorBundle("packageName 不能为空")
+        val prefs = awaitRemotePreferences(1200)
+        val raw = prefs?.getString(DebugProtocol.debugBreakpointsKey(packageName), "{}") ?: "{}"
+        return okBundle()
+            .putStringValue("packageName", packageName)
+            .putStringValue("json", raw.ifBlank { "{}" })
+            .putBool("remotePreferencesReady", prefs != null)
+    }
+
+    private fun setDebugBreakpoints(extras: Bundle?): Bundle {
+        val packageName = extras?.getString(ARG_PACKAGE).orEmpty().trim()
+        val scriptPath = extras?.getString(ARG_SCRIPT_PATH).orEmpty().trim()
+        val linesRaw = extras?.getString(ARG_LINES_JSON).orEmpty()
+        if (packageName.isBlank()) return errorBundle("packageName 不能为空")
+        if (scriptPath.isBlank()) return errorBundle("scriptPath 不能为空")
+        val prefs = awaitRemotePreferences(2000) ?: return errorBundle("LSPosed Remote Preferences 未连接")
+        val root = runCatching { JSONObject(prefs.getString(DebugProtocol.debugBreakpointsKey(packageName), "{}") ?: "{}") }.getOrElse { JSONObject() }
+        val lines = runCatching { JSONArray(linesRaw.ifBlank { "[]" }) }.getOrElse { JSONArray() }
+        val clean = JSONArray()
+        val seen = LinkedHashSet<Int>()
+        for (i in 0 until lines.length()) {
+            val line = lines.optInt(i, -1)
+            if (line > 0 && seen.add(line)) clean.put(line)
+        }
+        root.put(scriptPath, clean)
+        prefs.edit().putString(DebugProtocol.debugBreakpointsKey(packageName), root.toString()).commit()
+        val out = JSONObject()
+            .put("ok", true)
+            .put("packageName", packageName)
+            .put("scriptPath", scriptPath)
+            .put("lines", clean)
+            .put("breakpoints", root)
+        return okBundle().putStringValue("json", out.toString())
+    }
+
     private fun awaitRemotePreferences(timeoutMs: Long): android.content.SharedPreferences? {
         val deadline = SystemClock.uptimeMillis() + timeoutMs.coerceAtLeast(0)
         while (XiaoHeiApplication.remotePreferences == null && SystemClock.uptimeMillis() < deadline) {
@@ -239,6 +279,8 @@ class WebIdeBridgeProvider : ContentProvider() {
         const val METHOD_SYNC_SCRIPTS = "syncScripts"
         const val METHOD_SET_DEBUG_ENABLED = "setDebugEnabled"
         const val METHOD_SEND_DEBUG_COMMAND = "sendDebugCommand"
+        const val METHOD_GET_DEBUG_BREAKPOINTS = "getDebugBreakpoints"
+        const val METHOD_SET_DEBUG_BREAKPOINTS = "setDebugBreakpoints"
         const val ARG_KEY = "key"
         const val ARG_DEFAULT = "default"
         const val ARG_VALUE = "value"
@@ -250,5 +292,7 @@ class WebIdeBridgeProvider : ContentProvider() {
         const val ARG_COMMAND = "command"
         const val ARG_EXPRESSION = "expression"
         const val ARG_PAYLOAD_JSON = "payloadJson"
+        const val ARG_SCRIPT_PATH = "scriptPath"
+        const val ARG_LINES_JSON = "linesJson"
     }
 }

@@ -18,6 +18,9 @@ import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.Undefined;
 import org.mozilla.javascript.Wrapper;
+import org.mozilla.javascript.debug.DebugFrame;
+import org.mozilla.javascript.debug.DebuggableScript;
+import org.mozilla.javascript.debug.Debugger;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -46,6 +49,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import io.github.libxposed.api.XposedInterface;
 import top.lovepikachu.XiaoHeiHook.HookEntry;
 import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol;
+import top.lovepikachu.XiaoHeiHook.debug.JsDebugTrace;
 
 /**
  * Rhino based JavaScript runtime for XiaoHeiHook.
@@ -64,6 +68,7 @@ public final class JsHookRuntime {
 
     private static final Object DEBUG_COMMAND_LOCK = new Object();
     private static final Map<String, DebugCommand> DEBUG_COMMANDS = new ConcurrentHashMap<>();
+    private static final java.util.Set<String> CONSUMED_REMOTE_DEBUG_COMMANDS = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private static volatile boolean debugCommandReceiverRegistered = false;
 
 
@@ -80,11 +85,19 @@ public final class JsHookRuntime {
     private final Object currentRawParam;
     private final boolean rawEnabled;
     private final Object jsLock = new Object();
+    private final ThreadLocal<Integer> debugFrameDepth = new ThreadLocal<>();
+    private final ThreadLocal<DebugStepState> debugStepState = new ThreadLocal<>();
 
     @Nullable
     private android.content.Context logContext;
 
     private Scriptable scope;
+
+    @Nullable
+    private String activeScriptDisplayName;
+
+    @Nullable
+    private String activeScriptSourceName;
 
     public JsHookRuntime(
             @NonNull HookEntry module,
@@ -116,29 +129,75 @@ public final class JsHookRuntime {
     }
 
     public void evaluate(@NonNull String scriptName, @NonNull String source) {
+        evaluate(scriptName, scriptName, source);
+    }
+
+    public void evaluate(@NonNull String scriptName, @NonNull String sourceName, @NonNull String source) {
         synchronized (jsLock) {
+            String canonicalSourceName = normalizeScriptSourceName(sourceName, scriptName);
+            activeScriptDisplayName = scriptName;
+            activeScriptSourceName = canonicalSourceName;
             ClassLoader oldClassLoader = Thread.currentThread().getContextClassLoader();
+            JsDebugTrace.i("prepare evaluate"
+                    + " package=" + packageName
+                    + " process=" + processName
+                    + " event=" + currentEvent
+                    + " scriptName=" + scriptName
+                    + " sourceName=" + canonicalSourceName
+                    + " sourceLength=" + (source == null ? 0 : source.length())
+                    + " debugEnabled=" + isSoftDebuggerEnabled());
+
             Context cx = Context.enter();
             try {
                 Thread.currentThread().setContextClassLoader(appClassLoader);
                 cx.setOptimizationLevel(-1);
+                cx.setGeneratingDebug(true);
+                cx.setGeneratingSource(true);
+                JsDebugTrace.i("rhino context configured"
+                        + " optimizationLevel=" + cx.getOptimizationLevel()
+                        + " generatingDebug=true"
+                        + " generatingSource=true"
+                        + " sourceName=" + canonicalSourceName);
+
+                cx.setDebugger(new RhinoLineDebugger(canonicalSourceName), null);
+                JsDebugTrace.i("rhino debugger installed sourceName=" + canonicalSourceName);
+
                 scope = cx.initStandardObjects();
 
-                ScriptableObject.putProperty(scope, "env", Context.javaToJS(new Env(scriptName), scope));
+                ScriptableObject.putProperty(scope, "env", Context.javaToJS(new Env(scriptName, canonicalSourceName), scope));
                 ScriptableObject.putProperty(scope, "console", Context.javaToJS(new Console(), scope));
                 ScriptableObject.putProperty(scope, "Java", Context.javaToJS(new JavaBridge(), scope));
                 ScriptableObject.putProperty(scope, "xposed", Context.javaToJS(new XposedFacade(), scope));
-                ScriptableObject.putProperty(scope, "debuggerx", Context.javaToJS(new DebuggerFacade(scriptName), scope));
+                ScriptableObject.putProperty(scope, "debuggerx", Context.javaToJS(new DebuggerFacade(canonicalSourceName, scriptName), scope));
 
-                cx.evaluateString(scope, source, scriptName, 1, null);
-                log(Log.INFO, "脚本已加载: " + scriptName + " -> " + packageName + " / " + processName + " @" + currentEvent);
+                cx.evaluateString(scope, source, canonicalSourceName, 1, null);
+                JsDebugTrace.i("evaluate finished sourceName=" + canonicalSourceName);
+                log(Log.INFO, "脚本已加载: " + scriptName + " [" + canonicalSourceName + "] -> " + packageName + " / " + processName + " @" + currentEvent);
             } catch (Throwable t) {
-                log(Log.ERROR, "脚本执行失败: " + scriptName, t);
+                JsDebugTrace.e("evaluate failed sourceName=" + canonicalSourceName, t);
+                log(Log.ERROR, "脚本执行失败: " + scriptName + " [" + canonicalSourceName + "]", t);
             } finally {
                 Thread.currentThread().setContextClassLoader(oldClassLoader);
                 Context.exit();
             }
         }
+    }
+
+    private static String normalizeScriptSourceName(@Nullable String sourceName, @NonNull String fallbackName) {
+        String value = sourceName == null ? "" : sourceName.trim();
+        if (value.isEmpty()) value = fallbackName;
+        value = value.replace('\\', '/').trim();
+        int documentsIdx = value.lastIndexOf("/Documents/XiaoHeiHook/");
+        if (documentsIdx >= 0) {
+            value = value.substring(documentsIdx + "/Documents/XiaoHeiHook/".length());
+        } else {
+            int rootIdx = value.lastIndexOf("/XiaoHeiHook/");
+            if (rootIdx >= 0) {
+                value = value.substring(rootIdx + "/XiaoHeiHook/".length());
+            }
+        }
+        while (value.startsWith("/")) value = value.substring(1);
+        return value.isEmpty() ? fallbackName : value;
     }
 
     public static String readRemoteText(@NonNull ParcelFileDescriptor pfd) throws Exception {
@@ -301,9 +360,21 @@ public final class JsHookRuntime {
         synchronized (jsLock) {
             ClassLoader oldClassLoader = Thread.currentThread().getContextClassLoader();
             Context cx = Context.enter();
+            String callbackSourceName = activeScriptSourceName == null || activeScriptSourceName.isEmpty()
+                    ? normalizeScriptSourceName(activeScriptDisplayName, "<callback>")
+                    : activeScriptSourceName;
             try {
                 Thread.currentThread().setContextClassLoader(appClassLoader);
                 cx.setOptimizationLevel(-1);
+                cx.setGeneratingDebug(true);
+                cx.setGeneratingSource(true);
+                cx.setDebugger(new RhinoLineDebugger(callbackSourceName), null);
+                JsDebugTrace.d("callJs debugger installed"
+                        + " package=" + packageName
+                        + " process=" + processName
+                        + " sourceName=" + callbackSourceName
+                        + " function=" + JsDebugTrace.safe(function));
+
                 Object[] wrappedArgs = new Object[args == null ? 0 : args.length];
                 for (int i = 0; i < wrappedArgs.length; i++) {
                     wrappedArgs[i] = Context.javaToJS(args[i], scope);
@@ -324,13 +395,17 @@ public final class JsHookRuntime {
 
     public final class Env {
         public final String scriptName;
+        public final String scriptPath;
+        public final String sourceName;
         public final String packageName = JsHookRuntime.this.packageName;
         public final String processName = JsHookRuntime.this.processName;
         public final ClassLoader classLoader = JsHookRuntime.this.appClassLoader;
         public final Object raw = rawEnabled ? currentRawParam : null;
 
-        Env(String scriptName) {
+        Env(String scriptName, String sourceName) {
             this.scriptName = scriptName;
+            this.scriptPath = sourceName;
+            this.sourceName = sourceName;
         }
     }
 
@@ -369,9 +444,11 @@ public final class JsHookRuntime {
 
     public final class DebuggerFacade {
         private final String scriptName;
+        private final String displayName;
 
-        DebuggerFacade(String scriptName) {
+        DebuggerFacade(String scriptName, String displayName) {
             this.scriptName = scriptName;
+            this.displayName = displayName;
         }
 
         public boolean isEnabled() {
@@ -388,6 +465,10 @@ public final class JsHookRuntime {
 
         public Object breakpoint(String name, Object locals) {
             return hitSoftBreakpoint(scriptName, name, locals);
+        }
+
+        public boolean hasLineBreakpoints() {
+            return hasAnyLineBreakpoint(scriptName);
         }
 
         public void log(String name, Object value) {
@@ -811,6 +892,402 @@ public final class JsHookRuntime {
     }
 
 
+    private int currentDebugDepth() {
+        Integer value = debugFrameDepth.get();
+        return value == null ? 0 : Math.max(0, value);
+    }
+
+    private void setDebugDepth(int depth) {
+        debugFrameDepth.set(Math.max(0, depth));
+    }
+
+    private boolean isStepCommand(@Nullable String command) {
+        return DebugProtocol.COMMAND_STEP_INTO.equals(command)
+                || DebugProtocol.COMMAND_STEP_OVER.equals(command)
+                || DebugProtocol.COMMAND_STEP_OUT.equals(command);
+    }
+
+    private void armStepState(@NonNull String command, @NonNull String sourceName, int lineNumber) {
+        DebugStepState state = new DebugStepState(command, currentDebugDepth(), sourceName, lineNumber);
+        debugStepState.set(state);
+        JsDebugTrace.i("stepArmed"
+                + " command=" + command
+                + " source=" + sourceName
+                + " line=" + lineNumber
+                + " depth=" + state.startDepth
+                + " thread=" + Thread.currentThread().getName());
+    }
+
+    private boolean shouldPauseForStep(@NonNull String sourceName, int lineNumber) {
+        DebugStepState state = debugStepState.get();
+        if (state == null) return false;
+        int depth = currentDebugDepth();
+        boolean samePosition = state.startLine == lineNumber && sourceName.equals(state.startSourceName);
+        boolean hit;
+        if (DebugProtocol.COMMAND_STEP_INTO.equals(state.command)) {
+            hit = !samePosition;
+        } else if (DebugProtocol.COMMAND_STEP_OVER.equals(state.command)) {
+            hit = depth <= state.startDepth && !samePosition;
+        } else if (DebugProtocol.COMMAND_STEP_OUT.equals(state.command)) {
+            hit = depth < state.startDepth && !samePosition;
+        } else {
+            hit = false;
+        }
+        JsDebugTrace.d("stepCheck"
+                + " command=" + state.command
+                + " source=" + sourceName
+                + " line=" + lineNumber
+                + " depth=" + depth
+                + " startDepth=" + state.startDepth
+                + " samePosition=" + samePosition
+                + " hit=" + hit);
+        if (hit) debugStepState.remove();
+        return hit;
+    }
+
+
+
+
+    private final class RhinoLineDebugger implements Debugger {
+        private final String scriptName;
+
+        RhinoLineDebugger(@NonNull String scriptName) {
+            this.scriptName = scriptName;
+        }
+
+        @Override
+        public void handleCompilationDone(Context cx, DebuggableScript fnOrScript, String source) {
+            JsDebugTrace.i("compilationDone"
+                    + " package=" + packageName
+                    + " process=" + processName
+                    + " scriptName=" + scriptName
+                    + " rhinoSource=" + JsDebugTrace.safe(source)
+                    + " fnSourceName=" + safeSourceName(fnOrScript)
+                    + " isTopLevel=" + safeIsTopLevel(fnOrScript)
+                    + " functionName=" + safeFunctionName(fnOrScript));
+        }
+
+        @Override
+        public DebugFrame getFrame(Context cx, DebuggableScript fnOrScript) {
+            JsDebugTrace.i("getFrame"
+                    + " package=" + packageName
+                    + " process=" + processName
+                    + " rootScript=" + scriptName
+                    + " frameSourceName=" + safeSourceName(fnOrScript)
+                    + " isTopLevel=" + safeIsTopLevel(fnOrScript)
+                    + " functionName=" + safeFunctionName(fnOrScript));
+            return new RhinoLineDebugFrame(scriptName, fnOrScript);
+        }
+    }
+
+    private final class RhinoLineDebugFrame implements DebugFrame {
+        private final String rootScriptName;
+        private final DebuggableScript fnOrScript;
+        private final String frameSourceName;
+        private final String functionName;
+        private final boolean topLevel;
+        @Nullable private Scriptable activation;
+        @Nullable private Scriptable thisObj;
+        @Nullable private Object[] args;
+        private int frameDepth;
+
+        RhinoLineDebugFrame(@NonNull String rootScriptName, @NonNull DebuggableScript fnOrScript) {
+            this.rootScriptName = rootScriptName;
+            this.fnOrScript = fnOrScript;
+            this.frameSourceName = safeSourceName(fnOrScript);
+            this.functionName = safeFunctionName(fnOrScript);
+            this.topLevel = safeIsTopLevel(fnOrScript);
+        }
+
+        @Override
+        public void onEnter(Context cx, Scriptable activation, Scriptable thisObj, Object[] args) {
+            this.activation = activation;
+            this.thisObj = thisObj;
+            this.args = args;
+            this.frameDepth = currentDebugDepth() + 1;
+            setDebugDepth(this.frameDepth);
+            JsDebugTrace.d("frameEnter"
+                    + " source=" + frameSourceName
+                    + " rootScript=" + rootScriptName
+                    + " function=" + functionName
+                    + " topLevel=" + topLevel
+                    + " depth=" + frameDepth
+                    + " argsCount=" + (args == null ? 0 : args.length)
+                    + " activation=" + JsDebugTrace.safe(activation));
+        }
+
+        @Override
+        public void onLineChange(Context cx, int lineNumber) {
+            try {
+                String sourceName = fnOrScript.getSourceName();
+                String effectiveScript = sourceName == null || sourceName.isEmpty() ? rootScriptName : sourceName;
+                if (JsDebugTrace.TRACE_LINES) {
+                    JsDebugTrace.d("line"
+                            + " package=" + packageName
+                            + " process=" + processName
+                            + " source=" + effectiveScript
+                            + " rootScript=" + rootScriptName
+                            + " frameSource=" + frameSourceName
+                            + " function=" + functionName
+                            + " line=" + lineNumber
+                            + " debugEnabled=" + isSoftDebuggerEnabled());
+                }
+                boolean lineHit = isLineBreakpointEnabled(effectiveScript, lineNumber);
+                boolean stepHit = shouldPauseForStep(effectiveScript, lineNumber);
+                boolean hit = lineHit || stepHit;
+                JsDebugTrace.d("breakpointCheck"
+                        + " source=" + effectiveScript
+                        + " rootScript=" + rootScriptName
+                        + " line=" + lineNumber
+                        + " lineHit=" + lineHit
+                        + " stepHit=" + stepHit
+                        + " hit=" + hit);
+                if (!hit) return;
+                JsDebugTrace.i("breakpointHit"
+                        + " package=" + packageName
+                        + " process=" + processName
+                        + " source=" + effectiveScript
+                        + " line=" + lineNumber
+                        + " reason=" + (stepHit ? "step" : "breakpoint")
+                        + " function=" + functionName);
+                hitLineBreakpoint(effectiveScript, lineNumber, activation, thisObj, args);
+            } catch (Throwable t) {
+                JsDebugTrace.e("line breakpoint handling failed line=" + lineNumber, t);
+                writeLog(Log.WARN, "XHH-Debug", "行断点处理失败: " + t, t);
+            }
+        }
+
+        @Override
+        public void onExceptionThrown(Context cx, Throwable ex) {
+            JsDebugTrace.e("frameException"
+                    + " source=" + frameSourceName
+                    + " function=" + functionName,
+                    ex);
+        }
+
+        @Override
+        public void onExit(Context cx, boolean byThrow, Object resultOrException) {
+            JsDebugTrace.d("frameExit"
+                    + " source=" + frameSourceName
+                    + " function=" + functionName
+                    + " depth=" + frameDepth
+                    + " byThrow=" + byThrow
+                    + " result=" + JsDebugTrace.safe(resultOrException));
+            setDebugDepth(currentDebugDepth() - 1);
+            activation = null;
+            thisObj = null;
+            args = null;
+        }
+
+        @Override
+        public void onDebuggerStatement(Context cx) {
+            try {
+                String sourceName = fnOrScript.getSourceName();
+                String effectiveScript = sourceName == null || sourceName.isEmpty() ? rootScriptName : sourceName;
+                JsDebugTrace.i("debuggerStatement"
+                        + " source=" + effectiveScript
+                        + " rootScript=" + rootScriptName
+                        + " function=" + functionName);
+                hitLineBreakpoint(effectiveScript, -1, activation, thisObj, args);
+            } catch (Throwable t) {
+                JsDebugTrace.e("debugger statement handling failed", t);
+                writeLog(Log.WARN, "XHH-Debug", "debugger 语句处理失败: " + t, t);
+            }
+        }
+    }
+
+    private static String safeSourceName(@Nullable DebuggableScript script) {
+        try {
+            return script == null ? "<null>" : String.valueOf(script.getSourceName());
+        } catch (Throwable t) {
+            return "<sourceName failed>";
+        }
+    }
+
+    private static String safeFunctionName(@Nullable DebuggableScript script) {
+        try {
+            String name = script == null ? null : script.getFunctionName();
+            return name == null || name.length() == 0 ? "<script>" : name;
+        } catch (Throwable t) {
+            return "<functionName failed>";
+        }
+    }
+
+    private static boolean safeIsTopLevel(@Nullable DebuggableScript script) {
+        try {
+            return script != null && script.isTopLevel();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private boolean hasAnyLineBreakpoint(@NonNull String scriptName) {
+        JSONArray lines = readLineBreakpointLines(scriptName);
+        return lines.length() > 0;
+    }
+
+    private boolean isLineBreakpointEnabled(@NonNull String scriptName, int lineNumber) {
+        if (lineNumber <= 0) {
+            JsDebugTrace.d("breakpointCheckSkip reason=invalidLine source=" + scriptName + " line=" + lineNumber);
+            return false;
+        }
+        boolean debugEnabled = isSoftDebuggerEnabled();
+        if (!debugEnabled) {
+            JsDebugTrace.d("breakpointCheckSkip reason=debugDisabled package=" + packageName + " source=" + scriptName + " line=" + lineNumber);
+            return false;
+        }
+        JSONArray lines = readLineBreakpointLines(scriptName);
+        boolean hit = false;
+        for (int i = 0; i < lines.length(); i++) {
+            if (lines.optInt(i, -1) == lineNumber) {
+                hit = true;
+                break;
+            }
+        }
+        JsDebugTrace.d("breakpointLineTable"
+                + " package=" + packageName
+                + " source=" + scriptName
+                + " line=" + lineNumber
+                + " lines=" + lines
+                + " hit=" + hit);
+        return hit;
+    }
+
+    private JSONArray readLineBreakpointLines(@NonNull String scriptName) {
+        try {
+            SharedPreferences prefs = module.getRemotePreferences(DebugProtocol.PREF_GROUP);
+            if (prefs == null) {
+                JsDebugTrace.w("loadBreakpoints failed reason=prefsNull package=" + packageName + " scriptName=" + scriptName);
+                return new JSONArray();
+            }
+            String prefKey = DebugProtocol.debugBreakpointsKey(packageName);
+            String raw = prefs.getString(prefKey, "{}");
+            JSONObject root = raw == null || raw.isBlank() ? new JSONObject() : new JSONObject(raw);
+            JsDebugTrace.d("loadBreakpoints"
+                    + " package=" + packageName
+                    + " prefKey=" + prefKey
+                    + " queryScript=" + scriptName
+                    + " tableKeys=" + jsonKeys(root)
+                    + " raw=" + raw);
+
+            ArrayList<String> candidates = new ArrayList<>();
+            addBreakpointKeyCandidate(candidates, scriptName);
+            addBreakpointKeyCandidate(candidates, normalizeScriptSourceName(scriptName, scriptName));
+            String normalized = normalizeScriptSourceName(scriptName, scriptName);
+            String tail = normalized.substring(normalized.lastIndexOf('/') + 1);
+            addBreakpointKeyCandidate(candidates, tail);
+
+            for (String candidate : candidates) {
+                JSONArray direct = root.optJSONArray(candidate);
+                if (direct != null) {
+                    JsDebugTrace.d("loadBreakpointsMatched mode=direct key=" + candidate + " query=" + scriptName + " lines=" + direct);
+                    return direct;
+                }
+            }
+
+            java.util.Iterator<String> keys = root.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                String k = normalizeScriptSourceName(key, key);
+                for (String candidate : candidates) {
+                    String c = normalizeScriptSourceName(candidate, candidate);
+                    if (k.equals(c) || k.endsWith("/" + c) || c.endsWith("/" + k)) {
+                        JSONArray arr = root.optJSONArray(key);
+                        if (arr != null) {
+                            JsDebugTrace.d("loadBreakpointsMatched mode=fuzzy key=" + key + " query=" + scriptName + " candidate=" + candidate + " lines=" + arr);
+                            return arr;
+                        }
+                    }
+                }
+            }
+            JsDebugTrace.d("loadBreakpointsMiss package=" + packageName + " queryScript=" + scriptName + " queryKeys=" + candidates + " tableKeys=" + jsonKeys(root));
+            return new JSONArray();
+        } catch (Throwable t) {
+            JsDebugTrace.e("loadBreakpoints failed package=" + packageName + " scriptName=" + scriptName, t);
+            return new JSONArray();
+        }
+    }
+
+    private static void addBreakpointKeyCandidate(@NonNull List<String> out, @Nullable String value) {
+        if (value == null) return;
+        String v = value.trim();
+        if (v.isEmpty()) return;
+        if (!out.contains(v)) out.add(v);
+    }
+
+    private static String jsonKeys(@NonNull JSONObject obj) {
+        try {
+            StringBuilder builder = new StringBuilder("[");
+            java.util.Iterator<String> keys = obj.keys();
+            boolean first = true;
+            while (keys.hasNext()) {
+                if (!first) builder.append(", ");
+                first = false;
+                builder.append(keys.next());
+            }
+            builder.append(']');
+            return builder.toString();
+        } catch (Throwable t) {
+            return "<keys failed>";
+        }
+    }
+
+    private Object hitLineBreakpoint(
+            @NonNull String scriptName,
+            int lineNumber,
+            @Nullable Scriptable activation,
+            @Nullable Scriptable thisObj,
+            @Nullable Object[] args
+    ) {
+        if (!isSoftDebuggerEnabled()) {
+            JsDebugTrace.d("pauseRequestIgnored reason=debugDisabled scriptName=" + scriptName + " line=" + lineNumber);
+            return null;
+        }
+        JsDebugTrace.i("pauseCommandTransport mode=remote-preferences-only reason=avoid-registerReceiver-in-target-process");
+
+        JsDebugTrace.i("pauseRequest"
+                + " type=line"
+                + " package=" + packageName
+                + " process=" + processName
+                + " scriptName=" + scriptName
+                + " line=" + lineNumber
+                + " thread=" + Thread.currentThread().getName()
+                + " activation=" + JsDebugTrace.safe(activation));
+
+        String pauseId = UUID.randomUUID().toString();
+        String breakpointName = lineNumber > 0 ? scriptName + ":" + lineNumber : scriptName + ":debugger";
+        JSONObject event = buildDebugBaseEvent("paused", scriptName);
+        try {
+            event.put("pauseId", pauseId);
+            event.put("breakpointName", breakpointName);
+            event.put("breakpointType", "line");
+            event.put("line", lineNumber);
+            event.put("threadName", Thread.currentThread().getName());
+            event.put("status", "paused");
+            event.put("updatedAt", System.currentTimeMillis());
+            event.put("locals", collectScopeVariables(activation, thisObj, args));
+            event.put("editableLocals", activation != null);
+        } catch (Throwable ignored) {
+        }
+
+        sendDebugEvent(event);
+        JsDebugTrace.i("paused"
+                + " type=line"
+                + " pauseId=" + pauseId
+                + " scriptName=" + scriptName
+                + " line=" + lineNumber
+                + " breakpointName=" + breakpointName);
+        writeLog(Log.WARN, "XHH-Debug", "命中行断点，目标线程已暂停: " + scriptName + ":" + lineNumber + " pauseId=" + pauseId, null);
+        Object result = waitAtBreakpoint(scriptName, pauseId, breakpointName, activation);
+        JsDebugTrace.i("resumed"
+                + " type=line"
+                + " pauseId=" + pauseId
+                + " scriptName=" + scriptName
+                + " line=" + lineNumber
+                + " result=" + JsDebugTrace.safe(result));
+        return result;
+    }
+
     private boolean isSoftDebuggerEnabled() {
         try {
             SharedPreferences prefs = module.getRemotePreferences(DebugProtocol.PREF_GROUP);
@@ -825,12 +1302,7 @@ public final class JsHookRuntime {
         if (!isSoftDebuggerEnabled()) {
             return null;
         }
-        android.content.Context context = resolveBroadcastContext();
-        if (context == null) {
-            log(Log.WARN, "debuggerx.breakpoint 已忽略：无法获取 Context，建议在 Application.attach 之后使用断点");
-            return null;
-        }
-        ensureDebugCommandReceiver(context);
+        JsDebugTrace.i("softBreakpointCommandTransport mode=remote-preferences-only reason=avoid-registerReceiver-in-target-process");
 
         String pauseId = UUID.randomUUID().toString();
         JSONObject event = buildDebugBaseEvent("paused", scriptName);
@@ -852,6 +1324,20 @@ public final class JsHookRuntime {
             DebugCommand command = waitForDebugCommand(pauseId);
             if (command == null) {
                 command = new DebugCommand(DebugProtocol.COMMAND_CONTINUE, null, new JSONObject());
+            }
+            JsDebugTrace.i("resumeCommand"
+                    + " pauseId=" + pauseId
+                    + " command=" + (command == null ? "<null>" : command.command)
+                    + " payload=" + (command == null ? "<null>" : command.payload));
+
+            if (DebugProtocol.COMMAND_EVAL.equals(command.command)) {
+                sendDebugEvalResult(scriptName, pauseId, event.optString("breakpointName"), command.expression, locals instanceof Scriptable ? (Scriptable) locals : scope);
+                continue;
+            }
+
+            if (isStepCommand(command.command)) {
+                // Soft breakpoints are not tied to a Rhino line frame. Treat step as Continue.
+                command = new DebugCommand(DebugProtocol.COMMAND_CONTINUE, command.expression, command.payload);
             }
 
             if (DebugProtocol.COMMAND_SET_VARIABLE.equals(command.command)) {
@@ -907,6 +1393,182 @@ public final class JsHookRuntime {
         }
     }
 
+
+    private Object waitAtBreakpoint(
+            @NonNull String scriptName,
+            @NonNull String pauseId,
+            @NonNull String breakpointName,
+            @Nullable Object mutableLocals
+    ) {
+        while (true) {
+            DebugCommand command = waitForDebugCommand(pauseId);
+            if (command == null) {
+                command = new DebugCommand(DebugProtocol.COMMAND_CONTINUE, null, new JSONObject());
+            }
+            JsDebugTrace.i("resumeCommand"
+                    + " pauseId=" + pauseId
+                    + " command=" + (command == null ? "<null>" : command.command)
+                    + " payload=" + (command == null ? "<null>" : command.payload));
+
+            if (DebugProtocol.COMMAND_EVAL.equals(command.command)) {
+                sendDebugEvalResult(scriptName, pauseId, breakpointName, command.expression, mutableLocals instanceof Scriptable ? (Scriptable) mutableLocals : scope);
+                continue;
+            }
+
+            if (isStepCommand(command.command)) {
+                JSONObject stepping = buildDebugBaseEvent("continued", scriptName);
+                try {
+                    stepping.put("pauseId", pauseId);
+                    stepping.put("breakpointName", breakpointName);
+                    stepping.put("status", "stepping");
+                    stepping.put("stepCommand", command.command);
+                    stepping.put("updatedAt", System.currentTimeMillis());
+                } catch (Throwable ignored) {
+                }
+                sendDebugEvent(stepping);
+                armStepState(command.command, scriptName, parseLineFromBreakpointName(breakpointName));
+                writeLog(Log.INFO, "XHH-Debug", "单步继续: " + command.command + " pauseId=" + pauseId, null);
+                return null;
+            }
+
+            if (DebugProtocol.COMMAND_SET_VARIABLE.equals(command.command)) {
+                JSONObject updated = buildDebugBaseEvent("variablesUpdated", scriptName);
+                try {
+                    updated.put("pauseId", pauseId);
+                    updated.put("breakpointName", breakpointName);
+                    try {
+                        applyDebugVariablePayload(mutableLocals, command.payload);
+                        updated.put("ok", true);
+                        updated.put("locals", toDebugJsonValue(mutableLocals, 0));
+                    } catch (Throwable t) {
+                        updated.put("ok", false);
+                        updated.put("error", t.getMessage() == null ? t.getClass().getName() : t.getMessage());
+                    }
+                    updated.put("updatedAt", System.currentTimeMillis());
+                } catch (Throwable ignored) {
+                }
+                sendDebugEvent(updated);
+                continue;
+            }
+
+            if (DebugProtocol.COMMAND_CONTINUE.equals(command.command)) {
+                JSONObject continued = buildDebugBaseEvent("continued", scriptName);
+                try {
+                    continued.put("pauseId", pauseId);
+                    continued.put("breakpointName", breakpointName);
+                    continued.put("status", "resumed");
+                    continued.put("updatedAt", System.currentTimeMillis());
+                    continued.put("hasReturnValue", command.payload.optBoolean("hasReturnValue", false));
+                    if (command.payload.has("returnValue")) continued.put("returnValue", command.payload.opt("returnValue"));
+                } catch (Throwable ignored) {
+                }
+                sendDebugEvent(continued);
+                writeLog(Log.INFO, "XHH-Debug", "断点继续执行: pauseId=" + pauseId, null);
+                if (command.payload.optBoolean("hasReturnValue", false)) {
+                    return jsonToJsValue(command.payload.opt("returnValue"));
+                }
+                return null;
+            }
+
+            if (DebugProtocol.COMMAND_ABORT.equals(command.command)) {
+                JSONObject aborted = buildDebugBaseEvent("aborted", scriptName);
+                try {
+                    aborted.put("pauseId", pauseId);
+                    aborted.put("breakpointName", breakpointName);
+                    aborted.put("status", "aborted");
+                    aborted.put("updatedAt", System.currentTimeMillis());
+                } catch (Throwable ignored) {
+                }
+                sendDebugEvent(aborted);
+                throw new RuntimeException("Debug session aborted: " + pauseId);
+            }
+        }
+    }
+
+    private void sendDebugEvalResult(@NonNull String scriptName,
+                                     @NonNull String pauseId,
+                                     @NonNull String breakpointName,
+                                     @Nullable String expression,
+                                     @Nullable Scriptable evalScope) {
+        JSONObject result = buildDebugBaseEvent("evalResult", scriptName);
+        try {
+            String expr = expression == null ? "" : expression.trim();
+            result.put("pauseId", pauseId);
+            result.put("breakpointName", breakpointName);
+            result.put("expression", expr);
+            result.put("updatedAt", System.currentTimeMillis());
+            if (expr.isEmpty()) {
+                result.put("ok", false);
+                result.put("error", "表达式不能为空");
+            } else {
+                Context cx = Context.getCurrentContext();
+                Scriptable targetScope = evalScope != null ? evalScope : scope;
+                if (cx == null || targetScope == null) {
+                    result.put("ok", false);
+                    result.put("error", "当前断点没有可用的 Rhino Context/Scope");
+                } else {
+                    Object value = cx.evaluateString(targetScope, expr, scriptName + ":debug-eval", 1, null);
+                    result.put("ok", true);
+                    result.put("result", toDebugJsonValue(value, 0));
+                    result.put("text", safeDebugText(value));
+                }
+            }
+        } catch (Throwable t) {
+            try {
+                result.put("ok", false);
+                result.put("error", t.getMessage() == null ? t.getClass().getName() : t.getMessage());
+            } catch (Throwable ignored) {
+            }
+        }
+        sendDebugEvent(result);
+    }
+
+    private static int parseLineFromBreakpointName(@Nullable String breakpointName) {
+        if (breakpointName == null) return -1;
+        int idx = breakpointName.lastIndexOf(':');
+        if (idx < 0 || idx + 1 >= breakpointName.length()) return -1;
+        try {
+            return Integer.parseInt(breakpointName.substring(idx + 1));
+        } catch (Throwable ignored) {
+            return -1;
+        }
+    }
+
+    private JSONObject collectScopeVariables(@Nullable Scriptable activation, @Nullable Scriptable thisObj, @Nullable Object[] args) {
+        JSONObject obj = new JSONObject();
+        try {
+            if (activation != null) {
+                for (Object id : activation.getIds()) {
+                    try {
+                        if (id == null) continue;
+                        String key = String.valueOf(id);
+                        if ("debuggerx".equals(key) || "xposed".equals(key) || "Java".equals(key) || "console".equals(key) || "env".equals(key)) {
+                            continue;
+                        }
+                        Object value = id instanceof Number
+                                ? activation.get(((Number) id).intValue(), activation)
+                                : activation.get(key, activation);
+                        if (value == Scriptable.NOT_FOUND) continue;
+                        obj.put(key, toDebugJsonValue(value, 0));
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            if (args != null) {
+                JSONArray arr = new JSONArray();
+                for (int i = 0; i < Math.min(args.length, 80); i++) {
+                    arr.put(toDebugJsonValue(args[i], 0));
+                }
+                obj.put("$args", arr);
+            }
+            if (thisObj != null) {
+                obj.put("$this", toDebugJsonValue(thisObj, 0));
+            }
+        } catch (Throwable ignored) {
+        }
+        return obj;
+    }
+
     private JSONObject buildDebugBaseEvent(@NonNull String type, @NonNull String scriptName) {
         JSONObject obj = new JSONObject();
         try {
@@ -914,7 +1576,11 @@ public final class JsHookRuntime {
             obj.put("time", System.currentTimeMillis());
             obj.put("packageName", packageName);
             obj.put("processName", processName);
+            // scriptName is intentionally the script relative path used by WebIDE breakpoints.
+            // Keep scriptPath/sourceName aliases so the front-end can display and match the same key.
             obj.put("scriptName", scriptName);
+            obj.put("scriptPath", scriptName);
+            obj.put("sourceName", scriptName);
             obj.put("event", currentEvent);
             obj.put("pid", android.os.Process.myPid());
         } catch (Throwable ignored) {
@@ -947,22 +1613,58 @@ public final class JsHookRuntime {
             if (prefs == null) return null;
             String raw = prefs.getString(DebugProtocol.debugCommandKey(pauseId), "");
             if (raw == null || raw.isBlank()) return null;
-            try {
-                prefs.edit().remove(DebugProtocol.debugCommandKey(pauseId)).commit();
-            } catch (Throwable ignored) {
+
+            // LSPosed Remote Preferences are not guaranteed to be writable from the
+            // target app process. If remove() silently fails, an eval command would
+            // be read again on every polling loop and keep producing evalResult.
+            // Therefore every raw command is consumed in-memory by pauseId + raw hash.
+            String consumeKey = pauseId + ":" + Integer.toHexString(raw.hashCode());
+            if (CONSUMED_REMOTE_DEBUG_COMMANDS.contains(consumeKey)) {
+                return null;
             }
+
             JSONObject obj = new JSONObject(raw);
             String command = obj.optString("command", DebugProtocol.COMMAND_CONTINUE);
             String expression = obj.optString("expression", null);
             JSONObject payload = obj.optJSONObject("payload");
             if (payload == null) payload = new JSONObject();
             if (command == null || command.isBlank()) command = DebugProtocol.COMMAND_CONTINUE;
+
+            CONSUMED_REMOTE_DEBUG_COMMANDS.add(consumeKey);
+            trimConsumedRemoteDebugCommandsIfNeeded();
+
+            try {
+                prefs.edit().remove(DebugProtocol.debugCommandKey(pauseId)).commit();
+            } catch (Throwable ignored) {
+            }
+
+            JsDebugTrace.d("remoteDebugCommandConsumed"
+                    + " pauseId=" + pauseId
+                    + " command=" + command
+                    + " consumeKey=" + consumeKey);
+
             return new DebugCommand(command, expression, payload);
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            JsDebugTrace.e("readRemoteDebugCommand failed pauseId=" + pauseId, t);
             return null;
         }
     }
 
+    private static void trimConsumedRemoteDebugCommandsIfNeeded() {
+        try {
+            if (CONSUMED_REMOTE_DEBUG_COMMANDS.size() <= 512) return;
+            CONSUMED_REMOTE_DEBUG_COMMANDS.clear();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Deprecated: do not call this from target app processes.
+     * On some Android versions, registering a receiver with ActivityThread system context
+     * throws SecurityException: caller package android is not running in the target process.
+     * Debug commands are now delivered through LSPosed Remote Preferences polling only.
+     */
+    @Deprecated
     private void ensureDebugCommandReceiver(@NonNull android.content.Context context) {
         if (debugCommandReceiverRegistered) return;
         synchronized (JsHookRuntime.class) {
@@ -1002,18 +1704,22 @@ public final class JsHookRuntime {
     private Object toDebugJsonValue(@Nullable Object value, int depth) {
         Object v = unwrap(value);
         if (v == null || v == Undefined.instance || v == Scriptable.NOT_FOUND) return JSONObject.NULL;
-        if (depth > 4) return String.valueOf(v);
+        if (depth > 4) return javaDebugDescriptor(v, true);
         if (v instanceof String || v instanceof Number || v instanceof Boolean) return v;
         if (v instanceof Character) return String.valueOf(v);
-        if (v instanceof Class<?>) return ((Class<?>) v).getName();
-        if (v instanceof Method || v instanceof Constructor<?> || v instanceof Field) return String.valueOf(v);
+        if (v instanceof Class<?>) return javaDebugDescriptor(v, false);
+        if (v instanceof Method || v instanceof Constructor<?> || v instanceof Field) return javaDebugDescriptor(v, false);
+        if (v instanceof Function) return rhinoDebugDescriptor(v, "function");
         if (v instanceof Throwable) {
             Throwable t = (Throwable) v;
             JSONObject obj = new JSONObject();
             try {
+                obj.put("$kind", "java");
                 obj.put("type", t.getClass().getName());
+                obj.put("className", t.getClass().getName());
                 obj.put("message", t.getMessage());
-                obj.put("text", String.valueOf(t));
+                obj.put("text", safeDebugText(t));
+                obj.put("editable", false);
             } catch (Throwable ignored) {
             }
             return obj;
@@ -1024,9 +1730,10 @@ public final class JsHookRuntime {
             long len = Math.min(array.getLength(), 200);
             for (int i = 0; i < len; i++) {
                 try {
-                    json.put(toDebugJsonValue(array.get(i, array), depth + 1));
+                    Object item = array.get(i, array);
+                    json.put(item == Scriptable.NOT_FOUND ? JSONObject.NULL : toDebugJsonValue(item, depth + 1));
                 } catch (Throwable ignored) {
-                    json.put(String.valueOf(array.get(i, array)));
+                    json.put(JSONObject.NULL);
                 }
             }
             return json;
@@ -1034,12 +1741,28 @@ public final class JsHookRuntime {
         if (v instanceof Scriptable) {
             Scriptable scriptable = (Scriptable) v;
             JSONObject obj = new JSONObject();
-            for (Object id : scriptable.getIds()) {
+            try {
+                obj.put("$kind", "rhino");
+                obj.put("type", v.getClass().getName());
+                obj.put("className", v.getClass().getName());
+            } catch (Throwable ignored) {
+            }
+            Object[] ids;
+            try {
+                ids = scriptable.getIds();
+            } catch (Throwable t) {
+                return rhinoDebugDescriptor(v, "scriptable");
+            }
+            int count = 0;
+            for (Object id : ids) {
+                if (count++ >= 200) break;
                 try {
                     String key = String.valueOf(id);
+                    if (key.startsWith("__") || "prototype".equals(key) || "constructor".equals(key)) continue;
                     Object child = id instanceof Number
                             ? scriptable.get(((Number) id).intValue(), scriptable)
                             : scriptable.get(key, scriptable);
+                    if (child == Scriptable.NOT_FOUND) continue;
                     obj.put(key, toDebugJsonValue(child, depth + 1));
                 } catch (Throwable ignored) {
                 }
@@ -1065,7 +1788,8 @@ public final class JsHookRuntime {
             }
             return json;
         }
-        if (v.getClass().isArray()) {
+        Class<?> cls = v.getClass();
+        if (cls.isArray()) {
             JSONArray json = new JSONArray();
             int len = Math.min(java.lang.reflect.Array.getLength(v), 200);
             for (int i = 0; i < len; i++) {
@@ -1073,7 +1797,58 @@ public final class JsHookRuntime {
             }
             return json;
         }
-        return String.valueOf(v);
+
+        // Do not guess arbitrary Java object structure here.  Returning a plain string makes
+        // the WebIDE think the variable is a JS string.  Use a Java descriptor instead; if it
+        // cannot be described safely, fields are left null.
+        return javaDebugDescriptor(v, false);
+    }
+
+    private JSONObject javaDebugDescriptor(@Nullable Object value, boolean truncated) {
+        JSONObject obj = new JSONObject();
+        try {
+            obj.put("$kind", "java");
+            if (value == null) {
+                obj.put("type", JSONObject.NULL);
+                obj.put("className", JSONObject.NULL);
+                obj.put("text", JSONObject.NULL);
+            } else {
+                Class<?> cls = value instanceof Class<?> ? (Class<?>) value : value.getClass();
+                obj.put("type", cls.getName());
+                obj.put("className", cls.getName());
+                obj.put("simpleName", cls.getSimpleName());
+                obj.put("text", safeDebugText(value));
+            }
+            obj.put("editable", false);
+            obj.put("truncated", truncated);
+        } catch (Throwable ignored) {
+        }
+        return obj;
+    }
+
+    private JSONObject rhinoDebugDescriptor(@Nullable Object value, @NonNull String kind) {
+        JSONObject obj = new JSONObject();
+        try {
+            obj.put("$kind", "rhino");
+            obj.put("type", kind);
+            obj.put("className", value == null ? JSONObject.NULL : value.getClass().getName());
+            obj.put("text", safeDebugText(value));
+            obj.put("editable", false);
+        } catch (Throwable ignored) {
+        }
+        return obj;
+    }
+
+    @Nullable
+    private static String safeDebugText(@Nullable Object value) {
+        if (value == null) return null;
+        try {
+            String text = String.valueOf(value);
+            if (text.length() > 500) return text.substring(0, 500) + "…";
+            return text;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
 
@@ -1259,6 +2034,20 @@ public final class JsHookRuntime {
             return map;
         }
         return value;
+    }
+
+    private static final class DebugStepState {
+        final String command;
+        final int startDepth;
+        final String startSourceName;
+        final int startLine;
+
+        DebugStepState(@NonNull String command, int startDepth, @NonNull String startSourceName, int startLine) {
+            this.command = command;
+            this.startDepth = Math.max(0, startDepth);
+            this.startSourceName = startSourceName;
+            this.startLine = startLine;
+        }
     }
 
     private static final class DebugCommand {

@@ -7,6 +7,7 @@ object DebugProtocol {
     const val PREF_GROUP = "XiaoHeiHookSetting"
     const val DEBUG_ENABLED_PREFIX = "debugger_enabled_"
     const val DEBUG_COMMAND_PREFIX = "debugger_command_"
+    const val DEBUG_BREAKPOINTS_PREFIX = "debugger_line_breakpoints_"
 
     const val EXTRA_EVENT_JSON = "eventJson"
     const val EXTRA_PACKAGE_NAME = "packageName"
@@ -19,10 +20,17 @@ object DebugProtocol {
     const val COMMAND_CONTINUE = "continue"
     const val COMMAND_ABORT = "abort"
     const val COMMAND_SET_VARIABLE = "setVariable"
+    const val COMMAND_EVAL = "eval"
+    const val COMMAND_STEP_INTO = "stepInto"
+    const val COMMAND_STEP_OVER = "stepOver"
+    const val COMMAND_STEP_OUT = "stepOut"
 
     @JvmStatic
     fun debugEnabledKey(packageName: String): String = DEBUG_ENABLED_PREFIX + packageName
 
     @JvmStatic
     fun debugCommandKey(pauseId: String): String = DEBUG_COMMAND_PREFIX + pauseId
+
+    @JvmStatic
+    fun debugBreakpointsKey(packageName: String): String = DEBUG_BREAKPOINTS_PREFIX + packageName
 }

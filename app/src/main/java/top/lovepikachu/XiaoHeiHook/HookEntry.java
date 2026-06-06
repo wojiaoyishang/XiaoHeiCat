@@ -93,7 +93,7 @@ public class HookEntry extends XposedModule {
                         rawParam,
                         script.rawEnabled()
                 );
-                runtime.evaluate(script.name + "(" + script.id + ")", source);
+                runtime.evaluate(script.displayName(), script.sourceName(), source);
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "加载脚本失败: " + script.id + " -> " + packageName + " @" + runAt, t);
             }
@@ -124,7 +124,8 @@ public class HookEntry extends XposedModule {
                         toStringList(obj.optJSONArray("processes")),
                         obj.optString("runAt", JsHookRuntime.EVENT_PACKAGE_LOADED),
                         toStringList(obj.optJSONArray("grants")),
-                        remoteName
+                        remoteName,
+                        obj.optString("path", obj.optString("scriptPath", ""))
                 ));
             }
         } catch (Throwable t) {
@@ -151,6 +152,7 @@ public class HookEntry extends XposedModule {
         final String runAt;
         final List<String> grants;
         final String remoteName;
+        final String path;
 
         ScriptDescriptor(
                 String id,
@@ -159,7 +161,8 @@ public class HookEntry extends XposedModule {
                 List<String> processes,
                 String runAt,
                 List<String> grants,
-                String remoteName
+                String remoteName,
+                String path
         ) {
             this.id = id;
             this.name = name;
@@ -168,6 +171,16 @@ public class HookEntry extends XposedModule {
             this.runAt = runAt;
             this.grants = grants;
             this.remoteName = remoteName;
+            this.path = path == null ? "" : path.trim();
+        }
+
+        String displayName() {
+            return name + "(" + id + ")";
+        }
+
+        String sourceName() {
+            if (!path.isEmpty()) return path;
+            return displayName();
         }
 
         boolean supportsPackage(String packageName) {

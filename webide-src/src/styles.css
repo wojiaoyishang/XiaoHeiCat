@@ -934,3 +934,138 @@ body,
     grid-template-columns: 1fr;
   }
 }
+
+/* v14 line breakpoint UI */
+.xhh-breakpoint-glyph {
+  cursor: pointer;
+  position: relative;
+}
+.xhh-breakpoint-glyph::before {
+  content: '';
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin: 4px auto 0;
+  border-radius: 50%;
+  background: #d32f2f;
+  box-shadow: 0 0 0 1px #7f1515 inset;
+}
+.xhh-current-line-arrow::before {
+  content: '▶';
+  display: block;
+  width: 100%;
+  text-align: center;
+  color: #2e7d32;
+  font-size: 11px;
+  line-height: 18px;
+}
+.xhh-paused-line {
+  background: rgba(255, 224, 130, 0.45);
+}
+.debug-variable-table {
+  border: 1px solid #333;
+  background: #101010;
+  margin: 8px 0 10px;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+.debug-variable-table table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+.debug-variable-table th,
+.debug-variable-table td {
+  border-bottom: 1px solid #2a2a2a;
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+.debug-variable-table th {
+  color: #e7e7e7;
+  background: #1d1d1d;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.debug-variable-table tr {
+  cursor: pointer;
+}
+.debug-variable-table tr:hover td {
+  background: #1d2633;
+}
+.debug-variable-table .var-name {
+  width: 22%;
+  color: #90caf9;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+}
+.debug-variable-table .var-type {
+  width: 90px;
+  color: #c5e1a5;
+}
+.debug-variable-table .var-value pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #eee;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+}
+
+.debug-actions .step-btn {
+  border-color: #777;
+  background: #1f2933;
+  color: #e9f4ff;
+}
+.debug-actions .step-btn:hover {
+  background: #273646;
+}
+.debug-eval-box {
+  border: 1px solid #333;
+  background: #101010;
+  margin: 8px 0 10px;
+  padding: 8px;
+}
+.debug-eval-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.debug-eval-row input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 3px 6px;
+  border: 1px solid #555;
+  background: #181818;
+  color: #eee;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+}
+.debug-eval-row button {
+  cursor: pointer;
+  border: 1px solid #666;
+  background: #2d2d2d;
+  color: #eee;
+  padding: 4px 10px;
+}
+.debug-eval-result {
+  margin-top: 6px;
+  max-height: 140px;
+  overflow: auto;
+  background: #060606;
+  border: 1px solid #242424;
+  padding: 6px;
+  color: #e8e8e8;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* v14.6: remove the large locals JSON editor; keep the compact variable editor readable. */
+.debug-edit-grid.compact-only {
+  grid-template-columns: minmax(280px, 420px);
+}
+.debug-edit-grid.compact-only .debug-edit-card.compact {
+  max-width: 420px;
+}

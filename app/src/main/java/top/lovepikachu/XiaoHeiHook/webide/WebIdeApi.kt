@@ -38,9 +38,14 @@ class WebIdeApi(private val context: Context) {
 
                 "/api/debug/events" -> debugEvents(request)
                 "/api/debug/enabled" -> debugEnabled(request)
+                "/api/debug/breakpoints" -> debugBreakpoints(request)
                 "/api/debug/continue" -> debugCommand(request, DebugProtocol.COMMAND_CONTINUE)
                 "/api/debug/abort" -> debugCommand(request, DebugProtocol.COMMAND_ABORT)
                 "/api/debug/set-variable" -> debugCommand(request, DebugProtocol.COMMAND_SET_VARIABLE)
+                "/api/debug/eval" -> debugCommand(request, DebugProtocol.COMMAND_EVAL)
+                "/api/debug/step-into" -> debugCommand(request, DebugProtocol.COMMAND_STEP_INTO)
+                "/api/debug/step-over" -> debugCommand(request, DebugProtocol.COMMAND_STEP_OVER)
+                "/api/debug/step-out" -> debugCommand(request, DebugProtocol.COMMAND_STEP_OUT)
                 "/api/debug/clear" -> debugClear()
 
                 "/api/apps" -> apps(request)
@@ -74,7 +79,7 @@ class WebIdeApi(private val context: Context) {
         return json(
             JSONObject()
                 .put("ok", true)
-                .put("server", "xhh-webide-v13.3-ghost-breakpoint-cleanup")
+                .put("server", "xhh-webide-v14.2-source-name-unified")
                 .put("running", status.running)
                 .put("host", status.host)
                 .put("port", status.port)
@@ -253,6 +258,32 @@ class WebIdeApi(private val context: Context) {
         return json(bridge.setDebugEnabled(packageName, enabled))
     }
 
+
+    private fun debugBreakpoints(request: HttpRequest): HttpResponse {
+        if (request.method == "GET") {
+            val packageName = request.param("packageName").orEmpty().trim()
+            val scriptPath = request.param("scriptPath").orEmpty().trim()
+            require(packageName.isNotBlank()) { "packageName 不能为空" }
+            val root = bridge.getDebugBreakpoints(packageName)
+            val lines = if (scriptPath.isNotBlank()) root.optJSONArray(scriptPath) ?: JSONArray() else JSONArray()
+            return json(
+                JSONObject()
+                    .put("ok", true)
+                    .put("packageName", packageName)
+                    .put("scriptPath", if (scriptPath.isBlank()) JSONObject.NULL else scriptPath)
+                    .put("lines", lines)
+                    .put("breakpoints", root)
+            )
+        }
+        val body = request.jsonBody()
+        val packageName = body.optString("packageName").trim()
+        val scriptPath = body.optString("scriptPath").trim()
+        val lines = body.optJSONArray("lines") ?: JSONArray()
+        require(packageName.isNotBlank()) { "packageName 不能为空" }
+        require(scriptPath.isNotBlank()) { "scriptPath 不能为空" }
+        return json(bridge.setDebugBreakpoints(packageName, scriptPath, lines))
+    }
+
     private fun debugCommand(request: HttpRequest, command: String): HttpResponse {
         val body = request.jsonBody()
         val packageName = body.optString("packageName").trim()
@@ -267,7 +298,12 @@ class WebIdeApi(private val context: Context) {
         // WebIDE accepts Continue/Abort. The target process will later emit the
         // final continued/aborted event, but a browser refresh must not show the
         // old paused event again while that round trip is in progress.
-        val lifecycleEvent = if (command == DebugProtocol.COMMAND_CONTINUE || command == DebugProtocol.COMMAND_ABORT) {
+        val lifecycleEvent = if (command == DebugProtocol.COMMAND_CONTINUE
+            || command == DebugProtocol.COMMAND_ABORT
+            || command == DebugProtocol.COMMAND_STEP_INTO
+            || command == DebugProtocol.COMMAND_STEP_OVER
+            || command == DebugProtocol.COMMAND_STEP_OUT
+        ) {
             DebugEventRepository.markCommanded(context, packageName, processName, pauseId, command)
         } else null
 
@@ -278,17 +314,9 @@ class WebIdeApi(private val context: Context) {
             bridgeOk = true
         }.onFailure { bridgeError = it.message ?: it.javaClass.simpleName }
 
-        // Broadcast is kept as a fast fallback for already-registered target receivers.
-        val intent = Intent(DebugProtocol.ACTION_COMMAND)
-            .setPackage(packageName)
-            .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
-            .putExtra(DebugProtocol.EXTRA_PACKAGE_NAME, packageName)
-            .putExtra(DebugProtocol.EXTRA_PROCESS_NAME, processName)
-            .putExtra(DebugProtocol.EXTRA_PAUSE_ID, pauseId)
-            .putExtra(DebugProtocol.EXTRA_COMMAND, command)
-            .putExtra(DebugProtocol.EXTRA_EXPRESSION, expression)
-            .putExtra(DebugProtocol.EXTRA_PAYLOAD_JSON, payload.toString())
-        context.sendBroadcast(intent)
+        // Do not broadcast debug commands into the target process.
+        // Target processes poll LSPosed Remote Preferences by pauseId.
+        // This avoids dynamic receiver registration / package identity issues on newer Android.
 
         return json(
             JSONObject()
@@ -298,7 +326,8 @@ class WebIdeApi(private val context: Context) {
                 .put("pauseId", pauseId)
                 .put("command", command)
                 .put("bridgeCommand", bridgeOk)
-                .put("broadcastFallback", true)
+                .put("broadcastFallback", false)
+                .put("commandTransport", "remote-preferences")
                 .put("payload", payload)
                 .put("bridgeError", bridgeError ?: JSONObject.NULL)
                 .put("lifecycleEvent", lifecycleEvent ?: JSONObject.NULL)
@@ -565,6 +594,8 @@ class WebIdeApi(private val context: Context) {
             .put("runAt", metadata.runAt)
             .put("grants", JSONArray(metadata.grants))
             .put("remoteName", metadata.remoteName)
+            .put("path", metadata.path)
+            .put("scriptPath", metadata.path)
             .put("sourceMode", metadata.sourceMode)
             .put("url", metadata.url)
             .put("urlRefreshOnApply", metadata.urlRefreshOnApply)

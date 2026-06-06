@@ -270,13 +270,14 @@ xposed.onPackageLoaded(function (param) {
         source: String,
         debugPackageName: String?
     ): ScriptSource {
-        val metadata = parseMetadata(text, file.nameWithoutExtension)
+        val relativePath = relativeScriptPath(file)
+        val metadata = parseMetadata(text, file.nameWithoutExtension).copy(path = relativePath)
         val matchInfo = debugPackageName?.let { packageName ->
             ", supports($packageName)=${metadata.supportsPackage(packageName)}"
         }.orEmpty()
         Log.d(
             TAG,
-            "readPublicScripts($source): parsed file=${file.name}, id=${metadata.id}, name=${metadata.name}, targets=${metadata.targets}, processes=${metadata.processes}, url=${metadata.url}, urlRefresh=${metadata.urlRefreshOnApply}$matchInfo"
+            "readPublicScripts($source): parsed file=${file.name}, path=${metadata.path}, id=${metadata.id}, name=${metadata.name}, targets=${metadata.targets}, processes=${metadata.processes}, url=${metadata.url}, urlRefresh=${metadata.urlRefreshOnApply}$matchInfo"
         )
         return ScriptSource(metadata, file, text, source)
     }
@@ -433,6 +434,8 @@ xposed.onPackageLoaded(function (param) {
                 put("runAt", script.runAt)
                 put("grants", JSONArray(script.grants))
                 put("remoteName", script.remoteName.ifBlank { remoteNameFor(script.id) })
+                put("path", script.path)
+                put("scriptPath", script.path)
                 put("sourceMode", script.sourceMode)
                 put("url", script.url)
                 put("urlRefreshOnApply", script.urlRefreshOnApply)
@@ -460,6 +463,7 @@ xposed.onPackageLoaded(function (param) {
                             runAt = obj.optString("runAt", "package-loaded"),
                             grants = obj.optJSONArray("grants").toStringList(),
                             remoteName = obj.optString("remoteName", remoteNameFor(obj.optString("id"))),
+                            path = obj.optString("path", obj.optString("scriptPath", "")),
                             sourceMode = obj.optString("sourceMode", if (obj.optString("url").isNotBlank()) "url-meta" else "local"),
                             url = obj.optString("url", ""),
                             urlRefreshOnApply = obj.optBoolean("urlRefreshOnApply", false)
@@ -518,6 +522,21 @@ xposed.onPackageLoaded(function (param) {
             "1", "true", "yes", "y", "on", "always", "apply", "sync" -> true
             else -> false
         }
+    }
+
+    private fun relativeScriptPath(file: File): String {
+        val root = runCatching { publicScriptsDir.canonicalFile }.getOrElse { publicScriptsDir.absoluteFile }
+        val target = runCatching { file.canonicalFile }.getOrElse { file.absoluteFile }
+        val rootPath = root.path.replace('\\', '/').trimEnd('/')
+        val targetPath = target.path.replace('\\', '/')
+        val relative = if (targetPath == rootPath) {
+            target.name
+        } else if (targetPath.startsWith("$rootPath/")) {
+            targetPath.substring(rootPath.length + 1)
+        } else {
+            target.name
+        }
+        return relative.replace('\\', '/').trim('/').ifBlank { file.name }
     }
 
     fun remoteNameFor(id: String): String {

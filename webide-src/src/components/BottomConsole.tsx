@@ -21,6 +21,8 @@ interface Props {
   onDebugEnabledChange: (enabled: boolean) => void
   onDebugContinue: (event: DebugEvent, returnValue?: { enabled: boolean; text: string }) => void
   onDebugAbort: (event: DebugEvent) => void
+  onDebugStep: (event: DebugEvent, kind: 'step-into' | 'step-over' | 'step-out') => void
+  onDebugEval: (event: DebugEvent, expression: string) => void
   onDebugApplyLocals: (event: DebugEvent, localsJson: string) => void
   onDebugSetVariable: (event: DebugEvent, path: string, valueJson: string) => void
 }
@@ -48,6 +50,25 @@ function pretty(value: unknown) {
   }
 }
 
+function variableRows(value: unknown): Array<{ name: string; type: string; value: string }> {
+  if (!value || typeof value !== 'object') return []
+  const obj = value as Record<string, unknown>
+  return Object.keys(obj).sort().slice(0, 200).map((name) => {
+    const raw = obj[name]
+    let type = raw === null ? 'null' : Array.isArray(raw) ? 'java' : typeof raw
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const marker = raw as Record<string, unknown>
+      if (marker.$kind === 'java') {
+        type = String(marker.className || marker.type || 'java')
+      } else if (marker.$kind === 'rhino') {
+        type = String(marker.className || marker.type || 'rhino')
+      }
+    }
+    const text = pretty(raw)
+    return { name, type, value: text.length > 500 ? text.slice(0, 500) + '…' : text }
+  })
+}
+
 export function BottomConsole({
   lines,
   debugEvents,
@@ -61,15 +82,17 @@ export function BottomConsole({
   onDebugEnabledChange,
   onDebugContinue,
   onDebugAbort,
+  onDebugStep,
+  onDebugEval,
   onDebugApplyLocals,
   onDebugSetVariable
 }: Props) {
   const [tab, setTab] = useState<'output' | 'debug'>('output')
-  const [localsJson, setLocalsJson] = useState('')
   const [variablePath, setVariablePath] = useState('')
   const [variableValueJson, setVariableValueJson] = useState('null')
   const [returnEnabled, setReturnEnabled] = useState(false)
   const [returnValueText, setReturnValueText] = useState('null')
+  const [evalExpression, setEvalExpression] = useState('')
   const consoleRef = useRef<HTMLPreElement | null>(null)
   const debugRef = useRef<HTMLDivElement | null>(null)
   const dragStateRef = useRef<{ startY: number; startHeight: number } | null>(null)
@@ -79,15 +102,19 @@ export function BottomConsole({
     [debugEvents]
   )
   const latestPaused = pausedEvents[pausedEvents.length - 1] || null
+  const currentVariables = useMemo(() => variableRows(latestPaused?.locals), [latestPaused?.locals])
 
+  // 输出与调试事件都采用 newest-first。
+  // 不自动滚到底部，避免 Eval / Step / 日志刷新后滚动条跳动。
+  // 当新结果到达时保持置顶，让最新执行结果出现在最上方。
   useEffect(() => {
     const el = consoleRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el) el.scrollTop = 0
   }, [lines, tab])
 
   useEffect(() => {
     const el = debugRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el) el.scrollTop = 0
   }, [debugEvents, tab])
 
   useEffect(() => {
@@ -98,14 +125,13 @@ export function BottomConsole({
 
   useEffect(() => {
     if (!latestPaused) {
-      setLocalsJson('')
       setVariablePath('')
       setVariableValueJson('null')
       setReturnEnabled(false)
       setReturnValueText('null')
+      setEvalExpression('')
       return
     }
-    setLocalsJson(pretty(latestPaused.locals))
     setReturnEnabled(false)
     setReturnValueText('null')
     const locals = latestPaused.locals as any
@@ -163,7 +189,7 @@ export function BottomConsole({
 
       {tab === 'output' ? (
         <pre ref={consoleRef} className="console">
-          {lines.map((line) => (
+          {[...lines].reverse().map((line) => (
             <div key={line.id} className={line.type || ''}>{line.text}</div>
           ))}
         </pre>
@@ -193,7 +219,7 @@ export function BottomConsole({
             <div className="debug-current">
               <div className="debug-title">Paused: {latestPaused.breakpointName || latestPaused.pauseId}</div>
               <div className="debug-meta">
-                {latestPaused.packageName} / {latestPaused.processName} / {latestPaused.scriptName} / {latestPaused.threadName}
+                {latestPaused.packageName} / {latestPaused.processName} / {latestPaused.scriptPath || latestPaused.sourceName || latestPaused.scriptName} / {latestPaused.threadName}
               </div>
               <div className="debug-actions">
                 <button
@@ -203,24 +229,65 @@ export function BottomConsole({
                 >
                   Continue
                 </button>
+                <button className="step-btn" onClick={() => onDebugStep(latestPaused, 'step-over')} title="单步跳过：F10 风格，在当前调用层下一行暂停">Step Over</button>
+                <button className="step-btn" onClick={() => onDebugStep(latestPaused, 'step-into')} title="单步进入：F11 风格，在下一次行变化暂停">Step Into</button>
+                <button className="step-btn" onClick={() => onDebugStep(latestPaused, 'step-out')} title="跳出当前函数：Shift+F11 风格，返回调用者后暂停">Step Out</button>
                 <button onClick={() => onDebugAbort(latestPaused)}>Abort</button>
               </div>
 
-              <div className="debug-edit-grid">
-                <div className="debug-edit-card">
-                  <div className="debug-section-title">查看 / 修改 locals</div>
-                  <textarea
-                    className="debug-json-editor"
-                    value={localsJson}
+              <div className="debug-eval-box">
+                <div className="debug-section-title">交互式执行代码</div>
+                <div className="debug-eval-row">
+                  <input
+                    value={evalExpression}
+                    placeholder="例如: args[0]、packageName、context.getClassLoader()"
                     spellCheck={false}
-                    onChange={(ev) => setLocalsJson(ev.target.value)}
+                    onChange={(ev) => setEvalExpression(ev.target.value)}
+                    onKeyDown={(ev) => {
+                      if (ev.key === 'Enter') {
+                        ev.preventDefault()
+                        onDebugEval(latestPaused, evalExpression)
+                      }
+                    }}
                   />
-                  <button onClick={() => onDebugApplyLocals(latestPaused, localsJson)} title="把当前 JSON 对象写回 debuggerx.breakpoint(name, locals) 传入的 locals 对象">
-                    应用 locals 修改
-                  </button>
-                  <div className="debug-note">仅能修改传给 breakpoint 的 locals 对象/数组/Map；普通 JS 局部变量需要脚本在继续后主动读取 locals。</div>
+                  <button onClick={() => onDebugEval(latestPaused, evalExpression)} title="在当前暂停作用域中执行表达式并返回结果">执行</button>
                 </div>
+                {debugEvents
+                  .filter((event) => event.type === 'evalResult' && event.pauseId === latestPaused.pauseId)
+                  .slice(-5)
+                  .reverse()
+                  .map((event, index) => (
+                  <pre key={`${event.pauseId}-eval-${index}`} className="debug-eval-result">
+                    {event.ok === false ? `错误: ${event.error || 'unknown error'}` : `${event.expression || ''}
+=> ${pretty(event.result ?? event.text ?? null)}`}
+                  </pre>
+                ))}
+              </div>
 
+              {currentVariables.length ? (
+                <div className="debug-variable-table">
+                  <div className="debug-section-title">变量表</div>
+                  <table>
+                    <thead>
+                      <tr><th>名称</th><th>类型</th><th>值</th></tr>
+                    </thead>
+                    <tbody>
+                      {currentVariables.map((row) => (
+                        <tr key={row.name} onClick={() => {
+                          setVariablePath(row.name)
+                          setVariableValueJson(row.value)
+                        }}>
+                          <td className="var-name">{row.name}</td>
+                          <td className="var-type">{row.type}</td>
+                          <td className="var-value"><pre>{row.value}</pre></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+
+              <div className="debug-edit-grid">
                 <div className="debug-edit-card compact">
                   <div className="debug-section-title">按路径修改变量</div>
                   <input
@@ -254,7 +321,7 @@ export function BottomConsole({
           ) : null}
 
           <div className="debug-events">
-            {debugEvents.slice(-100).map((event, index) => (
+            {debugEvents.slice(-100).reverse().map((event, index) => (
               <div key={`${event.pauseId || event.type}-${index}`} className={`debug-event ${event.type}`}>
                 <span className="debug-event-type">{event.type}</span>
                 <span>{formatTime(event.time)}</span>

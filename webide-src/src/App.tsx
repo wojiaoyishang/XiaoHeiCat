@@ -8,6 +8,7 @@ import type {
   ScriptInfo,
   ScriptMeta,
   DebugEvent,
+  DebugBreakpointsResponse,
 } from "./types/webide";
 import { TopBar } from "./components/TopBar";
 import { AppListPanel } from "./components/AppListPanel";
@@ -43,6 +44,7 @@ export function App() {
   const [logs, setLogs] = useState<ConsoleLine[]>([]);
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [debugEnabled, setDebugEnabledState] = useState(false);
+  const [scriptBreakpoints, setScriptBreakpoints] = useState<Record<string, number[]>>({});
   const [consoleHeight, setConsoleHeight] = useState(() => {
     const saved = Number(window.localStorage.getItem("xhh.consoleHeight"));
     return Number.isFinite(saved) && saved > 0 ? saved : 180;
@@ -68,6 +70,20 @@ export function App() {
   const metadata = activeTab?.metadata || null;
   const dirty = !!activeTab?.dirty;
   const hasAnyDirty = openTabs.some((tab) => tab.dirty);
+  const currentBreakpoints = useMemo(
+    () => (currentPath ? scriptBreakpoints[currentPath] || [] : []),
+    [scriptBreakpoints, currentPath],
+  );
+  const currentPausedLine = useMemo(() => {
+    if (!activeTab) return null;
+    const paused = [...debugEvents]
+      .reverse()
+      .find((event) => {
+        const eventPath = event.scriptPath || event.sourceName || event.scriptName;
+        return event.type === "paused" && eventPath === activeTab.path && typeof event.line === "number" && event.line > 0;
+      });
+    return paused?.line || null;
+  }, [activeTab, debugEvents]);
 
   const statusText = useMemo(() => {
     if (!status) return "未连接";
@@ -275,6 +291,43 @@ export function App() {
     await saveTab(activeTab);
   }, [activeTab, saveTab, log]);
 
+
+  const loadDebugBreakpoints = useCallback(async (packageName: string, scriptPath?: string | null) => {
+    const query = scriptPath
+      ? `?packageName=${encodeURIComponent(packageName)}&scriptPath=${encodeURIComponent(scriptPath)}`
+      : `?packageName=${encodeURIComponent(packageName)}`;
+    const data = await api<DebugBreakpointsResponse>(`/api/debug/breakpoints${query}`);
+    if (data.breakpoints) {
+      const normalized: Record<string, number[]> = {};
+      Object.entries(data.breakpoints).forEach(([path, lines]) => {
+        normalized[path] = Array.isArray(lines)
+          ? lines.map((line) => Number(line)).filter((line) => Number.isFinite(line) && line > 0)
+          : [];
+      });
+      setScriptBreakpoints(normalized);
+    } else if (scriptPath) {
+      setScriptBreakpoints((old) => ({ ...old, [scriptPath]: data.lines || [] }));
+    }
+  }, []);
+
+  const toggleLineBreakpoint = useCallback(async (line: number) => {
+    if (!selectedPackage || !currentPath) {
+      log("请选择应用并打开脚本后再设置行断点", "warn");
+      return;
+    }
+    const current = scriptBreakpoints[currentPath] || [];
+    const exists = current.includes(line);
+    const next = exists ? current.filter((item) => item !== line) : [...current, line].sort((a, b) => a - b);
+    setScriptBreakpoints((old) => ({ ...old, [currentPath]: next }));
+    const data = await post<DebugBreakpointsResponse>("/api/debug/breakpoints", {
+      packageName: selectedPackage,
+      scriptPath: currentPath,
+      lines: next,
+    });
+    setScriptBreakpoints((old) => ({ ...old, [currentPath]: data.lines || next }));
+    log(`${exists ? "移除" : "添加"}行断点：${currentPath}:${line}`, exists ? "warn" : "ok");
+  }, [selectedPackage, currentPath, scriptBreakpoints, log]);
+
   const createScript = useCallback(async () => {
     const defaultName = selectedPackage
       ? `${selectedPackage.replace(/[^A-Za-z0-9_.-]/g, "_")}.js`
@@ -479,6 +532,39 @@ export function App() {
     setDebugEvents((old) => old.filter((item) => item.pauseId !== event.pauseId || item.type !== "paused"));
   }, [log]);
 
+  const stepDebugEvent = useCallback(async (event: DebugEvent, kind: "step-into" | "step-over" | "step-out") => {
+    if (!event.pauseId || !event.packageName) {
+      log("无法单步：调试事件缺少 pauseId 或 packageName", "err");
+      return;
+    }
+    await post<{ ok: boolean }>(`/api/debug/${kind}`, {
+      pauseId: event.pauseId,
+      packageName: event.packageName,
+      processName: event.processName || "",
+    });
+    log(`${kind} 已发送：${event.pauseId}`, "ok");
+    setDebugEvents((old) => old.filter((item) => item.pauseId !== event.pauseId || item.type !== "paused"));
+  }, [log]);
+
+  const evalDebugExpression = useCallback(async (event: DebugEvent, expression: string) => {
+    if (!event.pauseId || !event.packageName) {
+      log("无法执行表达式：调试事件缺少 pauseId 或 packageName", "err");
+      return;
+    }
+    const clean = expression.trim();
+    if (!clean) {
+      log("表达式不能为空", "warn");
+      return;
+    }
+    await post<{ ok: boolean }>("/api/debug/eval", {
+      pauseId: event.pauseId,
+      packageName: event.packageName,
+      processName: event.processName || "",
+      expression: clean,
+    });
+    log(`Eval 已发送：${clean} @ ${event.pauseId}`, "ok");
+  }, [log]);
+
 
   const applyDebugLocals = useCallback(async (event: DebugEvent, localsJson: string) => {
     if (!event.pauseId || !event.packageName) {
@@ -681,6 +767,15 @@ export function App() {
     log(`${data.enabled ? "已启用" : "已关闭"}软断点调试：${data.packageName}`, data.enabled ? "warn" : "ok");
   }, [selectedPackage, log]);
 
+
+  useEffect(() => {
+    if (!selectedPackage) {
+      setScriptBreakpoints({});
+      return;
+    }
+    run(() => loadDebugBreakpoints(selectedPackage, currentPath));
+  }, [selectedPackage, currentPath, loadDebugBreakpoints, run]);
+
   useEffect(() => {
     if (!selectedPackage) return;
     const source = new EventSource(
@@ -726,10 +821,17 @@ export function App() {
         applyIncomingDebugEvent(data);
         if (data.type === "paused") {
           setTerminalVisible(true);
-          log(`命中软断点：${data.breakpointName || data.pauseId} @ ${data.packageName}`, "warn");
+          const eventPath = data.scriptPath || data.sourceName || data.scriptName || "";
+          if (eventPath && data.line && eventPath !== currentPath) {
+            run(() => openScript(eventPath));
+          }
+          log(`命中${data.breakpointType === "line" ? "行断点" : "软断点"}：${eventPath}${data.line ? ":" + data.line : ""} ${data.breakpointName || data.pauseId} @ ${data.packageName}`, "warn");
         } else if (data.type === "variablesUpdated") {
           if (data.error) log(`变量修改失败：${data.error}`, "err");
           else log(`变量已更新：${data.pauseId}`, "ok");
+        } else if (data.type === "evalResult") {
+          if (data.ok === false) log(`Eval 失败：${data.error || data.expression || data.pauseId}`, "err");
+          else log(`Eval 返回：${data.expression || "<expression>"}`, "ok");
         } else if (data.type === "continuing") {
           log(`断点正在继续：${data.pauseId}`, "ok");
         } else if (data.type === "continued" || data.type === "resumed") {
@@ -757,6 +859,8 @@ export function App() {
     source.addEventListener("aborting", onDebugEvent);
     source.addEventListener("aborted", onDebugEvent);
     source.addEventListener("expired", onDebugEvent);
+    source.addEventListener("variablesUpdated", onDebugEvent);
+    source.addEventListener("evalResult", onDebugEvent);
     source.addEventListener("log", onDebugEvent);
     source.addEventListener("debug", onDebugEvent);
     source.addEventListener("error", () => {
@@ -766,7 +870,7 @@ export function App() {
       }
     });
     return () => source.close();
-  }, [selectedPackage, log, applyIncomingDebugEvent]);
+  }, [selectedPackage, log, applyIncomingDebugEvent, currentPath, openScript, run]);
 
   const tabTitle = activeTab ? activeTab.path : "未打开脚本";
   const leftToolTitle = pageMode === "apps" ? "软件列表" : "全部脚本";
@@ -885,8 +989,12 @@ export function App() {
             <MonacoCodeEditor
               key={currentPath || "empty-editor"}
               value={content}
+              path={currentPath}
+              breakpoints={currentBreakpoints}
+              pausedLine={currentPausedLine}
               onChange={setTabContent}
               onSave={() => run(saveScript)}
+              onToggleBreakpoint={(line) => run(() => toggleLineBreakpoint(line))}
             />
           </div>
         </section>
@@ -941,6 +1049,8 @@ export function App() {
           onDebugEnabledChange={(enabled) => run(() => setDebugEnabled(enabled))}
           onDebugContinue={(event, returnValue) => run(() => continueDebugEvent(event, returnValue))}
           onDebugAbort={(event) => run(() => abortDebugEvent(event))}
+          onDebugStep={(event, kind) => run(() => stepDebugEvent(event, kind))}
+          onDebugEval={(event, expression) => run(() => evalDebugExpression(event, expression))}
           onDebugApplyLocals={(event, localsJson) => run(() => applyDebugLocals(event, localsJson))}
           onDebugSetVariable={(event, path, valueJson) => run(() => setDebugVariable(event, path, valueJson))}
         />
