@@ -1,66 +1,64 @@
 package top.lovepikachu.XiaoHeiHook.data
 
-import android.util.Log
+import android.content.Context
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 object AppLogRepository {
-    private const val TAG = "XiaoHeiHook-AppLog"
     private const val LOG_DIR_NAME = "xiaoheihook_logs"
     private const val LOG_FILE_NAME = "xiaoheihook.log"
+    private const val MAX_LOG_BYTES = 1024L * 1024L
 
-    fun logPath(packageName: String): String {
-        return "/data/user/0/${packageName}/files/${LOG_DIR_NAME}/${LOG_FILE_NAME}"
+    /**
+     * Logs are relayed from target processes by explicit broadcast and stored in XiaoHeiHook's
+     * own private directory. The runtime no longer writes into target app private directories.
+     */
+    fun moduleLogFile(context: Context, packageName: String): File {
+        return File(File(File(context.filesDir, LOG_DIR_NAME), sanitizePackageName(packageName)), LOG_FILE_NAME)
     }
 
-    fun readLog(packageName: String, maxLines: Int = 800): Result<String> = runCatching {
-        val path = logPath(packageName)
-        val result = runRootCommand("tail -n $maxLines ${shellQuote(path)} 2>/dev/null", timeoutSeconds = 8)
-        Log.d(TAG, "readLog: package=$packageName, path=$path, exit=${result.exitCode}, timeout=${result.timedOut}, stderr=${result.stderr.trim()}")
-        if (result.timedOut) error("读取日志超时：$path")
-        if (result.exitCode != 0) {
-            return@runCatching "暂无日志。\n\n路径：$path\n\n请先启动目标应用并触发脚本；如果仍为空，请确认设备已授予 root 权限。"
+    fun logPath(context: Context, packageName: String): String = moduleLogFile(context, packageName).absolutePath
+
+    fun appendModuleLog(context: Context, packageName: String, line: String) {
+        val file = moduleLogFile(context, packageName)
+        val parent = file.parentFile
+        if (parent != null && !parent.exists()) parent.mkdirs()
+        rotateIfNeeded(file)
+        file.appendText(line)
+    }
+
+    fun readLog(context: Context, packageName: String, maxLines: Int = 800): Result<String> = runCatching {
+        val moduleFile = moduleLogFile(context, packageName)
+        val moduleText = readLocalTail(moduleFile, maxLines)
+        if (moduleText.isNotBlank()) {
+            return@runCatching moduleText
         }
-        result.stdout.ifBlank {
-            "暂无日志。\n\n路径：$path\n\n请先启动目标应用并触发脚本。"
+
+        "暂无日志。\n\n" +
+                "日志路径：${moduleFile.absolutePath}\n\n" +
+                "请先同步脚本并重启目标应用，然后触发 Hook。\n" +
+                "console.log / xposed.log 会通过广播写入 XiaoHeiHook 自己的私有目录。"
+    }
+
+    fun clearLog(context: Context, packageName: String): Result<Unit> = runCatching {
+        val moduleFile = moduleLogFile(context, packageName)
+        moduleFile.parentFile?.mkdirs()
+        moduleFile.writeText("")
+    }
+
+    private fun readLocalTail(file: File, maxLines: Int): String {
+        if (!file.exists()) return ""
+        return file.readLines().takeLast(maxLines).joinToString("\n")
+    }
+
+    private fun rotateIfNeeded(file: File) {
+        if (file.exists() && file.length() > MAX_LOG_BYTES) {
+            val old = File(file.parentFile, "$LOG_FILE_NAME.1")
+            if (old.exists()) old.delete()
+            file.renameTo(old)
         }
     }
 
-    fun clearLog(packageName: String): Result<Unit> = runCatching {
-        val path = logPath(packageName)
-        val result = runRootCommand("mkdir -p ${shellQuote(File(path).parent ?: "")} && : > ${shellQuote(path)}", timeoutSeconds = 8)
-        Log.d(TAG, "clearLog: package=$packageName, path=$path, exit=${result.exitCode}, timeout=${result.timedOut}, stderr=${result.stderr.trim()}")
-        if (result.timedOut) error("清空日志超时：$path")
-        if (result.exitCode != 0) error(result.stderr.ifBlank { "清空日志失败：$path" })
-    }
-
-    private data class RootCommandResult(
-        val exitCode: Int,
-        val stdout: String,
-        val stderr: String,
-        val timedOut: Boolean = false
-    )
-
-    private fun runRootCommand(command: String, timeoutSeconds: Long): RootCommandResult {
-        return try {
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-            val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                return RootCommandResult(-1, "", "timeout", timedOut = true)
-            }
-            RootCommandResult(
-                exitCode = process.exitValue(),
-                stdout = process.inputStream.bufferedReader().use { it.readText() },
-                stderr = process.errorStream.bufferedReader().use { it.readText() }
-            )
-        } catch (t: Throwable) {
-            Log.e(TAG, "runRootCommand failed: $command", t)
-            RootCommandResult(-1, "", t.message ?: t.toString())
-        }
-    }
-
-    private fun shellQuote(value: String): String {
-        return "'" + value.replace("'", "'\\''") + "'"
+    private fun sanitizePackageName(packageName: String): String {
+        return packageName.replace(Regex("[^A-Za-z0-9._-]"), "_")
     }
 }

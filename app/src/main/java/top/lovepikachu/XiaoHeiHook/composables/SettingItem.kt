@@ -1,10 +1,19 @@
 package top.lovepikachu.XiaoHeiHook.composables
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -14,6 +23,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
 
 @Composable
 fun SettingItem(
@@ -25,62 +35,44 @@ fun SettingItem(
     onCheckedChange: (Boolean) -> Unit,
     enabled: Boolean = true
 ) {
-    Surface(
+    AppCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp
+        selected = checked
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 15.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             when {
-                painter != null -> {
-                    // 应用图标：不进行 tint，保留原始颜色
-                    Icon(
-                        painter = painter,
-                        contentDescription = null,
-                        tint = Color.Unspecified,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-                icon != null -> {
-                    // 矢量图标：正常着色
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-                else -> {
-                    // 最终回退图标
-                    Icon(
-                        imageVector = Icons.Default.Star,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium
+                painter != null -> Icon(
+                    painter = painter,
+                    contentDescription = null,
+                    tint = Color.Unspecified,
+                    modifier = Modifier.size(34.dp)
                 )
+                icon != null -> Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(30.dp)
+                )
+                else -> Icon(
+                    imageVector = Icons.Default.Star,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(30.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Text(
-                    text = subtitle,
+                    subtitle,
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 18.sp
                 )
             }
-
             Switch(
                 checked = checked,
                 onCheckedChange = onCheckedChange,

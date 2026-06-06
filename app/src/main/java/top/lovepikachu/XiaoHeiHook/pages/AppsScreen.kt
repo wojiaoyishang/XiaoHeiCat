@@ -9,6 +9,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -27,6 +28,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -63,12 +65,22 @@ import top.lovepikachu.XiaoHeiHook.data.InstalledAppInfo
 import top.lovepikachu.XiaoHeiHook.data.ScopeController
 import top.lovepikachu.XiaoHeiHook.data.ScriptMetadata
 import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
+import top.lovepikachu.XiaoHeiHook.ui.material.AppActionCard
+import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
+import top.lovepikachu.XiaoHeiHook.ui.material.AppDialog
+import top.lovepikachu.XiaoHeiHook.ui.material.AppInfoCard
+import top.lovepikachu.XiaoHeiHook.ui.material.AppIconButton
+import top.lovepikachu.XiaoHeiHook.ui.material.AppPageTitle
+import top.lovepikachu.XiaoHeiHook.ui.material.AppSearchField
+import top.lovepikachu.XiaoHeiHook.ui.material.AppSectionTitle
 
 private const val TAG = "XiaoHeiHook-Apps"
 
 private enum class AppsPane { LIST, DETAIL, LOG }
 
-@OptIn(ExperimentalAnimationApi::class)
+private enum class AppSortMode { NAME_ASC, NAME_DESC, PACKAGE_ASC }
+
+@OptIn(ExperimentalAnimationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun AppsScreen(
     modifier: Modifier = Modifier,
@@ -89,6 +101,11 @@ fun AppsScreen(
     var showAllFilesAccessDialog by remember { mutableStateOf(false) }
     var allFilesSettingsLaunched by remember { mutableStateOf(false) }
     var allowRootFallback by remember { mutableStateOf(!ScriptRepository.needsAllFilesAccess()) }
+    var showListOptionsSheet by remember { mutableStateOf(false) }
+    var sortMode by remember { mutableStateOf(AppSortMode.NAME_ASC) }
+    var enabledAppsFirst by remember { mutableStateOf(true) }
+    var showSystemApps by remember { mutableStateOf(false) }
+    var enabledAppsRevision by remember { mutableStateOf(0) }
     var pendingPermissionRescanApp by remember { mutableStateOf<InstalledAppInfo?>(null) }
     var pendingPermissionScanToast by remember { mutableStateOf(false) }
     val detailAutoScannedPackages = remember { mutableStateListOf<String>() }
@@ -281,10 +298,52 @@ fun AppsScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val filteredApps = remember(apps, query) {
+    val enabledPackages = remember(apps, enabledAppsRevision, XiaoHeiApplication.remotePreferences) {
+        apps.asSequence()
+            .filter { ScopeController.isAppEnabled(XiaoHeiApplication.remotePreferences, it.packageName) }
+            .map { it.packageName }
+            .toSet()
+    }
+
+    val filteredApps = remember(apps, query, showSystemApps, sortMode, enabledAppsFirst, enabledAppsRevision) {
         val q = query.trim().lowercase()
-        if (q.isEmpty()) apps else apps.filter {
-            it.label.lowercase().contains(q) || it.packageName.lowercase().contains(q)
+        val sortComparator = when (sortMode) {
+            AppSortMode.NAME_ASC -> Comparator<InstalledAppInfo> { left, right ->
+                left.label.compareTo(right.label, ignoreCase = true)
+            }
+            AppSortMode.NAME_DESC -> Comparator<InstalledAppInfo> { left, right ->
+                right.label.compareTo(left.label, ignoreCase = true)
+            }
+            AppSortMode.PACKAGE_ASC -> Comparator<InstalledAppInfo> { left, right ->
+                left.packageName.compareTo(right.packageName, ignoreCase = true)
+            }
+        }
+        val comparator = if (enabledAppsFirst) {
+            Comparator<InstalledAppInfo> { left, right ->
+                val leftEnabled = enabledPackages.contains(left.packageName)
+                val rightEnabled = enabledPackages.contains(right.packageName)
+                when {
+                    leftEnabled != rightEnabled -> if (leftEnabled) -1 else 1
+                    else -> sortComparator.compare(left, right)
+                }
+            }
+        } else {
+            sortComparator
+        }
+
+        apps.asSequence()
+            .filter { showSystemApps || !it.isSystemApp }
+            .filter { app ->
+                q.isEmpty() || app.label.lowercase().contains(q) || app.packageName.lowercase().contains(q)
+            }
+            .toList()
+            .sortedWith(comparator)
+    }
+
+    val appListState = rememberLazyListState()
+    val showBackToTop by remember {
+        derivedStateOf {
+            appListState.firstVisibleItemIndex > 3 || appListState.firstVisibleItemScrollOffset > 700
         }
     }
 
@@ -307,6 +366,39 @@ fun AppsScreen(
                 }
             },
             onDismiss = { showAllFilesAccessDialog = false }
+        )
+    }
+
+    if (showListOptionsSheet) {
+        AppListOptionsSheet(
+            sortMode = sortMode,
+            enabledAppsFirst = enabledAppsFirst,
+            showSystemApps = showSystemApps,
+            moduleActive = moduleState.isActivated,
+            onSortModeChange = { sortMode = it },
+            onEnabledAppsFirstChange = { enabledAppsFirst = it },
+            onShowSystemAppsChange = { showSystemApps = it },
+            onRefreshApps = { reload(forceRefreshApps = true) },
+            onSyncEnabledScripts = {
+                if (!requestAllFilesAccessBeforeScan(showToastAfterPermission = false)) {
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            ScriptRepository.syncEnabledAppsScriptsToRemote(
+                                XiaoHeiApplication.xposedService,
+                                XiaoHeiApplication.remotePreferences,
+                                allowRootFallback = allowRootFallback
+                            )
+                        }
+                        result.onSuccess { synced ->
+                            scripts = synced
+                            Toast.makeText(context, "已同步 ${synced.size} 个脚本", Toast.LENGTH_SHORT).show()
+                        }.onFailure {
+                            Toast.makeText(context, it.message ?: "同步失败", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            },
+            onDismiss = { showListOptionsSheet = false }
         )
     }
 
@@ -378,77 +470,285 @@ fun AppsScreen(
 
                 AppsPane.LIST -> {
                     Column(
-                        modifier = modifier.fillMaxSize()
+                        modifier = modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp, vertical = 14.dp)
                     ) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            CompactSearchField(
-                                value = query,
-                                onValueChange = { query = it },
-                                modifier = Modifier.weight(1f)
-                            )
-
-                            FilledTonalIconButton(
-                                onClick = { reload(forceRefreshApps = true) },
-                                modifier = Modifier.size(46.dp)
-                            ) {
-                                Icon(Icons.Filled.Refresh, contentDescription = "刷新", modifier = Modifier.size(20.dp))
+                        AppPageTitle(
+                            title = "适配应用",
+                            trailing = {
+                                AppIconButton(
+                                    icon = Icons.Filled.Menu,
+                                    contentDescription = "应用操作",
+                                    onClick = { showListOptionsSheet = true },
+                                    modifier = Modifier.size(40.dp)
+                                )
                             }
+                        )
 
-                            FilledTonalIconButton(
-                                enabled = moduleState.isActivated,
-                                onClick = {
-                                    if (!requestAllFilesAccessBeforeScan(showToastAfterPermission = false)) {
-                                        scope.launch {
-                                            val result = withContext(Dispatchers.IO) {
-                                                ScriptRepository.syncEnabledAppsScriptsToRemote(
-                                                    XiaoHeiApplication.xposedService,
-                                                    XiaoHeiApplication.remotePreferences,
-                                                    allowRootFallback = allowRootFallback
-                                                )
-                                            }
-                                            result.onSuccess { synced ->
-                                                scripts = synced
-                                                Toast.makeText(context, "已同步 ${synced.size} 个脚本", Toast.LENGTH_SHORT).show()
-                                            }.onFailure {
-                                                Toast.makeText(context, it.message ?: "同步失败", Toast.LENGTH_LONG).show()
-                                            }
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.size(46.dp)
-                            ) {
-                                Icon(Icons.Filled.Sync, contentDescription = "同步脚本", modifier = Modifier.size(20.dp))
-                            }
-                        }
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        AppSearchField(
+                            value = query,
+                            onValueChange = { query = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = "搜索应用"
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
 
                         if (loading) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 CircularProgressIndicator()
                             }
                         } else {
-                            LazyColumn(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(12.dp),
-                                contentPadding = PaddingValues(bottom = 96.dp)
-                            ) {
-                                itemsIndexed(filteredApps, key = { index, app -> "${app.packageName}#$index" }) { _, app ->
-                                    AppRow(
-                                        app = app,
-                                        moduleActive = moduleState.isActivated,
-                                        onOpen = { selectedApp = app }
-                                    )
+                            Box(modifier = Modifier.weight(1f)) {
+                                LazyColumn(
+                                    state = appListState,
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                                    contentPadding = PaddingValues(bottom = 10.dp)
+                                ) {
+                                    itemsIndexed(filteredApps, key = { index, app -> "${app.packageName}#$index" }) { _, app ->
+                                        AppRow(
+                                            app = app,
+                                            moduleActive = moduleState.isActivated,
+                                            onOpen = { selectedApp = app },
+                                            onEnabledChanged = { enabledAppsRevision++ }
+                                        )
+                                    }
+                                }
+
+                                if (showBackToTop) {
+                                    FloatingActionButton(
+                                        onClick = { scope.launch { appListState.animateScrollToItem(0) } },
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.92f),
+                                        contentColor = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(end = 8.dp, bottom = 12.dp)
+                                            .size(48.dp)
+                                    ) {
+                                        Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "回到顶部")
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppListOptionsSheet(
+    sortMode: AppSortMode,
+    enabledAppsFirst: Boolean,
+    showSystemApps: Boolean,
+    moduleActive: Boolean,
+    onSortModeChange: (AppSortMode) -> Unit,
+    onEnabledAppsFirstChange: (Boolean) -> Unit,
+    onShowSystemAppsChange: (Boolean) -> Unit,
+    onRefreshApps: () -> Unit,
+    onSyncEnabledScripts: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = {
+            Surface(
+                modifier = Modifier
+                    .padding(top = 8.dp, bottom = 10.dp)
+                    .size(width = 42.dp, height = 5.dp),
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                content = {}
+            )
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "排序",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OptionChipButton(
+                    text = "按名称 A-Z",
+                    selected = sortMode == AppSortMode.NAME_ASC,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSortModeChange(AppSortMode.NAME_ASC) }
+                )
+                OptionChipButton(
+                    text = "按名称 Z-A",
+                    selected = sortMode == AppSortMode.NAME_DESC,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSortModeChange(AppSortMode.NAME_DESC) }
+                )
+                OptionChipButton(
+                    text = "按包名 A-Z",
+                    selected = sortMode == AppSortMode.PACKAGE_ASC,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSortModeChange(AppSortMode.PACKAGE_ASC) }
+                )
+            }
+            AppCard(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.52f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("已启用应用优先", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = if (enabledAppsFirst) "已启用的应用会显示在列表顶部" else "按当前排序规则直接排列",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = enabledAppsFirst, onCheckedChange = onEnabledAppsFirstChange)
+                }
+            }
+
+            Text(
+                text = "过滤器",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            AppCard(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.52f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("显示系统应用", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = if (showSystemApps) "列表包含系统应用" else "仅显示用户安装应用",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = showSystemApps, onCheckedChange = onShowSystemAppsChange)
+                }
+            }
+
+            Text(
+                text = "脚本同步",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OptionActionButton(
+                    text = "刷新应用",
+                    icon = Icons.Filled.Refresh,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        onDismiss()
+                        onRefreshApps()
+                    }
+                )
+                OptionActionButton(
+                    text = "同步脚本",
+                    icon = Icons.Filled.Sync,
+                    enabled = moduleActive,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        onDismiss()
+                        onSyncEnabledScripts()
+                    }
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun OptionChipButton(
+    text: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier
+            .height(46.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f) else Color.Transparent,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            Text(
+                text = text,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun OptionActionButton(
+    text: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier
+            .height(48.dp)
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (enabled) 0.55f else 0.24f)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = text,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+            )
         }
     }
 }
@@ -492,14 +792,18 @@ private fun ScriptEnableScreen(
         modifier = modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
-            }
+            AppIconButton(
+                icon = Icons.Filled.ArrowBack,
+                contentDescription = "返回",
+                onClick = onBack,
+                modifier = Modifier.size(42.dp)
+            )
             Spacer(modifier = Modifier.width(4.dp))
             AppIcon(
                 app = app,
@@ -528,7 +832,7 @@ private fun ScriptEnableScreen(
             }
         }
 
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(12.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -597,7 +901,7 @@ private fun ScriptEnableScreen(
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
 
         SettingSwitchCard(
             title = "应用总开关",
@@ -619,10 +923,8 @@ private fun ScriptEnableScreen(
             }
         )
 
-        Text(
+        AppSectionTitle(
             text = "脚本开关",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
         )
 
@@ -658,44 +960,14 @@ private fun DetailActionCard(
     enabled: Boolean = true,
     onClick: () -> Unit
 ) {
-    Surface(
-        modifier = modifier
-            .height(72.dp)
-            .clickable(enabled = enabled, onClick = onClick),
-        shape = RoundedCornerShape(18.dp),
-        color = if (enabled) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        tonalElevation = if (enabled) 1.dp else 0.dp,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (enabled) MaterialTheme.colorScheme.outlineVariant else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 8.dp, vertical = 10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.size(24.dp)
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = title,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
+    AppActionCard(
+        title = title,
+        icon = icon,
+        modifier = modifier,
+        enabled = enabled,
+        onClick = onClick
+    )
 }
-
 
 
 @Composable
@@ -712,7 +984,7 @@ private fun AppLogScreen(
     fun reloadLog() {
         scope.launch {
             loading = true
-            val result = withContext(Dispatchers.IO) { AppLogRepository.readLog(app.packageName) }
+            val result = withContext(Dispatchers.IO) { AppLogRepository.readLog(context, app.packageName) }
             logText = result.getOrElse { error ->
                 Log.e(TAG, "AppLogScreen: read failed package=${app.packageName}", error)
                 error.message ?: error.toString()
@@ -723,7 +995,7 @@ private fun AppLogScreen(
 
     fun clearLog() {
         scope.launch {
-            val result = withContext(Dispatchers.IO) { AppLogRepository.clearLog(app.packageName) }
+            val result = withContext(Dispatchers.IO) { AppLogRepository.clearLog(context, app.packageName) }
             result.onSuccess {
                 Toast.makeText(context, "已清空日志", Toast.LENGTH_SHORT).show()
                 reloadLog()
@@ -741,9 +1013,15 @@ private fun AppLogScreen(
         modifier = modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "返回") }
+            AppIconButton(
+                icon = Icons.Filled.ArrowBack,
+                contentDescription = "返回",
+                onClick = onBack,
+                modifier = Modifier.size(42.dp)
+            )
             Icon(Icons.Filled.Terminal, contentDescription = null, modifier = Modifier.size(28.dp))
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -762,12 +1040,18 @@ private fun AppLogScreen(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { reloadLog() }, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "刷新日志")
-                }
-                IconButton(onClick = { clearLog() }, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Filled.Delete, contentDescription = "清空日志")
-                }
+                AppIconButton(
+                    icon = Icons.Filled.Refresh,
+                    contentDescription = "刷新日志",
+                    onClick = { reloadLog() },
+                    modifier = Modifier.size(42.dp)
+                )
+                AppIconButton(
+                    icon = Icons.Filled.Delete,
+                    contentDescription = "清空日志",
+                    onClick = { clearLog() },
+                    modifier = Modifier.size(42.dp)
+                )
             }
         }
 
@@ -775,16 +1059,13 @@ private fun AppLogScreen(
 
         AssistCard(
             title = "日志文件",
-            text = "${AppLogRepository.logPath(app.packageName)}\nJS 的 console.log / xposed.log 会写入这里。管理端通过 root 读取该文件。"
+            text = "${AppLogRepository.logPath(context, app.packageName)}\nJS 的 console.log / xposed.log 会通过广播写入这里。"
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 1.dp
+        AppCard(
+            modifier = Modifier.fillMaxSize()
         ) {
             if (loading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -813,41 +1094,66 @@ private fun AppLogScreen(
 }
 
 @Composable
-private fun AppRow(app: InstalledAppInfo, moduleActive: Boolean, onOpen: () -> Unit) {
+private fun AppRow(
+    app: InstalledAppInfo,
+    moduleActive: Boolean,
+    onOpen: () -> Unit,
+    onEnabledChanged: () -> Unit
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var enabled by remember(app.packageName, XiaoHeiApplication.remotePreferences) {
         mutableStateOf(ScopeController.isAppEnabled(XiaoHeiApplication.remotePreferences, app.packageName))
     }
 
-    Surface(
+    AppCard(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onOpen),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp
+            .height(92.dp),
+        onClick = onOpen,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AppIcon(app = app, size = 42)
+            AppIcon(app = app, size = 50)
             Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
                 Text(
                     text = app.label,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Normal,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.fillMaxWidth()
                 )
-                CopyablePackageNameText(
-                    packageName = app.packageName,
-                    fontSize = 12.sp,
+                Text(
+                    text = app.packageName,
+                    fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    scrollable = false,
-                    modifier = Modifier.fillMaxWidth()
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pointerInput(app.packageName) {
+                            detectTapGestures(
+                                onTap = { onOpen() },
+                                onLongPress = {
+                                    clipboard.setText(AnnotatedString(app.packageName))
+                                    Toast.makeText(context, "已复制包名：${app.packageName}", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        }
+                )
+                Text(
+                    text = if (enabled) "已启用" else if (app.isSystemApp) "系统应用" else "用户应用",
+                    fontSize = 12.sp,
+                    color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp)
                 )
             }
             Switch(
@@ -860,8 +1166,12 @@ private fun AppRow(app: InstalledAppInfo, moduleActive: Boolean, onOpen: () -> U
                         enabled = checked,
                         onApproved = {
                             enabled = ScopeController.isAppEnabled(XiaoHeiApplication.remotePreferences, app.packageName)
+                            onEnabledChanged()
                         },
-                        onFailed = { enabled = false }
+                        onFailed = {
+                            enabled = false
+                            onEnabledChanged()
+                        }
                     )
                 }
             )
@@ -875,14 +1185,11 @@ private fun ScriptRow(script: ScriptMetadata, packageName: String, enabled: Bool
         mutableStateOf(ScopeController.isScriptEnabled(packageName, script.id))
     }
 
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp
+    AppCard(
+        modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
@@ -936,40 +1243,29 @@ private fun SettingSwitchCard(
     enabled: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    Surface(
+    AppCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = if (checked) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp
+        selected = checked
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                Text(subtitle, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(subtitle, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
             }
             Switch(checked = checked, enabled = enabled, onCheckedChange = onCheckedChange)
         }
     }
 }
 
+
 @Composable
 private fun AssistCard(title: String, text: String) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.06f),
-        tonalElevation = 1.dp
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(4.dp))
-            Text(text, fontSize = 13.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
+    AppInfoCard(title = title, text = text)
 }
+
 
 @Composable
 private fun AllFilesAccessDialog(
@@ -978,72 +1274,15 @@ private fun AllFilesAccessDialog(
     onUseRootFallback: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("需要管理所有文件权限") },
-        text = {
-            Text(
-                text = "为了扫描 $path 下的 JS 脚本，需要先在系统设置中打开“允许管理所有文件”。返回本应用后会自动重新扫描；如果暂不授权，将尝试使用 root 兜底读取。",
-                fontSize = 14.sp,
-                lineHeight = 20.sp
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onOpenSettings) { Text("去授权") }
-        },
-        dismissButton = {
-            TextButton(onClick = onUseRootFallback) { Text("暂不授权") }
-        }
+    AppDialog(
+        title = "需要管理所有文件权限",
+        text = "为了扫描 $path 下的 JS 脚本，需要先在系统设置中打开“允许管理所有文件”。返回本应用后会自动重新扫描；如果暂不授权，将尝试使用 root 兜底读取。",
+        confirmText = "去授权",
+        dismissText = "暂不授权",
+        onConfirm = onOpenSettings,
+        onDismissAction = onUseRootFallback,
+        onDismiss = onDismiss
     )
-}
-
-
-@Composable
-private fun CompactSearchField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier.height(46.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Search,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                if (value.isBlank()) {
-                    Text(
-                        text = "搜索应用",
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = true,
-                    textStyle = LocalTextStyle.current.copy(
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
-    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1130,8 +1369,8 @@ private fun AppIcon(app: InstalledAppInfo, size: Int, modifier: Modifier = Modif
     } else {
         Surface(
             modifier = modifier.size(size.dp),
-            shape = RoundedCornerShape(10.dp),
-            color = Color.LightGray.copy(alpha = 0.3f)
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
         ) {}
     }
 }

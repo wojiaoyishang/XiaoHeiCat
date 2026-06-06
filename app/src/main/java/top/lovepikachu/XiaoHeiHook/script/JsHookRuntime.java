@@ -16,8 +16,6 @@ import org.mozilla.javascript.Undefined;
 import org.mozilla.javascript.Wrapper;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -66,6 +64,9 @@ public final class JsHookRuntime {
     private final Object currentRawParam;
     private final boolean rawEnabled;
     private final Object jsLock = new Object();
+
+    @Nullable
+    private android.content.Context logContext;
 
     private Scriptable scope;
 
@@ -158,57 +159,86 @@ public final class JsHookRuntime {
     }
 
     private void appendAppLog(int priority, @NonNull String tag, @NonNull String msg, @Nullable Throwable tr) {
-        File file = resolveAppLogFile();
-        if (file == null) return;
+        String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
+        String line = time + " " + priorityName(priority) + "/" + tag + " [" + processName + "] " + msg + "\n";
+        if (tr != null) {
+            StringWriter sw = new StringWriter();
+            tr.printStackTrace(new PrintWriter(sw));
+            line += sw.toString() + "\n";
+        }
+
+        // Robust path only: relay logs back to XiaoHeiHook app by explicit broadcast.
+        // The receiver stores logs in XiaoHeiHook's own private directory, which is what the
+        // built-in terminal reads. We intentionally do not write into the target app's private dir.
+        sendLogBroadcast(priority, tag, msg, tr, line);
+    }
+
+    private void sendLogBroadcast(int priority, @NonNull String tag, @NonNull String msg, @Nullable Throwable tr, @NonNull String line) {
         try {
-            File parent = file.getParentFile();
-            if (parent != null && !parent.exists()) parent.mkdirs();
-            rotateLogIfNeeded(file);
-            String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
-            String line = time + " " + priorityName(priority) + "/" + tag + " [" + processName + "] " + msg + "\n";
+            android.content.Context context = resolveBroadcastContext();
+            if (context == null) return;
+            android.content.Intent intent = new android.content.Intent("top.lovepikachu.XiaoHeiHook.LOG_EVENT");
+            intent.setComponent(new android.content.ComponentName(
+                    "top.lovepikachu.XiaoHeiHook",
+                    "top.lovepikachu.XiaoHeiHook.data.LogReceiver"
+            ));
+            intent.putExtra("packageName", packageName);
+            intent.putExtra("processName", processName);
+            intent.putExtra("priority", priority);
+            intent.putExtra("tag", tag);
+            intent.putExtra("message", msg);
+            intent.putExtra("line", line);
             if (tr != null) {
                 StringWriter sw = new StringWriter();
                 tr.printStackTrace(new PrintWriter(sw));
-                line += sw.toString() + "\n";
+                intent.putExtra("throwable", sw.toString());
             }
-            try (FileOutputStream out = new FileOutputStream(file, true)) {
-                out.write(line.getBytes(StandardCharsets.UTF_8));
+            context.sendBroadcast(intent);
+        } catch (Throwable broadcastError) {
+            try {
+                module.log(Log.WARN, TAG, "发送日志广播失败: " + broadcastError);
+            } catch (Throwable ignored) {
             }
-        } catch (Throwable ignored) {
-            // Do not let file logging crash the target process.
         }
     }
 
     @Nullable
-    private File resolveAppLogFile() {
+    private android.content.Context resolveBroadcastContext() {
+        if (logContext != null) return logContext;
         try {
             Class<?> activityThread = Class.forName("android.app.ActivityThread");
             Method currentApplication = activityThread.getDeclaredMethod("currentApplication");
             currentApplication.setAccessible(true);
             Object application = currentApplication.invoke(null);
             if (application instanceof android.content.Context) {
-                File filesDir = ((android.content.Context) application).getFilesDir();
-                if (filesDir != null) {
-                    return new File(new File(filesDir, "xiaoheihook_logs"), "xiaoheihook.log");
+                logContext = (android.content.Context) application;
+                return logContext;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Method currentActivityThread = activityThread.getDeclaredMethod("currentActivityThread");
+            currentActivityThread.setAccessible(true);
+            Object thread = currentActivityThread.invoke(null);
+            if (thread != null) {
+                Method getSystemContext = activityThread.getDeclaredMethod("getSystemContext");
+                getSystemContext.setAccessible(true);
+                Object context = getSystemContext.invoke(thread);
+                if (context instanceof android.content.Context) {
+                    logContext = (android.content.Context) context;
+                    return logContext;
                 }
             }
         } catch (Throwable ignored) {
         }
-        try {
-            return new File("/data/user/0/" + packageName + "/files/xiaoheihook_logs/xiaoheihook.log");
-        } catch (Throwable ignored) {
-            return null;
-        }
+        return null;
     }
 
-    private void rotateLogIfNeeded(@NonNull File file) {
-        try {
-            if (file.exists() && file.length() > 1024L * 1024L) {
-                File old = new File(file.getParentFile(), "xiaoheihook.log.1");
-                if (old.exists()) old.delete();
-                file.renameTo(old);
-            }
-        } catch (Throwable ignored) {
+    private void rememberLogContext(@Nullable Object value) {
+        Object unwrapped = unwrap(value);
+        if (unwrapped instanceof android.content.Context) {
+            logContext = (android.content.Context) unwrapped;
         }
     }
 
@@ -261,25 +291,36 @@ public final class JsHookRuntime {
         }
     }
 
+    private String joinLogParts(Object... messages) {
+        if (messages == null || messages.length == 0) return "";
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < messages.length; i++) {
+            if (i > 0) builder.append(' ');
+            builder.append(String.valueOf(unwrap(messages[i])));
+        }
+        return builder.toString();
+    }
+
     public final class Console {
-        public void log(Object message) {
-            JsHookRuntime.this.log(Log.DEBUG, String.valueOf(message));
+        public void log(Object... messages) {
+            JsHookRuntime.this.log(Log.DEBUG, joinLogParts(messages));
         }
 
-        public void info(Object message) {
-            JsHookRuntime.this.log(Log.INFO, String.valueOf(message));
+        public void info(Object... messages) {
+            JsHookRuntime.this.log(Log.INFO, joinLogParts(messages));
         }
 
-        public void warn(Object message) {
-            JsHookRuntime.this.log(Log.WARN, String.valueOf(message));
+        public void warn(Object... messages) {
+            JsHookRuntime.this.log(Log.WARN, joinLogParts(messages));
         }
 
-        public void error(Object message) {
-            JsHookRuntime.this.log(Log.ERROR, String.valueOf(message));
-        }
-
-        public void error(Object message, Object throwable) {
-            JsHookRuntime.this.log(Log.ERROR, String.valueOf(message), toThrowable(throwable));
+        public void error(Object... messages) {
+            Throwable throwable = null;
+            if (messages != null && messages.length > 0) {
+                Object last = unwrap(messages[messages.length - 1]);
+                if (last instanceof Throwable) throwable = (Throwable) last;
+            }
+            JsHookRuntime.this.log(Log.ERROR, joinLogParts(messages), throwable);
         }
     }
 
@@ -576,12 +617,25 @@ public final class JsHookRuntime {
         JsChain(XposedInterface.Chain chain) {
             this.chain = chain;
             this.raw = rawEnabled ? chain : null;
+            rememberLogContext(chain.getThisObject());
+            try {
+                for (Object arg : chain.getArgs()) rememberLogContext(arg);
+            } catch (Throwable ignored) {
+            }
         }
 
         public Executable getExecutable() { return chain.getExecutable(); }
-        public Object getThisObject() { return chain.getThisObject(); }
+        public Object getThisObject() {
+            Object value = chain.getThisObject();
+            rememberLogContext(value);
+            return value;
+        }
         public List<?> getArgs() { return chain.getArgs(); }
-        public Object getArg(int index) { return chain.getArg(index); }
+        public Object getArg(int index) {
+            Object value = chain.getArg(index);
+            rememberLogContext(value);
+            return value;
+        }
         public Object[] getArgsMutable() { return chain.getArgs().toArray(new Object[0]); }
         public Object proceed() throws Throwable { return chain.proceed(); }
         public Object proceed(Object argsObj) throws Throwable { return chain.proceed(toObjectArray(argsObj)); }

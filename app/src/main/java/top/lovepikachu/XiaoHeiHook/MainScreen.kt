@@ -10,7 +10,7 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -82,8 +82,8 @@ fun MainScreen() {
                 exit = slideOutVertically(targetOffsetY = { it })
             ) {
                 NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 4.dp
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f),
+                    tonalElevation = 0.dp
                 ) {
                     screens.forEach { screen ->
                         NavigationBarItem(
@@ -119,7 +119,7 @@ fun MainScreen() {
                                 selectedTextColor = MaterialTheme.colorScheme.primary,
                                 unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                 unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
                             )
                         )
                     }
@@ -137,32 +137,18 @@ fun MainScreen() {
         ) { page ->
             when (screens[page]) {
                 BottomNavScreen.Home -> {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
-                    ) {
-                        item { HomeScreen() }
-                    }
+                    HomeScreen(modifier = Modifier.fillMaxSize())
                 }
 
                 BottomNavScreen.Apps -> {
                     AppsScreen(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        modifier = Modifier.fillMaxSize(),
                         onDetailVisibleChange = { isAppsDetailVisible.value = it }
                     )
                 }
 
                 BottomNavScreen.About -> {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
-                    ) {
-                        item { AboutScreen() }
-                    }
+                    AboutScreen(modifier = Modifier.fillMaxSize())
                 }
             }
         }

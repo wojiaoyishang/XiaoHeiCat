@@ -22,6 +22,15 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.XiaoHeiHook">
 
+
+        <receiver
+            android:name=".data.LogReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="top.lovepikachu.XiaoHeiHook.LOG_EVENT" />
+            </intent-filter>
+        </receiver>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
