@@ -56,6 +56,9 @@ dependencies {
     // URL script download
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // WebIDE embedded HTTP server
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+
     // Modern Xposed API
     compileOnly("io.github.libxposed:api:101.0.1")
     implementation("io.github.libxposed:service:101.0.0")

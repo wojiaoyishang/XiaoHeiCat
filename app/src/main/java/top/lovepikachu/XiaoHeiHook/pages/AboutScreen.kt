@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import top.lovepikachu.XiaoHeiHook.R
 import top.lovepikachu.XiaoHeiHook.composables.AnimatedPressIcon
 import top.lovepikachu.XiaoHeiHook.composables.FullWidthTextButton
+import top.lovepikachu.XiaoHeiHook.composables.WebIdeSettingsCard
 import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
 import top.lovepikachu.XiaoHeiHook.ui.material.AppPageTitle
 
@@ -40,6 +41,8 @@ fun AboutScreen(modifier: Modifier = Modifier) {
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
     ) {
         item { AppPageTitle(title = "设置") }
+
+        item { WebIdeSettingsCard() }
 
         item {
             AppCard(modifier = Modifier.fillMaxWidth()) {

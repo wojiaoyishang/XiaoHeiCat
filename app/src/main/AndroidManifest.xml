@@ -9,6 +9,14 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name=".XiaoHeiApplication"
@@ -22,6 +30,22 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.XiaoHeiHook">
 
+        <provider
+            android:name=".webide.WebIdeBridgeProvider"
+            android:authorities="top.lovepikachu.XiaoHeiHook.webide.bridge"
+            android:exported="false" />
+
+        <service
+            android:name=".webide.WebIdeForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync|specialUse"
+            android:process=":webide"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Embedded local WebIDE HTTP/dataSync server for user-authorized script editing and debugging. Runs in a dedicated foreground service process while the user explicitly enables WebIDE." />
+        </service>
 
         <receiver
             android:name=".data.LogReceiver"
