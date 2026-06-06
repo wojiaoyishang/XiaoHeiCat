@@ -55,6 +55,14 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".debug.DebugEventReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="top.lovepikachu.XiaoHeiHook.DEBUG_EVENT" />
+            </intent-filter>
+        </receiver>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

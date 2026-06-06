@@ -6,6 +6,7 @@ import android.os.Bundle
 import org.json.JSONObject
 import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 import top.lovepikachu.XiaoHeiHook.data.ScriptPrefs
+import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol
 
 /** Client used by WebIDE(:webide) to execute Remote Preferences / LSPosed operations in the main process. */
 class WebIdeBridgeClient(private val context: Context) {
@@ -72,6 +73,43 @@ class WebIdeBridgeClient(private val context: Context) {
             .put("packageName", b.getString("packageName") ?: packageName)
             .put("scriptId", b.getString("scriptId") ?: scriptId)
             .put("enabled", b.getBoolean("enabled", enabled))
+    }
+
+
+    fun setDebugEnabled(packageName: String, enabled: Boolean): JSONObject {
+        val b = callChecked(
+            WebIdeBridgeProvider.METHOD_SET_DEBUG_ENABLED,
+            Bundle().apply {
+                putString(WebIdeBridgeProvider.ARG_PACKAGE, packageName)
+                putBoolean(WebIdeBridgeProvider.ARG_ENABLED, enabled)
+            }
+        )
+        return JSONObject()
+            .put("ok", true)
+            .put("packageName", b.getString("packageName") ?: packageName)
+            .put("enabled", b.getBoolean("enabled", enabled))
+    }
+
+    fun debugEnabled(packageName: String): Boolean = getBoolean(DebugProtocol.debugEnabledKey(packageName), false)
+
+    fun sendDebugCommand(packageName: String, processName: String, pauseId: String, command: String, expression: String = "", payload: JSONObject = JSONObject()): JSONObject {
+        val b = callChecked(
+            WebIdeBridgeProvider.METHOD_SEND_DEBUG_COMMAND,
+            Bundle().apply {
+                putString(WebIdeBridgeProvider.ARG_PACKAGE, packageName)
+                putString(WebIdeBridgeProvider.ARG_PROCESS, processName)
+                putString(WebIdeBridgeProvider.ARG_PAUSE_ID, pauseId)
+                putString(WebIdeBridgeProvider.ARG_COMMAND, command)
+                putString(WebIdeBridgeProvider.ARG_EXPRESSION, expression)
+                putString(WebIdeBridgeProvider.ARG_PAYLOAD_JSON, payload.toString())
+            }
+        )
+        return JSONObject()
+            .put("ok", true)
+            .put("packageName", b.getString("packageName") ?: packageName)
+            .put("processName", b.getString("processName") ?: processName)
+            .put("pauseId", b.getString("pauseId") ?: pauseId)
+            .put("command", b.getString("command") ?: command)
     }
 
     fun syncScripts(packageName: String?): JSONObject {

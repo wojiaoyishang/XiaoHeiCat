@@ -1,6 +1,10 @@
 package top.lovepikachu.XiaoHeiHook.script;
 
 import android.content.SharedPreferences;
+import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
@@ -14,6 +18,9 @@ import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.Undefined;
 import org.mozilla.javascript.Wrapper;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -32,9 +39,13 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.libxposed.api.XposedInterface;
 import top.lovepikachu.XiaoHeiHook.HookEntry;
+import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol;
 
 /**
  * Rhino based JavaScript runtime for XiaoHeiHook.
@@ -50,6 +61,11 @@ import top.lovepikachu.XiaoHeiHook.HookEntry;
  */
 public final class JsHookRuntime {
     private static final String TAG = "XiaoHeiHook-JS";
+
+    private static final Object DEBUG_COMMAND_LOCK = new Object();
+    private static final Map<String, DebugCommand> DEBUG_COMMANDS = new ConcurrentHashMap<>();
+    private static volatile boolean debugCommandReceiverRegistered = false;
+
 
     public static final String EVENT_MODULE_LOADED = "module-loaded";
     public static final String EVENT_PACKAGE_LOADED = "package-loaded";
@@ -112,6 +128,7 @@ public final class JsHookRuntime {
                 ScriptableObject.putProperty(scope, "console", Context.javaToJS(new Console(), scope));
                 ScriptableObject.putProperty(scope, "Java", Context.javaToJS(new JavaBridge(), scope));
                 ScriptableObject.putProperty(scope, "xposed", Context.javaToJS(new XposedFacade(), scope));
+                ScriptableObject.putProperty(scope, "debuggerx", Context.javaToJS(new DebuggerFacade(scriptName), scope));
 
                 cx.evaluateString(scope, source, scriptName, 1, null);
                 log(Log.INFO, "脚本已加载: " + scriptName + " -> " + packageName + " / " + processName + " @" + currentEvent);
@@ -197,6 +214,32 @@ public final class JsHookRuntime {
         } catch (Throwable broadcastError) {
             try {
                 module.log(Log.WARN, TAG, "发送日志广播失败: " + broadcastError);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private void sendDebugEvent(@NonNull JSONObject event) {
+        try {
+            android.content.Context context = resolveBroadcastContext();
+            if (context == null) {
+                log(Log.WARN, "调试事件发送失败：无法获取 Context");
+                return;
+            }
+            Intent intent = new Intent(DebugProtocol.ACTION_EVENT);
+            intent.setComponent(new android.content.ComponentName(
+                    "top.lovepikachu.XiaoHeiHook",
+                    "top.lovepikachu.XiaoHeiHook.debug.DebugEventReceiver"
+            ));
+            intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+            intent.putExtra(DebugProtocol.EXTRA_EVENT_JSON, event.toString());
+            intent.putExtra(DebugProtocol.EXTRA_PACKAGE_NAME, packageName);
+            intent.putExtra(DebugProtocol.EXTRA_PROCESS_NAME, processName);
+            intent.putExtra(DebugProtocol.EXTRA_PAUSE_ID, event.optString("pauseId"));
+            context.sendBroadcast(intent);
+        } catch (Throwable broadcastError) {
+            try {
+                module.log(Log.WARN, TAG, "发送调试事件失败: " + broadcastError);
             } catch (Throwable ignored) {
             }
         }
@@ -321,6 +364,41 @@ public final class JsHookRuntime {
                 if (last instanceof Throwable) throwable = (Throwable) last;
             }
             JsHookRuntime.this.log(Log.ERROR, joinLogParts(messages), throwable);
+        }
+    }
+
+    public final class DebuggerFacade {
+        private final String scriptName;
+
+        DebuggerFacade(String scriptName) {
+            this.scriptName = scriptName;
+        }
+
+        public boolean isEnabled() {
+            return isSoftDebuggerEnabled();
+        }
+
+        public Object pause(String name) {
+            return breakpoint(name, null);
+        }
+
+        public Object breakpoint(String name) {
+            return breakpoint(name, null);
+        }
+
+        public Object breakpoint(String name, Object locals) {
+            return hitSoftBreakpoint(scriptName, name, locals);
+        }
+
+        public void log(String name, Object value) {
+            if (!isSoftDebuggerEnabled()) return;
+            JSONObject event = buildDebugBaseEvent("log", scriptName);
+            try {
+                event.put("name", String.valueOf(name));
+                event.put("value", toDebugJsonValue(value, 0));
+            } catch (Throwable ignored) {
+            }
+            sendDebugEvent(event);
         }
     }
 
@@ -730,6 +808,469 @@ public final class JsHookRuntime {
             return value == null ? processName : String.valueOf(value);
         }
         public boolean isSystemServer() { return Boolean.TRUE.equals(invokeNoArg(currentRawParam, "isSystemServer")); }
+    }
+
+
+    private boolean isSoftDebuggerEnabled() {
+        try {
+            SharedPreferences prefs = module.getRemotePreferences(DebugProtocol.PREF_GROUP);
+            if (prefs == null) return false;
+            return prefs.getBoolean(DebugProtocol.debugEnabledKey(packageName), false);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private Object hitSoftBreakpoint(@NonNull String scriptName, @Nullable String name, @Nullable Object locals) {
+        if (!isSoftDebuggerEnabled()) {
+            return null;
+        }
+        android.content.Context context = resolveBroadcastContext();
+        if (context == null) {
+            log(Log.WARN, "debuggerx.breakpoint 已忽略：无法获取 Context，建议在 Application.attach 之后使用断点");
+            return null;
+        }
+        ensureDebugCommandReceiver(context);
+
+        String pauseId = UUID.randomUUID().toString();
+        JSONObject event = buildDebugBaseEvent("paused", scriptName);
+        try {
+            event.put("pauseId", pauseId);
+            event.put("breakpointName", name == null || name.isBlank() ? "soft-breakpoint" : name);
+            event.put("threadName", Thread.currentThread().getName());
+            event.put("status", "paused");
+            event.put("updatedAt", System.currentTimeMillis());
+            event.put("locals", toDebugJsonValue(locals, 0));
+            event.put("editableLocals", locals != null && locals != Undefined.instance && locals != Scriptable.NOT_FOUND);
+        } catch (Throwable ignored) {
+        }
+
+        sendDebugEvent(event);
+        writeLog(Log.WARN, "XHH-Debug", "命中软断点，目标线程已暂停: " + event.optString("breakpointName") + " pauseId=" + pauseId, null);
+
+        while (true) {
+            DebugCommand command = waitForDebugCommand(pauseId);
+            if (command == null) {
+                command = new DebugCommand(DebugProtocol.COMMAND_CONTINUE, null, new JSONObject());
+            }
+
+            if (DebugProtocol.COMMAND_SET_VARIABLE.equals(command.command)) {
+                JSONObject updated = buildDebugBaseEvent("variablesUpdated", scriptName);
+                try {
+                    applyDebugVariablePayload(locals, command.payload);
+                    updated.put("pauseId", pauseId);
+                    updated.put("breakpointName", event.optString("breakpointName"));
+                    updated.put("locals", toDebugJsonValue(locals, 0));
+                    updated.put("message", "locals updated");
+                } catch (Throwable updateError) {
+                    try {
+                        updated.put("error", updateError.getMessage() == null ? updateError.getClass().getName() : updateError.getMessage());
+                        updated.put("locals", toDebugJsonValue(locals, 0));
+                    } catch (Throwable ignored) {
+                    }
+                }
+                sendDebugEvent(updated);
+                continue;
+            }
+
+            if (DebugProtocol.COMMAND_CONTINUE.equals(command.command)) {
+                JSONObject continued = buildDebugBaseEvent("continued", scriptName);
+                try {
+                    continued.put("pauseId", pauseId);
+                    continued.put("breakpointName", event.optString("breakpointName"));
+                    continued.put("status", "resumed");
+                    continued.put("updatedAt", System.currentTimeMillis());
+                    continued.put("hasReturnValue", command.payload.optBoolean("hasReturnValue", false));
+                    if (command.payload.has("returnValue")) continued.put("returnValue", command.payload.opt("returnValue"));
+                } catch (Throwable ignored) {
+                }
+                sendDebugEvent(continued);
+                writeLog(Log.INFO, "XHH-Debug", "软断点继续执行: pauseId=" + pauseId, null);
+                if (command.payload.optBoolean("hasReturnValue", false)) {
+                    return jsonToJsValue(command.payload.opt("returnValue"));
+                }
+                return null;
+            }
+
+            if (DebugProtocol.COMMAND_ABORT.equals(command.command)) {
+                JSONObject aborted = buildDebugBaseEvent("aborted", scriptName);
+                try {
+                    aborted.put("pauseId", pauseId);
+                    aborted.put("breakpointName", event.optString("breakpointName"));
+                    aborted.put("status", "aborted");
+                    aborted.put("updatedAt", System.currentTimeMillis());
+                } catch (Throwable ignored) {
+                }
+                sendDebugEvent(aborted);
+                throw new RuntimeException("Debug session aborted: " + pauseId);
+            }
+        }
+    }
+
+    private JSONObject buildDebugBaseEvent(@NonNull String type, @NonNull String scriptName) {
+        JSONObject obj = new JSONObject();
+        try {
+            obj.put("type", type);
+            obj.put("time", System.currentTimeMillis());
+            obj.put("packageName", packageName);
+            obj.put("processName", processName);
+            obj.put("scriptName", scriptName);
+            obj.put("event", currentEvent);
+            obj.put("pid", android.os.Process.myPid());
+        } catch (Throwable ignored) {
+        }
+        return obj;
+    }
+
+    private DebugCommand waitForDebugCommand(@NonNull String pauseId) {
+        while (true) {
+            DebugCommand remoteCommand = readRemoteDebugCommand(pauseId);
+            if (remoteCommand != null) return remoteCommand;
+
+            synchronized (DEBUG_COMMAND_LOCK) {
+                DebugCommand command = DEBUG_COMMANDS.remove(pauseId);
+                if (command != null) return command;
+                try {
+                    DEBUG_COMMAND_LOCK.wait(250L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return new DebugCommand(DebugProtocol.COMMAND_ABORT, null, new JSONObject());
+                }
+            }
+        }
+    }
+
+    @Nullable
+    private DebugCommand readRemoteDebugCommand(@NonNull String pauseId) {
+        try {
+            SharedPreferences prefs = module.getRemotePreferences(DebugProtocol.PREF_GROUP);
+            if (prefs == null) return null;
+            String raw = prefs.getString(DebugProtocol.debugCommandKey(pauseId), "");
+            if (raw == null || raw.isBlank()) return null;
+            try {
+                prefs.edit().remove(DebugProtocol.debugCommandKey(pauseId)).commit();
+            } catch (Throwable ignored) {
+            }
+            JSONObject obj = new JSONObject(raw);
+            String command = obj.optString("command", DebugProtocol.COMMAND_CONTINUE);
+            String expression = obj.optString("expression", null);
+            JSONObject payload = obj.optJSONObject("payload");
+            if (payload == null) payload = new JSONObject();
+            if (command == null || command.isBlank()) command = DebugProtocol.COMMAND_CONTINUE;
+            return new DebugCommand(command, expression, payload);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private void ensureDebugCommandReceiver(@NonNull android.content.Context context) {
+        if (debugCommandReceiverRegistered) return;
+        synchronized (JsHookRuntime.class) {
+            if (debugCommandReceiverRegistered) return;
+            android.content.Context appContext = context.getApplicationContext() == null ? context : context.getApplicationContext();
+            BroadcastReceiver receiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(android.content.Context ctx, Intent intent) {
+                    if (intent == null || !DebugProtocol.ACTION_COMMAND.equals(intent.getAction())) return;
+                    String pauseId = intent.getStringExtra(DebugProtocol.EXTRA_PAUSE_ID);
+                    String command = intent.getStringExtra(DebugProtocol.EXTRA_COMMAND);
+                    String expression = intent.getStringExtra(DebugProtocol.EXTRA_EXPRESSION);
+                    String payloadJson = intent.getStringExtra(DebugProtocol.EXTRA_PAYLOAD_JSON);
+                    JSONObject payload = new JSONObject();
+                    if (payloadJson != null && !payloadJson.isBlank()) {
+                        try { payload = new JSONObject(payloadJson); } catch (Throwable ignored) { }
+                    }
+                    if (pauseId == null || pauseId.isBlank()) return;
+                    if (command == null || command.isBlank()) command = DebugProtocol.COMMAND_CONTINUE;
+                    DEBUG_COMMANDS.put(pauseId, new DebugCommand(command, expression, payload));
+                    synchronized (DEBUG_COMMAND_LOCK) {
+                        DEBUG_COMMAND_LOCK.notifyAll();
+                    }
+                }
+            };
+            IntentFilter filter = new IntentFilter(DebugProtocol.ACTION_COMMAND);
+            if (Build.VERSION.SDK_INT >= 33) {
+                appContext.registerReceiver(receiver, filter, android.content.Context.RECEIVER_EXPORTED);
+            } else {
+                appContext.registerReceiver(receiver, filter);
+            }
+            debugCommandReceiverRegistered = true;
+            writeLog(Log.INFO, "XHH-Debug", "调试命令接收器已注册: " + packageName + " / " + processName, null);
+        }
+    }
+
+    private Object toDebugJsonValue(@Nullable Object value, int depth) {
+        Object v = unwrap(value);
+        if (v == null || v == Undefined.instance || v == Scriptable.NOT_FOUND) return JSONObject.NULL;
+        if (depth > 4) return String.valueOf(v);
+        if (v instanceof String || v instanceof Number || v instanceof Boolean) return v;
+        if (v instanceof Character) return String.valueOf(v);
+        if (v instanceof Class<?>) return ((Class<?>) v).getName();
+        if (v instanceof Method || v instanceof Constructor<?> || v instanceof Field) return String.valueOf(v);
+        if (v instanceof Throwable) {
+            Throwable t = (Throwable) v;
+            JSONObject obj = new JSONObject();
+            try {
+                obj.put("type", t.getClass().getName());
+                obj.put("message", t.getMessage());
+                obj.put("text", String.valueOf(t));
+            } catch (Throwable ignored) {
+            }
+            return obj;
+        }
+        if (v instanceof NativeArray) {
+            NativeArray array = (NativeArray) v;
+            JSONArray json = new JSONArray();
+            long len = Math.min(array.getLength(), 200);
+            for (int i = 0; i < len; i++) {
+                try {
+                    json.put(toDebugJsonValue(array.get(i, array), depth + 1));
+                } catch (Throwable ignored) {
+                    json.put(String.valueOf(array.get(i, array)));
+                }
+            }
+            return json;
+        }
+        if (v instanceof Scriptable) {
+            Scriptable scriptable = (Scriptable) v;
+            JSONObject obj = new JSONObject();
+            for (Object id : scriptable.getIds()) {
+                try {
+                    String key = String.valueOf(id);
+                    Object child = id instanceof Number
+                            ? scriptable.get(((Number) id).intValue(), scriptable)
+                            : scriptable.get(key, scriptable);
+                    obj.put(key, toDebugJsonValue(child, depth + 1));
+                } catch (Throwable ignored) {
+                }
+            }
+            return obj;
+        }
+        if (v instanceof Map<?, ?>) {
+            JSONObject obj = new JSONObject();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) v).entrySet()) {
+                try {
+                    obj.put(String.valueOf(entry.getKey()), toDebugJsonValue(entry.getValue(), depth + 1));
+                } catch (Throwable ignored) {
+                }
+            }
+            return obj;
+        }
+        if (v instanceof Iterable<?>) {
+            JSONArray json = new JSONArray();
+            int i = 0;
+            for (Object item : (Iterable<?>) v) {
+                if (i++ >= 200) break;
+                json.put(toDebugJsonValue(item, depth + 1));
+            }
+            return json;
+        }
+        if (v.getClass().isArray()) {
+            JSONArray json = new JSONArray();
+            int len = Math.min(java.lang.reflect.Array.getLength(v), 200);
+            for (int i = 0; i < len; i++) {
+                json.put(toDebugJsonValue(java.lang.reflect.Array.get(v, i), depth + 1));
+            }
+            return json;
+        }
+        return String.valueOf(v);
+    }
+
+
+    private void applyDebugVariablePayload(@Nullable Object locals, @NonNull JSONObject payload) throws Exception {
+        if (locals == null || locals == Undefined.instance || locals == Scriptable.NOT_FOUND) {
+            throw new IllegalStateException("当前断点没有可修改的 locals。请使用 debuggerx.breakpoint(name, { key: value }) 传入对象。");
+        }
+        if (payload.has("path")) {
+            String path = payload.optString("path", "").trim();
+            if (path.isEmpty()) throw new IllegalArgumentException("变量路径不能为空");
+            Object value = payload.has("value") ? payload.opt("value") : JSONObject.NULL;
+            setDebugPathValue(unwrap(locals), parseDebugPath(path), jsonToJsValue(value));
+            return;
+        }
+        if (payload.has("locals")) {
+            Object next = payload.opt("locals");
+            applyDebugObjectValue(unwrap(locals), next);
+            return;
+        }
+        throw new IllegalArgumentException("缺少 path/value 或 locals 字段");
+    }
+
+    private List<String> parseDebugPath(@NonNull String path) {
+        ArrayList<String> parts = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (int i = 0; i < path.length(); i++) {
+            char c = path.charAt(i);
+            if (c == '.') {
+                if (current.length() > 0) {
+                    parts.add(current.toString());
+                    current.setLength(0);
+                }
+            } else if (c == '[') {
+                if (current.length() > 0) {
+                    parts.add(current.toString());
+                    current.setLength(0);
+                }
+                int end = path.indexOf(']', i + 1);
+                if (end < 0) throw new IllegalArgumentException("变量路径格式错误: " + path);
+                String index = path.substring(i + 1, end).trim();
+                if ((index.startsWith("\"") && index.endsWith("\"")) || (index.startsWith("'") && index.endsWith("'"))) {
+                    index = index.substring(1, index.length() - 1);
+                }
+                if (!index.isEmpty()) parts.add(index);
+                i = end;
+            } else {
+                current.append(c);
+            }
+        }
+        if (current.length() > 0) parts.add(current.toString());
+        if (parts.isEmpty()) throw new IllegalArgumentException("变量路径不能为空");
+        return parts;
+    }
+
+    private void setDebugPathValue(@Nullable Object root, @NonNull List<String> parts, @Nullable Object value) throws Exception {
+        Object target = root;
+        for (int i = 0; i < parts.size() - 1; i++) {
+            target = getDebugChild(target, parts.get(i));
+            if (target == null || target == Scriptable.NOT_FOUND || target == Undefined.instance) {
+                throw new IllegalArgumentException("变量路径不存在: " + parts.get(i));
+            }
+            target = unwrap(target);
+        }
+        setDebugChild(target, parts.get(parts.size() - 1), value);
+    }
+
+    @Nullable
+    private Object getDebugChild(@Nullable Object target, @NonNull String key) {
+        Object t = unwrap(target);
+        if (t instanceof Scriptable) {
+            Scriptable scriptable = (Scriptable) t;
+            Integer index = parseIndex(key);
+            return index == null ? scriptable.get(key, scriptable) : scriptable.get(index, scriptable);
+        }
+        if (t instanceof Map<?, ?>) return ((Map<?, ?>) t).get(key);
+        Integer index = parseIndex(key);
+        if (index != null) {
+            if (t instanceof List<?>) {
+                List<?> list = (List<?>) t;
+                return index >= 0 && index < list.size() ? list.get(index) : null;
+            }
+            if (t != null && t.getClass().isArray()) {
+                int len = java.lang.reflect.Array.getLength(t);
+                return index >= 0 && index < len ? java.lang.reflect.Array.get(t, index) : null;
+            }
+        }
+        return null;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void setDebugChild(@Nullable Object target, @NonNull String key, @Nullable Object value) throws Exception {
+        Object t = unwrap(target);
+        if (t instanceof Scriptable) {
+            Scriptable scriptable = (Scriptable) t;
+            Object jsValue = value;
+            Context cx = Context.getCurrentContext();
+            if (cx != null) jsValue = Context.javaToJS(value, scriptable);
+            Integer index = parseIndex(key);
+            if (index == null) scriptable.put(key, scriptable, jsValue);
+            else scriptable.put(index, scriptable, jsValue);
+            return;
+        }
+        if (t instanceof Map<?, ?>) {
+            ((Map) t).put(key, value);
+            return;
+        }
+        Integer index = parseIndex(key);
+        if (index != null) {
+            if (t instanceof List<?>) {
+                List list = (List) t;
+                if (index < 0 || index >= list.size()) throw new IndexOutOfBoundsException(key);
+                list.set(index, value);
+                return;
+            }
+            if (t != null && t.getClass().isArray()) {
+                int len = java.lang.reflect.Array.getLength(t);
+                if (index < 0 || index >= len) throw new IndexOutOfBoundsException(key);
+                java.lang.reflect.Array.set(t, index, value);
+                return;
+            }
+        }
+        throw new IllegalArgumentException("不支持修改变量: " + key);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void applyDebugObjectValue(@Nullable Object target, @Nullable Object jsonValue) throws Exception {
+        Object t = unwrap(target);
+        if (!(jsonValue instanceof JSONObject)) {
+            throw new IllegalArgumentException("locals 必须是 JSON 对象");
+        }
+        JSONObject obj = (JSONObject) jsonValue;
+        java.util.Iterator<String> keys = obj.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            setDebugChild(t, key, jsonToJsValue(obj.opt(key)));
+        }
+    }
+
+    @Nullable
+    private Integer parseIndex(@NonNull String key) {
+        try {
+            if (key.isEmpty()) return null;
+            for (int i = 0; i < key.length(); i++) {
+                if (!Character.isDigit(key.charAt(i))) return null;
+            }
+            return Integer.parseInt(key);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    @Nullable
+    private Object jsonToJsValue(@Nullable Object value) {
+        if (value == null || value == JSONObject.NULL) return null;
+        if (value instanceof JSONArray) {
+            JSONArray arr = (JSONArray) value;
+            Object[] out = new Object[arr.length()];
+            for (int i = 0; i < arr.length(); i++) out[i] = jsonToJsValue(arr.opt(i));
+            Context cx = Context.getCurrentContext();
+            if (cx != null && scope != null) {
+                try { return cx.newArray(scope, out); } catch (Throwable ignored) { }
+            }
+            return out;
+        }
+        if (value instanceof JSONObject) {
+            JSONObject obj = (JSONObject) value;
+            Context cx = Context.getCurrentContext();
+            if (cx != null && scope != null) {
+                Scriptable nativeObj = cx.newObject(scope);
+                java.util.Iterator<String> keys = obj.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    nativeObj.put(key, nativeObj, jsonToJsValue(obj.opt(key)));
+                }
+                return nativeObj;
+            }
+            java.util.HashMap<String, Object> map = new java.util.HashMap<>();
+            java.util.Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                map.put(key, jsonToJsValue(obj.opt(key)));
+            }
+            return map;
+        }
+        return value;
+    }
+
+    private static final class DebugCommand {
+        final String command;
+        final String expression;
+        final JSONObject payload;
+
+        DebugCommand(String command, String expression, JSONObject payload) {
+            this.command = command;
+            this.expression = expression;
+            this.payload = payload == null ? new JSONObject() : payload;
+        }
     }
 
     private Class<?> loadClass(String className) throws ClassNotFoundException {

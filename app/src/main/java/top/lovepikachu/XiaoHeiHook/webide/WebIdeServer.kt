@@ -66,7 +66,7 @@ class WebIdeServer(
             priority = Thread.MAX_PRIORITY
             start()
         }
-        Log.i(TAG, "WebIDE v12.7 monaco server started at http://$host:$port/ pid=${Process.myPid()} process=${ProcessUtil.currentProcessName(appContext)}")
+        Log.i(TAG, "WebIDE v13.0 soft-debug server started at http://$host:$port/ pid=${Process.myPid()} process=${ProcessUtil.currentProcessName(appContext)}")
     }
 
     fun stopServer() {
@@ -76,7 +76,7 @@ class WebIdeServer(
         acceptThread = null
         workers.shutdownNow()
         runCatching { workers.awaitTermination(700, TimeUnit.MILLISECONDS) }
-        Log.i(TAG, "WebIDE v12.7 monaco server stopped")
+        Log.i(TAG, "WebIDE v13.0 soft-debug server stopped")
     }
 
     fun touch(reason: String) {
@@ -116,6 +116,11 @@ class WebIdeServer(
                 if (request.path == "/api/logs/stream") {
                     api.streamLogs(request, socket.getOutputStream()) { running && !socket.isClosed }
                     Log.d(TAG, "#$requestId => ${request.method} ${request.rawTarget} stream closed ${System.currentTimeMillis() - begin}ms")
+                    return
+                }
+                if (request.path == "/api/debug/stream") {
+                    api.streamDebug(request, socket.getOutputStream()) { running && !socket.isClosed }
+                    Log.d(TAG, "#$requestId => ${request.method} ${request.rawTarget} debug stream closed ${System.currentTimeMillis() - begin}ms")
                     return
                 }
                 val response = route(request)

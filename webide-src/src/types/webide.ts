@@ -69,3 +69,24 @@ export interface ReadScriptResponse {
   content: string
   metadata?: ScriptMeta
 }
+
+export interface DebugEvent {
+  type: 'paused' | 'continuing' | 'continued' | 'resumed' | 'aborting' | 'aborted' | 'expired' | 'variablesUpdated' | 'log' | string
+  pauseId?: string
+  packageName?: string
+  processName?: string
+  scriptName?: string
+  breakpointName?: string
+  threadName?: string
+  time?: number
+  pid?: number
+  locals?: unknown
+  message?: string
+  editableLocals?: boolean
+  hasReturnValue?: boolean
+  returnValue?: unknown
+  error?: string
+  status?: string
+  active?: boolean
+  updatedAt?: number
+}

@@ -12,6 +12,7 @@ import org.json.JSONObject
 import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 import top.lovepikachu.XiaoHeiHook.data.ScriptPrefs
 import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
+import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -35,6 +36,8 @@ class WebIdeBridgeProvider : ContentProvider() {
                 METHOD_SET_APP_ENABLED -> setAppEnabled(extras)
                 METHOD_SET_SCRIPT_ENABLED -> setScriptEnabled(extras)
                 METHOD_SYNC_SCRIPTS -> syncScripts(extras)
+                METHOD_SET_DEBUG_ENABLED -> setDebugEnabled(extras)
+                METHOD_SEND_DEBUG_COMMAND -> sendDebugCommand(extras)
                 else -> errorBundle("Unsupported bridge method: $method")
             }
         } catch (e: Throwable) {
@@ -156,6 +159,45 @@ class WebIdeBridgeProvider : ContentProvider() {
         )
     }
 
+
+    private fun setDebugEnabled(extras: Bundle?): Bundle {
+        val packageName = extras?.getString(ARG_PACKAGE).orEmpty().trim()
+        val enabled = extras?.getBoolean(ARG_ENABLED, false) ?: false
+        if (packageName.isBlank()) return errorBundle("packageName 不能为空")
+        val prefs = awaitRemotePreferences(2000) ?: return errorBundle("LSPosed Remote Preferences 未连接")
+        prefs.edit().putBoolean(DebugProtocol.debugEnabledKey(packageName), enabled).commit()
+        return okBundle()
+            .putStringValue("packageName", packageName)
+            .putBool("enabled", enabled)
+    }
+
+    private fun sendDebugCommand(extras: Bundle?): Bundle {
+        val packageName = extras?.getString(ARG_PACKAGE).orEmpty().trim()
+        val processName = extras?.getString(ARG_PROCESS).orEmpty().trim()
+        val pauseId = extras?.getString(ARG_PAUSE_ID).orEmpty().trim()
+        val command = extras?.getString(ARG_COMMAND).orEmpty().trim().ifBlank { DebugProtocol.COMMAND_CONTINUE }
+        val expression = extras?.getString(ARG_EXPRESSION).orEmpty()
+        val payloadJson = extras?.getString(ARG_PAYLOAD_JSON).orEmpty()
+        if (packageName.isBlank()) return errorBundle("packageName 不能为空")
+        if (pauseId.isBlank()) return errorBundle("pauseId 不能为空")
+        val prefs = awaitRemotePreferences(2000) ?: return errorBundle("LSPosed Remote Preferences 未连接")
+        val json = JSONObject()
+            .put("packageName", packageName)
+            .put("processName", processName)
+            .put("pauseId", pauseId)
+            .put("command", command)
+            .put("expression", expression)
+            .put("payload", if (payloadJson.isBlank()) JSONObject() else JSONObject(payloadJson))
+            .put("time", System.currentTimeMillis())
+            .toString()
+        prefs.edit().putString(DebugProtocol.debugCommandKey(pauseId), json).commit()
+        return okBundle()
+            .putStringValue("packageName", packageName)
+            .putStringValue("processName", processName)
+            .putStringValue("pauseId", pauseId)
+            .putStringValue("command", command)
+    }
+
     private fun awaitRemotePreferences(timeoutMs: Long): android.content.SharedPreferences? {
         val deadline = SystemClock.uptimeMillis() + timeoutMs.coerceAtLeast(0)
         while (XiaoHeiApplication.remotePreferences == null && SystemClock.uptimeMillis() < deadline) {
@@ -195,11 +237,18 @@ class WebIdeBridgeProvider : ContentProvider() {
         const val METHOD_SET_APP_ENABLED = "setAppEnabled"
         const val METHOD_SET_SCRIPT_ENABLED = "setScriptEnabled"
         const val METHOD_SYNC_SCRIPTS = "syncScripts"
+        const val METHOD_SET_DEBUG_ENABLED = "setDebugEnabled"
+        const val METHOD_SEND_DEBUG_COMMAND = "sendDebugCommand"
         const val ARG_KEY = "key"
         const val ARG_DEFAULT = "default"
         const val ARG_VALUE = "value"
         const val ARG_PACKAGE = "packageName"
         const val ARG_SCRIPT_ID = "scriptId"
         const val ARG_ENABLED = "enabled"
+        const val ARG_PROCESS = "processName"
+        const val ARG_PAUSE_ID = "pauseId"
+        const val ARG_COMMAND = "command"
+        const val ARG_EXPRESSION = "expression"
+        const val ARG_PAYLOAD_JSON = "payloadJson"
     }
 }

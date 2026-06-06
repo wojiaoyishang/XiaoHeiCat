@@ -705,3 +705,232 @@ body,
   height: 17px;
   margin-right: 0;
 }
+
+/* v13.0 soft breakpoint debug panel */
+.console-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 8px;
+}
+.console-tabs button {
+  border: 1px solid #555;
+  background: #252525;
+  color: #ddd;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.console-tabs button.active {
+  background: #3a3a3a;
+  color: #fff;
+  border-color: #777;
+}
+.debug-panel {
+  height: calc(100% - 28px);
+  overflow: auto;
+  background: #101010;
+  color: #d8d8d8;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+.debug-empty {
+  color: #888;
+  padding: 8px;
+}
+.debug-empty code {
+  color: #f0d080;
+}
+.debug-current {
+  border: 1px solid #705a1f;
+  background: #1d1a12;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+.debug-title {
+  color: #ffd56b;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.debug-meta {
+  color: #aaa;
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+.debug-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.debug-actions button {
+  cursor: pointer;
+  border: 1px solid #666;
+  background: #2d2d2d;
+  color: #eee;
+  padding: 4px 10px;
+}
+.debug-actions button.primary {
+  background: #1f5f2c;
+  border-color: #2d8a41;
+}
+.debug-locals {
+  background: #0a0a0a;
+  border: 1px solid #333;
+  color: #ddd;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.debug-events {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.debug-event {
+  display: grid;
+  grid-template-columns: 90px 90px minmax(160px, 1fr) minmax(200px, 2fr);
+  gap: 8px;
+  border-bottom: 1px solid #242424;
+  padding: 4px 2px;
+  color: #aaa;
+}
+.debug-event.paused {
+  color: #ffd56b;
+}
+.debug-event.continued {
+  color: #8ee08e;
+}
+.debug-event.aborted {
+  color: #ff8888;
+}
+.debug-event-type {
+  font-weight: 700;
+}
+
+.debug-mode-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #d8d8d8;
+  background: #f7f7f7;
+  font-size: 12px;
+}
+.debug-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.debug-switch input {
+  cursor: pointer;
+}
+.debug-mode-on {
+  color: #9a5a00;
+}
+.debug-mode-off {
+  color: #667085;
+}
+
+/* v13.2 soft breakpoint variable editing */
+.debug-mode-bar {
+  background: #202020;
+  border-bottom-color: #3a3a3a;
+  color: #f0f0f0;
+}
+.debug-switch-title {
+  color: #ffffff;
+  font-weight: 700;
+}
+.debug-mode-on {
+  color: #ffd166;
+  font-weight: 700;
+}
+.debug-mode-off {
+  color: #9fc0ff;
+  font-weight: 700;
+}
+.debug-edit-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) 300px;
+  gap: 10px;
+  min-height: 0;
+}
+.debug-edit-card {
+  border: 1px solid #333;
+  background: #121212;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.debug-edit-card.compact {
+  min-width: 260px;
+}
+.debug-section-title {
+  color: #f2f2f2;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+.debug-json-editor,
+.debug-value-editor,
+.debug-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #444;
+  background: #070707;
+  color: #f0f0f0;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+}
+.debug-json-editor {
+  min-height: 160px;
+  resize: vertical;
+  padding: 8px;
+}
+.debug-value-editor {
+  min-height: 70px;
+  resize: vertical;
+  padding: 6px;
+}
+.debug-input {
+  height: 26px;
+  padding: 3px 6px;
+}
+.debug-edit-card button,
+.debug-return-toggle {
+  cursor: pointer;
+}
+.debug-edit-card button {
+  align-self: flex-start;
+  border: 1px solid #666;
+  background: #2d2d2d;
+  color: #eee;
+  padding: 4px 10px;
+}
+.debug-edit-card button:hover {
+  background: #3a3a3a;
+}
+.debug-note {
+  color: #a8a8a8;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.debug-return-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #e6e6e6;
+}
+.return-title {
+  margin-top: 8px;
+}
+@media (max-width: 1100px) {
+  .debug-edit-grid {
+    grid-template-columns: 1fr;
+  }
+}

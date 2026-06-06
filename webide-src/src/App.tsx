@@ -7,6 +7,7 @@ import type {
   ReadScriptResponse,
   ScriptInfo,
   ScriptMeta,
+  DebugEvent,
 } from "./types/webide";
 import { TopBar } from "./components/TopBar";
 import { AppListPanel } from "./components/AppListPanel";
@@ -40,6 +41,8 @@ export function App() {
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [logs, setLogs] = useState<ConsoleLine[]>([]);
+  const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
+  const [debugEnabled, setDebugEnabledState] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(() => {
     const saved = Number(window.localStorage.getItem("xhh.consoleHeight"));
     return Number.isFinite(saved) && saved > 0 ? saved : 180;
@@ -92,6 +95,39 @@ export function App() {
     },
     [log],
   );
+
+
+  const parseDebugJson = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    try {
+      return JSON.parse(trimmed);
+    } catch (e: any) {
+      throw new Error(`JSON 格式错误：${e?.message || e}`);
+    }
+  }, []);
+
+  const applyIncomingDebugEvent = useCallback((data: DebugEvent) => {
+    const endTypes = new Set(["continuing", "continued", "resumed", "aborting", "aborted", "expired"]);
+    setDebugEvents((old) => {
+      let base = old;
+
+      if (data.pauseId && endTypes.has(data.type)) {
+        base = old.filter((item) => !(item.pauseId === data.pauseId && item.type === "paused"));
+      } else if (data.type === "variablesUpdated" && data.pauseId) {
+        base = old.map((item) =>
+          item.type === "paused" && item.pauseId === data.pauseId
+            ? { ...item, locals: data.locals, message: data.message, updatedAt: data.updatedAt || data.time }
+            : item,
+        );
+      } else if (data.type === "paused" && data.pauseId) {
+        base = old.filter((item) => !(item.pauseId === data.pauseId && item.type === "paused"));
+      }
+
+      const next = [...base, data];
+      return next.length > 500 ? next.slice(next.length - 500) : next;
+    });
+  }, []);
 
   const loadStatus = useCallback(async () => {
     const data = await api<ApiStatus>("/api/status");
@@ -409,6 +445,76 @@ export function App() {
     );
   }, [selectedPackage, activeTab, saveTab, log]);
 
+  const continueDebugEvent = useCallback(async (event: DebugEvent, returnValue?: { enabled: boolean; text: string }) => {
+    if (!event.pauseId || !event.packageName) {
+      log("无法继续：调试事件缺少 pauseId 或 packageName", "err");
+      return;
+    }
+    const payload: Record<string, unknown> = {};
+    if (returnValue?.enabled) {
+      payload.hasReturnValue = true;
+      payload.returnValue = parseDebugJson(returnValue.text);
+    }
+    await post<{ ok: boolean }>("/api/debug/continue", {
+      pauseId: event.pauseId,
+      packageName: event.packageName,
+      processName: event.processName || "",
+      payload,
+    });
+    log(`Continue 已发送：${event.pauseId}${returnValue?.enabled ? "，包含返回值" : ""}`, "ok");
+    setDebugEvents((old) => old.filter((item) => item.pauseId !== event.pauseId || item.type !== "paused"));
+  }, [log, parseDebugJson]);
+
+  const abortDebugEvent = useCallback(async (event: DebugEvent) => {
+    if (!event.pauseId || !event.packageName) {
+      log("无法中止：调试事件缺少 pauseId 或 packageName", "err");
+      return;
+    }
+    await post<{ ok: boolean }>("/api/debug/abort", {
+      pauseId: event.pauseId,
+      packageName: event.packageName,
+      processName: event.processName || "",
+    });
+    log(`Abort 已发送：${event.pauseId}`, "warn");
+    setDebugEvents((old) => old.filter((item) => item.pauseId !== event.pauseId || item.type !== "paused"));
+  }, [log]);
+
+
+  const applyDebugLocals = useCallback(async (event: DebugEvent, localsJson: string) => {
+    if (!event.pauseId || !event.packageName) {
+      log("无法修改变量：调试事件缺少 pauseId 或 packageName", "err");
+      return;
+    }
+    const locals = parseDebugJson(localsJson);
+    await post<{ ok: boolean }>("/api/debug/set-variable", {
+      pauseId: event.pauseId,
+      packageName: event.packageName,
+      processName: event.processName || "",
+      payload: { locals },
+    });
+    log(`已发送 locals 修改：${event.pauseId}`, "ok");
+  }, [log, parseDebugJson]);
+
+  const setDebugVariable = useCallback(async (event: DebugEvent, path: string, valueJson: string) => {
+    if (!event.pauseId || !event.packageName) {
+      log("无法修改变量：调试事件缺少 pauseId 或 packageName", "err");
+      return;
+    }
+    const cleanPath = path.trim();
+    if (!cleanPath) {
+      log("变量路径不能为空", "err");
+      return;
+    }
+    const value = parseDebugJson(valueJson);
+    await post<{ ok: boolean }>("/api/debug/set-variable", {
+      pauseId: event.pauseId,
+      packageName: event.packageName,
+      processName: event.processName || "",
+      payload: { path: cleanPath, value },
+    });
+    log(`已发送变量修改：${cleanPath} @ ${event.pauseId}`, "ok");
+  }, [log, parseDebugJson]);
+
   const openTerminalPage = useCallback(() => {
     const pkg = selectedPackage?.trim() || "";
     const url = pkg
@@ -542,6 +648,39 @@ export function App() {
     run,
   ]);
 
+
+  useEffect(() => {
+    let cancelled = false;
+    setDebugEvents([]);
+    if (!selectedPackage) {
+      setDebugEnabledState(false);
+      return;
+    }
+    api<{ ok: boolean; enabled: boolean }>(`/api/debug/enabled?packageName=${encodeURIComponent(selectedPackage)}`)
+      .then((data) => {
+        if (!cancelled) setDebugEnabledState(Boolean(data.enabled));
+      })
+      .catch(() => {
+        if (!cancelled) setDebugEnabledState(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPackage]);
+
+  const setDebugEnabled = useCallback(async (enabled: boolean) => {
+    if (!selectedPackage) {
+      log("请选择应用", "warn");
+      return;
+    }
+    const data = await post<{ ok: boolean; enabled: boolean; packageName: string }>("/api/debug/enabled", {
+      packageName: selectedPackage,
+      enabled,
+    });
+    setDebugEnabledState(Boolean(data.enabled));
+    log(`${data.enabled ? "已启用" : "已关闭"}软断点调试：${data.packageName}`, data.enabled ? "warn" : "ok");
+  }, [selectedPackage, log]);
+
   useEffect(() => {
     if (!selectedPackage) return;
     const source = new EventSource(
@@ -575,6 +714,59 @@ export function App() {
 
     return () => source.close();
   }, [selectedPackage, log]);
+
+  useEffect(() => {
+    const query = selectedPackage ? `?packageName=${encodeURIComponent(selectedPackage)}` : "";
+    const source = new EventSource(`/api/debug/stream${query}`);
+    let reportedError = false;
+
+    const onDebugEvent = (event: Event) => {
+      try {
+        const data = JSON.parse((event as MessageEvent).data) as DebugEvent;
+        applyIncomingDebugEvent(data);
+        if (data.type === "paused") {
+          setTerminalVisible(true);
+          log(`命中软断点：${data.breakpointName || data.pauseId} @ ${data.packageName}`, "warn");
+        } else if (data.type === "variablesUpdated") {
+          if (data.error) log(`变量修改失败：${data.error}`, "err");
+          else log(`变量已更新：${data.pauseId}`, "ok");
+        } else if (data.type === "continuing") {
+          log(`断点正在继续：${data.pauseId}`, "ok");
+        } else if (data.type === "continued" || data.type === "resumed") {
+          log(`断点继续：${data.pauseId}${data.hasReturnValue ? "，已返回指定值" : ""}`, "ok");
+        } else if (data.type === "aborting") {
+          log(`断点正在中止：${data.pauseId}`, "warn");
+        } else if (data.type === "aborted") {
+          log(`断点已中止：${data.pauseId}`, "warn");
+        } else if (data.type === "expired") {
+          log(`过期断点已清理：${data.pauseId}`, "warn");
+        }
+      } catch {
+        const text = (event as MessageEvent).data;
+        if (text) log(text, "target");
+      }
+    };
+
+    source.addEventListener("open", () => {
+      reportedError = false;
+    });
+    source.addEventListener("paused", onDebugEvent);
+    source.addEventListener("continuing", onDebugEvent);
+    source.addEventListener("continued", onDebugEvent);
+    source.addEventListener("resumed", onDebugEvent);
+    source.addEventListener("aborting", onDebugEvent);
+    source.addEventListener("aborted", onDebugEvent);
+    source.addEventListener("expired", onDebugEvent);
+    source.addEventListener("log", onDebugEvent);
+    source.addEventListener("debug", onDebugEvent);
+    source.addEventListener("error", () => {
+      if (!reportedError) {
+        reportedError = true;
+        log("调试事件连接中断，浏览器会自动重连", "warn");
+      }
+    });
+    return () => source.close();
+  }, [selectedPackage, log, applyIncomingDebugEvent]);
 
   const tabTitle = activeTab ? activeTab.path : "未打开脚本";
   const leftToolTitle = pageMode === "apps" ? "软件列表" : "全部脚本";
@@ -738,12 +930,19 @@ export function App() {
       {terminalVisible ? (
         <BottomConsole
           lines={logs}
+          debugEvents={debugEvents}
+          debugEnabled={debugEnabled}
           livePackage={selectedPackage}
           height={consoleHeight}
           onHeightChange={setConsoleHeight}
           onClear={() => setLogs([])}
           onOpenStandalone={openTerminalPage}
           onHide={() => setTerminalVisible(false)}
+          onDebugEnabledChange={(enabled) => run(() => setDebugEnabled(enabled))}
+          onDebugContinue={(event, returnValue) => run(() => continueDebugEvent(event, returnValue))}
+          onDebugAbort={(event) => run(() => abortDebugEvent(event))}
+          onDebugApplyLocals={(event, localsJson) => run(() => applyDebugLocals(event, localsJson))}
+          onDebugSetVariable={(event, path, valueJson) => run(() => setDebugVariable(event, path, valueJson))}
         />
       ) : null}
     </>

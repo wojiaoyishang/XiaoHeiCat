@@ -2,6 +2,7 @@ package top.lovepikachu.XiaoHeiHook.webide
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Process
 import io.github.libxposed.service.XposedService
@@ -15,6 +16,8 @@ import top.lovepikachu.XiaoHeiHook.data.InstalledAppInfo
 import top.lovepikachu.XiaoHeiHook.data.ScriptMetadata
 import top.lovepikachu.XiaoHeiHook.data.ScriptPrefs
 import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
+import top.lovepikachu.XiaoHeiHook.debug.DebugEventRepository
+import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol
 import java.io.File
 import java.io.OutputStream
 import java.io.RandomAccessFile
@@ -32,6 +35,13 @@ class WebIdeApi(private val context: Context) {
             when (request.path) {
                 "/api/status" -> status()
                 "/api/logs" -> logs(request)
+
+                "/api/debug/events" -> debugEvents(request)
+                "/api/debug/enabled" -> debugEnabled(request)
+                "/api/debug/continue" -> debugCommand(request, DebugProtocol.COMMAND_CONTINUE)
+                "/api/debug/abort" -> debugCommand(request, DebugProtocol.COMMAND_ABORT)
+                "/api/debug/set-variable" -> debugCommand(request, DebugProtocol.COMMAND_SET_VARIABLE)
+                "/api/debug/clear" -> debugClear()
 
                 "/api/apps" -> apps(request)
                 "/api/apps/restart" -> restartApp(request)
@@ -64,7 +74,7 @@ class WebIdeApi(private val context: Context) {
         return json(
             JSONObject()
                 .put("ok", true)
-                .put("server", "xhh-webide-v12.6-monaco")
+                .put("server", "xhh-webide-v13.3-ghost-breakpoint-cleanup")
                 .put("running", status.running)
                 .put("host", status.host)
                 .put("port", status.port)
@@ -147,6 +157,157 @@ class WebIdeApi(private val context: Context) {
             }
             Thread.sleep(1000)
         }
+    }
+
+    fun streamDebug(request: HttpRequest, output: OutputStream, isRunning: () -> Boolean) {
+        val packageName = request.param("packageName").orEmpty().trim().ifBlank { null }
+        val out = java.io.BufferedOutputStream(output)
+        fun writeRaw(text: String) {
+            out.write(text.toByteArray(StandardCharsets.UTF_8))
+            out.flush()
+        }
+        fun writeEvent(name: String, obj: JSONObject) {
+            writeRaw("event: $name\n" + "data: ${obj.toString()}\n\n")
+        }
+
+        writeRaw(
+            "HTTP/1.1 200 OK\r\n" +
+                "Content-Type: text/event-stream; charset=utf-8\r\n" +
+                "Cache-Control: no-store\r\n" +
+                "Connection: keep-alive\r\n" +
+                "Access-Control-Allow-Origin: *\r\n" +
+                "X-Accel-Buffering: no\r\n" +
+                "\r\n"
+        )
+
+        // On a fresh page load / SSE reconnect, only replay currently active pauses.
+        // Replaying the full history would resurrect already-continued paused events
+        // as "ghost breakpoints" in the WebIDE.
+        DebugEventRepository.readActivePaused(context, packageName = packageName).forEach { obj ->
+            writeEvent(obj.optString("type", "debug"), obj)
+        }
+
+        val file = DebugEventRepository.eventFile(context)
+        var offset = if (file.exists()) file.length() else 0L
+        var tick = 0
+        while (isRunning()) {
+            if (file.exists()) {
+                val length = file.length()
+                if (length < offset) offset = 0L
+                if (length > offset) {
+                    val bytesToRead = (length - offset).coerceAtMost(256L * 1024L).toInt()
+                    val bytes = ByteArray(bytesToRead)
+                    RandomAccessFile(file, "r").use { raf ->
+                        raf.seek(offset)
+                        raf.readFully(bytes)
+                    }
+                    offset += bytesToRead
+                    String(bytes, StandardCharsets.UTF_8)
+                        .lineSequence()
+                        .filter { it.isNotBlank() }
+                        .mapNotNull { line -> runCatching { JSONObject(line) }.getOrNull() }
+                        .filter { obj -> packageName.isNullOrBlank() || obj.optString("packageName") == packageName }
+                        .forEach { obj -> writeEvent(obj.optString("type", "debug"), obj) }
+                }
+            }
+            tick++
+            if (tick % 15 == 0) writeRaw(": keep-alive\n\n")
+            Thread.sleep(1000)
+        }
+    }
+
+    private fun debugEvents(request: HttpRequest): HttpResponse {
+        val packageName = request.param("packageName").orEmpty().trim().ifBlank { null }
+        val maxLines = request.param("maxLines")?.toIntOrNull()?.coerceIn(1, 2000) ?: 300
+        val activeOnly = request.param("active")?.toBooleanStrictOrNullCompat() ?: true
+        val events = if (activeOnly) {
+            DebugEventRepository.readActivePaused(context, packageName = packageName)
+        } else {
+            DebugEventRepository.readRecent(context, maxLines, packageName)
+        }
+        return json(
+            JSONObject()
+                .put("ok", true)
+                .put("activeOnly", activeOnly)
+                .put("events", JSONArray(events))
+                .put("activePaused", DebugEventRepository.activePausedArray(context, packageName))
+                .put("count", events.size)
+        )
+    }
+
+    private fun debugEnabled(request: HttpRequest): HttpResponse {
+        if (request.method == "GET") {
+            val packageName = request.param("packageName").orEmpty().trim()
+            require(packageName.isNotBlank()) { "packageName 不能为空" }
+            return json(
+                JSONObject()
+                    .put("ok", true)
+                    .put("packageName", packageName)
+                    .put("enabled", bridge.debugEnabled(packageName))
+            )
+        }
+        val body = request.jsonBody()
+        val packageName = body.optString("packageName").trim()
+        val enabled = body.optBoolean("enabled", false)
+        require(packageName.isNotBlank()) { "packageName 不能为空" }
+        return json(bridge.setDebugEnabled(packageName, enabled))
+    }
+
+    private fun debugCommand(request: HttpRequest, command: String): HttpResponse {
+        val body = request.jsonBody()
+        val packageName = body.optString("packageName").trim()
+        val pauseId = body.optString("pauseId").trim()
+        val processName = body.optString("processName").trim()
+        val expression = body.optString("expression").trim()
+        val payload = body.optJSONObject("payload") ?: JSONObject()
+        require(packageName.isNotBlank()) { "packageName 不能为空" }
+        require(pauseId.isNotBlank()) { "pauseId 不能为空" }
+
+        // Remove the paused item from the active table immediately after the
+        // WebIDE accepts Continue/Abort. The target process will later emit the
+        // final continued/aborted event, but a browser refresh must not show the
+        // old paused event again while that round trip is in progress.
+        val lifecycleEvent = if (command == DebugProtocol.COMMAND_CONTINUE || command == DebugProtocol.COMMAND_ABORT) {
+            DebugEventRepository.markCommanded(context, packageName, processName, pauseId, command)
+        } else null
+
+        var bridgeOk = false
+        var bridgeError: String? = null
+        runCatching {
+            bridge.sendDebugCommand(packageName, processName, pauseId, command, expression, payload)
+            bridgeOk = true
+        }.onFailure { bridgeError = it.message ?: it.javaClass.simpleName }
+
+        // Broadcast is kept as a fast fallback for already-registered target receivers.
+        val intent = Intent(DebugProtocol.ACTION_COMMAND)
+            .setPackage(packageName)
+            .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
+            .putExtra(DebugProtocol.EXTRA_PACKAGE_NAME, packageName)
+            .putExtra(DebugProtocol.EXTRA_PROCESS_NAME, processName)
+            .putExtra(DebugProtocol.EXTRA_PAUSE_ID, pauseId)
+            .putExtra(DebugProtocol.EXTRA_COMMAND, command)
+            .putExtra(DebugProtocol.EXTRA_EXPRESSION, expression)
+            .putExtra(DebugProtocol.EXTRA_PAYLOAD_JSON, payload.toString())
+        context.sendBroadcast(intent)
+
+        return json(
+            JSONObject()
+                .put("ok", true)
+                .put("packageName", packageName)
+                .put("processName", processName)
+                .put("pauseId", pauseId)
+                .put("command", command)
+                .put("bridgeCommand", bridgeOk)
+                .put("broadcastFallback", true)
+                .put("payload", payload)
+                .put("bridgeError", bridgeError ?: JSONObject.NULL)
+                .put("lifecycleEvent", lifecycleEvent ?: JSONObject.NULL)
+        )
+    }
+
+    private fun debugClear(): HttpResponse {
+        DebugEventRepository.clear(context)
+        return json(JSONObject().put("ok", true))
     }
 
     private fun logs(request: HttpRequest): HttpResponse {
