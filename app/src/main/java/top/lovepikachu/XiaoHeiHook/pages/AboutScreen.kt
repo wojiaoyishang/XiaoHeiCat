@@ -63,23 +63,5 @@ fun AboutScreen() {
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(200.dp))
-
-        AnimatedPressIcon(
-            painter = painterResource(id = R.drawable.nikocat),
-            onClick = {},
-            modifier = Modifier
-                .align(Alignment.CenterHorizontally),
-            size = 200.dp
-        )
-
-        Text(
-            text = "Niko 在干什么呢 ~",
-            modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .padding(bottom = 250.dp),
-            fontSize=12.sp
-        )
     }
 }

@@ -28,26 +28,46 @@ public class HookEntry extends XposedModule {
     public void onModuleLoaded(@NonNull ModuleLoadedParam param) {
         processName = param.getProcessName();
         prefs = getRemotePreferences(PREF_GROUP);
-        log(Log.INFO, TAG, "模块已加载: " + processName);
+        log(Log.INFO, TAG, "模块已加载: " + processName + ", systemServer=" + param.isSystemServer());
     }
 
     @Override
     @RequiresApi(Build.VERSION_CODES.Q)
     public void onPackageLoaded(@NonNull PackageLoadedParam param) {
-        dispatchScripts(param, "package-loaded");
+        dispatchScripts(
+                param.getPackageName(),
+                param.getDefaultClassLoader(),
+                JsHookRuntime.EVENT_PACKAGE_LOADED,
+                param
+        );
     }
 
     @Override
     @RequiresApi(Build.VERSION_CODES.Q)
     public void onPackageReady(@NonNull PackageReadyParam param) {
-        dispatchScripts(param, "package-ready");
+        ClassLoader loader;
+        try {
+            loader = param.getClassLoader();
+        } catch (Throwable ignored) {
+            loader = param.getDefaultClassLoader();
+        }
+        dispatchScripts(
+                param.getPackageName(),
+                loader,
+                JsHookRuntime.EVENT_PACKAGE_READY,
+                param
+        );
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
-    private void dispatchScripts(@NonNull PackageLoadedParam param, @NonNull String runAt) {
+    private void dispatchScripts(
+            @NonNull String packageName,
+            @NonNull ClassLoader classLoader,
+            @NonNull String runAt,
+            @NonNull Object rawParam
+    ) {
         if (prefs == null) return;
 
-        String packageName = param.getPackageName();
         if (!prefs.getBoolean(appEnabledKey(packageName), false)) return;
 
         List<ScriptDescriptor> scripts = parseScriptIndex(prefs.getString(SCRIPT_INDEX_JSON, "[]"));
@@ -64,10 +84,18 @@ public class HookEntry extends XposedModule {
 
             try {
                 String source = JsHookRuntime.readRemoteText(openRemoteFile(script.remoteName));
-                JsHookRuntime runtime = new JsHookRuntime(this, packageName, processName, param.getDefaultClassLoader());
+                JsHookRuntime runtime = new JsHookRuntime(
+                        this,
+                        packageName,
+                        processName,
+                        classLoader,
+                        runAt,
+                        rawParam,
+                        script.rawEnabled()
+                );
                 runtime.evaluate(script.name + "(" + script.id + ")", source);
             } catch (Throwable t) {
-                log(Log.ERROR, TAG, "加载脚本失败: " + script.id + " -> " + packageName, t);
+                log(Log.ERROR, TAG, "加载脚本失败: " + script.id + " -> " + packageName + " @" + runAt, t);
             }
         }
     }
@@ -94,7 +122,8 @@ public class HookEntry extends XposedModule {
                         obj.optString("name", id),
                         toStringList(obj.optJSONArray("targets")),
                         toStringList(obj.optJSONArray("processes")),
-                        obj.optString("runAt", "package-loaded"),
+                        obj.optString("runAt", JsHookRuntime.EVENT_PACKAGE_LOADED),
+                        toStringList(obj.optJSONArray("grants")),
                         remoteName
                 ));
             }
@@ -120,14 +149,24 @@ public class HookEntry extends XposedModule {
         final List<String> targets;
         final List<String> processes;
         final String runAt;
+        final List<String> grants;
         final String remoteName;
 
-        ScriptDescriptor(String id, String name, List<String> targets, List<String> processes, String runAt, String remoteName) {
+        ScriptDescriptor(
+                String id,
+                String name,
+                List<String> targets,
+                List<String> processes,
+                String runAt,
+                List<String> grants,
+                String remoteName
+        ) {
             this.id = id;
             this.name = name;
             this.targets = targets;
             this.processes = processes;
             this.runAt = runAt;
+            this.grants = grants;
             this.remoteName = remoteName;
         }
 
@@ -137,6 +176,10 @@ public class HookEntry extends XposedModule {
 
         boolean supportsProcess(String processName) {
             return processes.isEmpty() || processes.contains("*") || processes.contains(processName);
+        }
+
+        boolean rawEnabled() {
+            return grants.contains("xposed.raw") || grants.contains("xposed.full") || grants.contains("raw");
         }
     }
 }

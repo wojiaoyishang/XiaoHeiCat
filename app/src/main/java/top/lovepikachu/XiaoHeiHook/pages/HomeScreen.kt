@@ -7,32 +7,31 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import top.lovepikachu.XiaoHeiHook.R
-import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 import top.lovepikachu.XiaoHeiHook.composables.ActivationStatusCard
 import top.lovepikachu.XiaoHeiHook.composables.AnimatedPressIcon
 import top.lovepikachu.XiaoHeiHook.composables.FullWidthTextButton
-import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
 
 @Composable
 fun HomeScreen() {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        Text(
+            text = stringResource(R.string.app_name),
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+
         ActivationStatusCard()
 
         Text(
@@ -72,25 +71,6 @@ fun HomeScreen() {
             }
         )
 
-        FullWidthTextButton(
-            text = "同步已启用应用脚本",
-            onClick = {
-                scope.launch {
-                    val result = withContext(Dispatchers.IO) {
-                        ScriptRepository.syncEnabledAppsScriptsToRemote(
-                            XiaoHeiApplication.xposedService,
-                            XiaoHeiApplication.remotePreferences,
-                            allowRootFallback = true
-                        )
-                    }
-                    result.onSuccess { scripts ->
-                        Toast.makeText(context, "已同步启用应用的 ${scripts.size} 个脚本", Toast.LENGTH_SHORT).show()
-                    }.onFailure { error ->
-                        Toast.makeText(context, error.message ?: "同步失败", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        )
 
         Spacer(modifier = Modifier.height(39.dp))
 

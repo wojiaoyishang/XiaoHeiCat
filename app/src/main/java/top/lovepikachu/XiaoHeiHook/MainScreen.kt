@@ -1,13 +1,15 @@
 package top.lovepikachu.XiaoHeiHook
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
+import android.app.Activity
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -15,13 +17,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,114 +36,50 @@ sealed class BottomNavScreen(val title: String, val icon: androidx.compose.ui.gr
     data object About : BottomNavScreen("关于", Icons.Filled.Info) { override val index: Int = 2 }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MainScreen() {
+    val context = LocalContext.current
+    val screens = remember { listOf(BottomNavScreen.Home, BottomNavScreen.Apps, BottomNavScreen.About) }
+    val pagerState = rememberPagerState(initialPage = BottomNavScreen.Home.index) { screens.size }
+    val scope = rememberCoroutineScope()
+    val navEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
+    val isAppsDetailVisible = remember { mutableStateOf(false) }
+    var selectedIndex by remember { mutableIntStateOf(BottomNavScreen.Home.index) }
+    var lastBackPressedAt by remember { mutableLongStateOf(0L) }
 
-    val currentScreen = remember { mutableStateOf<BottomNavScreen>(BottomNavScreen.Home) }
-    val isBottomBarVisible = remember { mutableStateOf(true) }
-    var isAppDetailOpen by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
-
-    // ==================== 改进后的 NestedScrollConnection ====================
-    val nestedScrollConnection = remember {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                // 允许在顶部继续下拉（类似 pull-to-refresh）
-                if (available.y > 0 && !isBottomBarVisible.value) {
-                    isBottomBarVisible.value = true
-                }
-                return Offset.Zero
-            }
-
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource
-            ): Offset {
-                if (consumed.y < -15f && isBottomBarVisible.value) {
-                    isBottomBarVisible.value = false
-                }
-                return Offset.Zero
-            }
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            selectedIndex = page.coerceIn(0, screens.lastIndex)
         }
     }
 
-    val screens = listOf(BottomNavScreen.Home, BottomNavScreen.Apps, BottomNavScreen.About)
-    val pagerState = rememberPagerState(initialPage = currentScreen.value.index) { screens.size }
+    LaunchedEffect(isAppsDetailVisible.value) {
+        if (isAppsDetailVisible.value && pagerState.currentPage != BottomNavScreen.Apps.index) {
+            pagerState.scrollToPage(BottomNavScreen.Apps.index)
+            selectedIndex = BottomNavScreen.Apps.index
+        }
+    }
 
-    LaunchedEffect(pagerState.currentPage) {
-        currentScreen.value = screens[pagerState.currentPage]
-        if (screens[pagerState.currentPage] != BottomNavScreen.Apps) {
-            isAppDetailOpen = false
+    BackHandler(enabled = !isAppsDetailVisible.value) {
+        val now = System.currentTimeMillis()
+        if (now - lastBackPressedAt <= 1800L) {
+            (context as? Activity)?.finish()
+        } else {
+            lastBackPressedAt = now
+            Toast.makeText(context, "再按一次退出", Toast.LENGTH_SHORT).show()
         }
     }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = {
-                    Text(
-                        stringResource(R.string.app_name),
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
-                )
-            )
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            // ==================== 内容区域（Apps 页面内置应用 LazyColumn，避免纵向列表嵌套） ====================
-            HorizontalPager(
-                state = pagerState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .nestedScroll(nestedScrollConnection),
-                beyondViewportPageCount = screens.lastIndex
-            ) { pageIndex ->
-                when (val screen = screens[pageIndex]) {
-                    BottomNavScreen.Apps -> {
-                        AppsScreen(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            onDetailModeChange = { isAppDetailOpen = it }
-                        )
-                    }
-
-                    else -> {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
-                        ) {
-                            item {
-                                when (screen) {
-                                    BottomNavScreen.Home -> HomeScreen()
-                                    BottomNavScreen.About -> AboutScreen()
-                                    else -> Unit
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ==================== 可隐藏的底部导航栏（绝对定位） ====================
+        contentWindowInsets = WindowInsets.safeDrawing,
+        bottomBar = {
             AnimatedVisibility(
-                visible = isBottomBarVisible.value && !isAppDetailOpen,
+                visible = !isAppsDetailVisible.value,
                 enter = slideInVertically(initialOffsetY = { it }),
-                exit = slideOutVertically(targetOffsetY = { it }),
-                modifier = Modifier.align(Alignment.BottomCenter)
+                exit = slideOutVertically(targetOffsetY = { it })
             ) {
                 NavigationBar(
                     containerColor = MaterialTheme.colorScheme.surface,
@@ -153,10 +87,16 @@ fun MainScreen() {
                 ) {
                     screens.forEach { screen ->
                         NavigationBarItem(
-                            selected = currentScreen.value == screen,
+                            selected = selectedIndex == screen.index,
                             onClick = {
-                                coroutineScope.launch {
-                                    pagerState.animateScrollToPage(screen.index)
+                                if (selectedIndex != screen.index) {
+                                    selectedIndex = screen.index
+                                    scope.launch {
+                                        pagerState.animateScrollToPage(
+                                            page = screen.index,
+                                            animationSpec = tween(durationMillis = 420, easing = navEasing)
+                                        )
+                                    }
                                 }
                             },
                             icon = {
@@ -182,6 +122,46 @@ fun MainScreen() {
                                 indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                             )
                         )
+                    }
+                }
+            }
+        }
+    ) { innerPadding ->
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+            beyondViewportPageCount = screens.lastIndex,
+            userScrollEnabled = !isAppsDetailVisible.value
+        ) { page ->
+            when (screens[page]) {
+                BottomNavScreen.Home -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        item { HomeScreen() }
+                    }
+                }
+
+                BottomNavScreen.Apps -> {
+                    AppsScreen(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        onDetailVisibleChange = { isAppsDetailVisible.value = it }
+                    )
+                }
+
+                BottomNavScreen.About -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        item { AboutScreen() }
                     }
                 }
             }

@@ -6,12 +6,12 @@ import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import io.github.libxposed.service.XposedService
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.nio.charset.StandardCharsets
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
@@ -19,16 +19,6 @@ object ScriptRepository {
     private const val TAG = "XiaoHeiHook-Scripts"
     private const val HEADER_BEGIN = "// ==LSPosedScript=="
     private const val HEADER_END = "// ==/LSPosedScript=="
-
-    private val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
-            .callTimeout(12, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build()
-    }
 
     val publicScriptsDir: File
         get() = File(
@@ -41,27 +31,38 @@ object ScriptRepository {
 
     val sampleScript: String = """
 // ==LSPosedScript==
-// @name         Application.onCreate 日志模板
-// @id           sample.application.oncreate.log
-// @version      1.0.0
+// @name         Application.onCreate 现代链式日志模板
+// @id           sample.application.oncreate.modern.log
+// @version      2.0.0
 // @author       XiaoHeiHook
-// @description  安全模板：在已启用的目标应用中记录 Application.onCreate，不修改应用行为。
+// @description  使用 libxposed 风格链式 API 记录 Application.onCreate，不修改应用行为。
 // @target       *
 // @process      *
 // @run-at       package-loaded
 // @grant        java.full
-// @grant        xposed.hook
+// @grant        xposed.full
+// @grant        xposed.raw
 // ==/LSPosedScript==
 
-console.log("script loaded for " + env.packageName + " / " + env.processName);
+const TAG = "XHH-Sample";
 
-xposed.hookMethod({
-    className: "android.app.Application",
-    methodName: "onCreate",
-    parameterTypes: [],
-    after: function (param) {
-        console.log("Application.onCreate finished: " + env.packageName);
-    }
+xposed.onPackageLoaded(function (param) {
+    xposed.i(TAG, "loaded package=" + param.getPackageName() + ", process=" + env.processName);
+
+    const appClass = Java.use("android.app.Application");
+    const onCreate = appClass.getDeclaredMethod("onCreate");
+    onCreate.setAccessible(true);
+
+    xposed
+        .hook(onCreate)
+        .setPriority(xposed.PRIORITY_DEFAULT)
+        .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
+        .intercept(function (chain) {
+            xposed.d(TAG, "Application.onCreate before: " + param.getPackageName());
+            const result = chain.proceed();
+            xposed.d(TAG, "Application.onCreate after: " + param.getPackageName());
+            return result;
+        });
 });
 """.trimIndent()
 
@@ -78,6 +79,16 @@ xposed.hookMethod({
         val stderr: String,
         val timedOut: Boolean = false
     )
+
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .callTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .build()
+    }
 
     fun hasAllFilesAccess(): Boolean {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
@@ -189,13 +200,13 @@ xposed.hookMethod({
                     Log.d(TAG, "readPublicScripts(File): enter dir=${dir.absolutePath}, canRead=${dir.canRead()}, listCount=${safeListCount(dir)}")
                     true
                 }
-                .filter { file -> file.isFile && isSupportedScriptPointer(file) }
+                .filter { file -> file.isFile && file.extension.equals("js", ignoreCase = true) }
                 .mapNotNull { file ->
                     val text = runCatching { file.readText(StandardCharsets.UTF_8) }
                         .onFailure { Log.e(TAG, "readPublicScripts(File): read failed ${file.absolutePath}", it) }
                         .getOrNull()
                         ?: return@mapNotNull null
-                    parseScriptPointer(file, text, "file", debugPackageName)
+                    parseScriptSource(file, text, "file", debugPackageName)
                 }
                 .sortedBy { it.metadata.name.lowercase() }
                 .toList()
@@ -230,7 +241,7 @@ xposed.hookMethod({
         val paths = findResult.stdout
             .lineSequence()
             .map { it.trim() }
-            .filter { it.isNotEmpty() && (it.endsWith(".js", ignoreCase = true) || it.endsWith(".url", ignoreCase = true)) }
+            .filter { it.isNotEmpty() && it.endsWith(".js", ignoreCase = true) }
             .distinct()
             .toList()
 
@@ -245,314 +256,120 @@ xposed.hookMethod({
                 )
                 return@mapNotNull null
             }
-            Log.d(TAG, "readPublicScripts(root): found pointer=$path, chars=${catResult.stdout.length}")
-            parseScriptPointer(File(path), catResult.stdout, "root", debugPackageName)
+            Log.d(TAG, "readPublicScripts(root): found js=$path, chars=${catResult.stdout.length}")
+            parseScriptSource(File(path), catResult.stdout, "root", debugPackageName)
         }.sortedBy { it.metadata.name.lowercase() }
 
         Log.d(TAG, "readPublicScripts(root): done, count=${sources.size}")
         return sources
     }
 
-    private fun parseScriptPointer(
-        file: File,
-        text: String,
-        source: String,
-        debugPackageName: String?
-    ): ScriptSource? {
-        return if (file.extension.equals("url", ignoreCase = true)) {
-            parseUrlScriptSource(file, text, source, debugPackageName)
-        } else {
-            parseLocalScriptSource(file, text, source, debugPackageName)
-        }
-    }
-
-    private fun parseLocalScriptSource(
+    private fun parseScriptSource(
         file: File,
         text: String,
         source: String,
         debugPackageName: String?
     ): ScriptSource {
-        val metadata = parseMetadata(text, file.nameWithoutExtension).copy(sourceMode = "local", url = "")
+        val metadata = parseMetadata(text, file.nameWithoutExtension)
         val matchInfo = debugPackageName?.let { packageName ->
             ", supports($packageName)=${metadata.supportsPackage(packageName)}"
         }.orEmpty()
         Log.d(
             TAG,
-            "readPublicScripts($source): parsed file=${file.name}, id=${metadata.id}, name=${metadata.name}, targets=${metadata.targets}, processes=${metadata.processes}$matchInfo"
+            "readPublicScripts($source): parsed file=${file.name}, id=${metadata.id}, name=${metadata.name}, targets=${metadata.targets}, processes=${metadata.processes}, url=${metadata.url}, urlRefresh=${metadata.urlRefreshOnApply}$matchInfo"
         )
         return ScriptSource(metadata, file, text, source)
-    }
-
-    private fun parseUrlScriptSource(
-        file: File,
-        pointerContent: String,
-        source: String,
-        debugPackageName: String?
-    ): ScriptSource? {
-        val pointerMetadata = parseMetadata(pointerContent, file.nameWithoutExtension.ifBlank { "url_pointer" })
-        val url = extractUrlFromPointer(pointerContent, pointerMetadata.url)
-        if (url.isNullOrBlank()) {
-            Log.w(TAG, "readPublicScripts($source-url): empty url pointer=${file.absolutePath}")
-            return null
-        }
-        if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            Log.w(TAG, "readPublicScripts($source-url): unsupported url=$url")
-            return null
-        }
-
-        // URL 脚本指针应该先显示在列表里，再尝试下载正文。
-        // 之前这里下载失败会直接 return null，导致“URL 已添加但脚本列表不显示”。
-        // 现在下载失败时返回一个 pending URL 脚本项；同步时再明确提示下载失败。
-        val stableId = pointerMetadata.id.ifBlank { file.nameWithoutExtension.ifBlank { "url_${sha1(url).take(12)}" } }
-        val scriptText = runCatching { downloadUrlText(url) }
-            .onFailure { Log.e(TAG, "readPublicScripts($source-url): download failed but keep pointer visible url=$url", it) }
-            .getOrNull()
-
-        val downloadedMetadata = scriptText?.let { parseMetadata(it, stableId) }
-        val baseMetadata = downloadedMetadata ?: pointerMetadata
-        val metadata = baseMetadata.copy(
-            // URL 指针的 id 保持稳定，避免远程脚本下载成功/失败时 UI 和单脚本同步找不到同一个脚本。
-            id = stableId,
-            name = when {
-                downloadedMetadata != null && downloadedMetadata.name != downloadedMetadata.id -> downloadedMetadata.name
-                pointerMetadata.name != pointerMetadata.id -> pointerMetadata.name
-                else -> "URL Script ${url.substringAfterLast('/').substringBefore('?').ifBlank { stableId }}"
-            },
-            author = when {
-                downloadedMetadata != null && downloadedMetadata.author != "Unknown" -> downloadedMetadata.author
-                pointerMetadata.author != "Unknown" -> pointerMetadata.author
-                else -> "URL"
-            },
-            description = when {
-                downloadedMetadata != null && downloadedMetadata.description.isNotBlank() -> downloadedMetadata.description
-                pointerMetadata.description.isNotBlank() -> pointerMetadata.description
-                else -> "Remote URL script: $url"
-            },
-            targets = if (downloadedMetadata?.targets?.isNotEmpty() == true) downloadedMetadata.targets else pointerMetadata.targets,
-            processes = if (downloadedMetadata?.processes?.isNotEmpty() == true) downloadedMetadata.processes else pointerMetadata.processes,
-            grants = if (downloadedMetadata?.grants?.isNotEmpty() == true) downloadedMetadata.grants else pointerMetadata.grants,
-            remoteName = remoteNameFor(stableId),
-            sourceMode = if (scriptText == null) "url-pending" else "url",
-            url = url
-        )
-        val matchInfo = debugPackageName?.let { packageName ->
-            ", supports($packageName)=${metadata.supportsPackage(packageName)}"
-        }.orEmpty()
-        Log.d(
-            TAG,
-            "readPublicScripts($source-url): parsed pointer=${file.name}, id=${metadata.id}, name=${metadata.name}, url=$url, targets=${metadata.targets}, downloaded=${scriptText != null}, chars=${scriptText?.length ?: 0}$matchInfo"
-        )
-        return ScriptSource(metadata, file, scriptText.orEmpty(), if (scriptText == null) "$source-url-pending" else "$source-url")
-    }
-
-    private fun resolveUrlSourceForSync(source: ScriptSource): ScriptSource {
-        if (!source.metadata.sourceMode.startsWith("url")) return source
-        if (source.content.isNotBlank()) return source
-
-        val url = source.metadata.url.trim()
-        if (url.isBlank()) {
-            Log.e(TAG, "syncPublicScriptsToRemote: pending URL source has empty url id=${source.metadata.id}, file=${source.file.absolutePath}")
-            return source
-        }
-
-        Log.d(
-            TAG,
-            "syncPublicScriptsToRemote: retry download pending URL id=${source.metadata.id}, name=${source.metadata.name}, url=$url"
-        )
-        val scriptText = runCatching { downloadUrlText(url) }
-            .onFailure { Log.e(TAG, "syncPublicScriptsToRemote: retry URL download failed url=$url", it) }
-            .getOrNull()
-            ?: return source
-
-        val downloadedMetadata = parseMetadata(scriptText, source.metadata.id)
-        val metadata = source.metadata.copy(
-            name = if (downloadedMetadata.name != downloadedMetadata.id) downloadedMetadata.name else source.metadata.name,
-            author = if (downloadedMetadata.author != "Unknown") downloadedMetadata.author else source.metadata.author,
-            description = downloadedMetadata.description.ifBlank { source.metadata.description },
-            targets = if (downloadedMetadata.targets.isNotEmpty()) downloadedMetadata.targets else source.metadata.targets,
-            processes = if (downloadedMetadata.processes.isNotEmpty()) downloadedMetadata.processes else source.metadata.processes,
-            grants = if (downloadedMetadata.grants.isNotEmpty()) downloadedMetadata.grants else source.metadata.grants,
-            remoteName = source.metadata.remoteName.ifBlank { remoteNameFor(source.metadata.id) },
-            sourceMode = "url",
-            url = url
-        )
-        Log.d(TAG, "syncPublicScriptsToRemote: retry URL download success id=${metadata.id}, chars=${scriptText.length}, sha1=${sha1(scriptText).take(12)}")
-        return source.copy(metadata = metadata, content = scriptText, source = source.source.removeSuffix("-pending") + "-sync")
     }
 
     fun syncPublicScriptsToRemote(
         service: XposedService?,
         prefs: SharedPreferences?,
         debugPackageName: String? = null,
-        allowRootFallback: Boolean = true,
-        onlyEnabledApps: Boolean = false,
-        singleScriptId: String? = null
+        allowRootFallback: Boolean = true
     ): Result<List<ScriptMetadata>> = runCatching {
-        Log.d(
-            TAG,
-            "syncPublicScriptsToRemote: start, service=${service != null}, prefs=${prefs != null}, debugPackage=${debugPackageName.orEmpty()}, allowRootFallback=$allowRootFallback, onlyEnabledApps=$onlyEnabledApps, singleScriptId=${singleScriptId.orEmpty()}"
-        )
+        Log.d(TAG, "syncPublicScriptsToRemote: start, service=${service != null}, prefs=${prefs != null}, debugPackage=${debugPackageName.orEmpty()}, allowRootFallback=$allowRootFallback")
         if (service == null || prefs == null) {
             throw IllegalStateException("LSPosed 服务未连接，无法同步 Remote Files")
         }
 
-        val allSources = readPublicScriptSources(debugPackageName, allowRootFallback)
-        val enabledPackages = enabledPackages(prefs)
-        val sourcesToWrite = allSources.filter { source ->
-            when {
-                singleScriptId != null -> source.metadata.id == singleScriptId
-                onlyEnabledApps -> enabledPackages.isNotEmpty() && source.metadata.supportsAnyPackage(enabledPackages)
-                debugPackageName != null -> source.metadata.supportsPackage(debugPackageName)
-                else -> true
-            }
-        }
-
-        val resolvedSourcesToWrite = sourcesToWrite.map { source ->
-            resolveUrlSourceForSync(source)
-        }
-
-        val failedUrlSources = resolvedSourcesToWrite.filter { source ->
-            source.metadata.sourceMode.startsWith("url") && source.content.isBlank()
-        }
-        if (failedUrlSources.isNotEmpty()) {
-            val message = "URL 脚本下载失败，未写入 Remote Files：" +
-                failedUrlSources.joinToString { "${it.metadata.name} <${it.metadata.url}>" }
-            Log.e(TAG, "syncPublicScriptsToRemote: $message")
-            throw IllegalStateException(message)
-        }
-
-        val syncedMetadata = resolvedSourcesToWrite.map { source ->
+        val scripts = readPublicScriptSources(debugPackageName, allowRootFallback).map { source ->
             val remoteName = source.metadata.remoteName.ifBlank { remoteNameFor(source.metadata.id) }
-            val finalMode = if (source.metadata.sourceMode == "url-pending") "url" else source.metadata.sourceMode
+            val contentToWrite = resolveScriptContentForApply(source)
             Log.d(
                 TAG,
-                "syncPublicScriptsToRemote: write remoteName=$remoteName, file=${source.file.absolutePath}, id=${source.metadata.id}, mode=${source.metadata.sourceMode}, source=${source.source}, chars=${source.content.length}"
+                "syncPublicScriptsToRemote: write remoteName=$remoteName, file=${source.file.absolutePath}, id=${source.metadata.id}, source=${source.source}, mode=${source.metadata.sourceMode}, urlRefresh=${source.metadata.urlRefreshOnApply}, chars=${contentToWrite.length}"
             )
-            writeRemoteFile(service, remoteName, source.content)
-            source.metadata.copy(remoteName = remoteName, sourceMode = finalMode)
-        }
-
-        val previous = parseIndex(prefs.getString(ScriptPrefs.SCRIPT_INDEX_JSON, "[]"))
-        val finalIndex = when {
-            singleScriptId != null -> {
-                (previous.filterNot { it.id == singleScriptId } + syncedMetadata)
-                    .distinctBy { it.id }
-                    .sortedBy { it.name.lowercase() }
-            }
-            debugPackageName != null -> {
-                (previous.filterNot { it.supportsPackage(debugPackageName) } + syncedMetadata)
-                    .distinctBy { it.id }
-                    .sortedBy { it.name.lowercase() }
-            }
-            else -> syncedMetadata.sortedBy { it.name.lowercase() }
+            writeRemoteFile(service, remoteName, contentToWrite)
+            source.metadata.copy(remoteName = remoteName)
         }
 
         prefs.edit()
-            .putString(ScriptPrefs.SCRIPT_INDEX_JSON, finalIndex.toJson().toString())
+            .putString(ScriptPrefs.SCRIPT_INDEX_JSON, scripts.toJson().toString())
             .apply()
 
-        Log.d(
-            TAG,
-            "syncPublicScriptsToRemote: saved index count=${finalIndex.size}, wrote=${syncedMetadata.size}, enabledPackages=${enabledPackages.joinToString()}"
-        )
-        finalIndex
+        Log.d(TAG, "syncPublicScriptsToRemote: saved index count=${scripts.size}")
+        scripts
     }
+
+
 
     fun syncEnabledAppsScriptsToRemote(
         service: XposedService?,
         prefs: SharedPreferences?,
         allowRootFallback: Boolean = true
-    ): Result<List<ScriptMetadata>> {
-        return syncPublicScriptsToRemote(
-            service = service,
-            prefs = prefs,
-            allowRootFallback = allowRootFallback,
-            onlyEnabledApps = true
-        )
-    }
-
-    fun syncSingleScriptToRemote(
-        service: XposedService?,
-        prefs: SharedPreferences?,
-        scriptId: String,
-        debugPackageName: String? = null,
-        allowRootFallback: Boolean = true
-    ): Result<List<ScriptMetadata>> {
-        return syncPublicScriptsToRemote(
-            service = service,
-            prefs = prefs,
-            debugPackageName = debugPackageName,
-            allowRootFallback = allowRootFallback,
-            singleScriptId = scriptId
-        )
-    }
-
-    fun createUrlScriptPointer(
-        url: String,
-        targetPackage: String? = null,
-        allowRootFallback: Boolean = true
-    ): Result<File> = runCatching {
-        val cleanedUrl = url.trim()
-        if (!cleanedUrl.startsWith("http://") && !cleanedUrl.startsWith("https://")) {
-            throw IllegalArgumentException("URL 必须以 http:// 或 https:// 开头")
+    ): Result<List<ScriptMetadata>> = runCatching {
+        Log.d(TAG, "syncEnabledAppsScriptsToRemote: start, service=${service != null}, prefs=${prefs != null}, allowRootFallback=$allowRootFallback")
+        if (service == null || prefs == null) {
+            throw IllegalStateException("LSPosed 服务未连接，无法同步 Remote Files")
         }
-        ensurePublicFolderAndSample(allowRootFallback).getOrThrow()
-        val urlDir = File(publicScriptsDir, "urls")
-        if (!urlDir.exists() && !urlDir.mkdirs()) {
-            if (allowRootFallback) {
-                runRootCommand("mkdir -p ${shellQuote(urlDir.absolutePath)}", timeoutSeconds = 5)
+
+        val enabledPackages = prefs.all
+            .asSequence()
+            .filter { (key, value) -> key.startsWith("app_enabled_") && value == true }
+            .map { (key, _) -> key.removePrefix("app_enabled_") }
+            .filter { it.isNotBlank() }
+            .toList()
+
+        if (enabledPackages.isEmpty()) {
+            prefs.edit().putString(ScriptPrefs.SCRIPT_INDEX_JSON, JSONArray().toString()).apply()
+            Log.d(TAG, "syncEnabledAppsScriptsToRemote: no enabled apps, clear remote index")
+            return@runCatching emptyList()
+        }
+
+        val enabledPackageSet = enabledPackages.toSet()
+        val sources = readPublicScriptSources(debugPackageName = null, allowRootFallback = allowRootFallback)
+        val selected = sources.filter { source ->
+            val matchedPackages = enabledPackageSet.filter { packageName -> source.metadata.supportsPackage(packageName) }
+            val enabledForAnyPackage = matchedPackages.any { packageName ->
+                prefs.getBoolean(ScriptPrefs.scriptEnabledKey(packageName, source.metadata.id), false)
             }
+            Log.d(
+                TAG,
+                "syncEnabledAppsScriptsToRemote: inspect id=${source.metadata.id}, matchedPackages=$matchedPackages, enabledForAnyPackage=$enabledForAnyPackage"
+            )
+            enabledForAnyPackage
         }
-        if (!urlDir.exists()) {
-            throw IllegalStateException("无法创建 URL 脚本目录：${urlDir.absolutePath}")
-        }
-        val hash = sha1(cleanedUrl).take(12)
-        val id = "url.$hash"
-        val target = targetPackage?.takeIf { it.isNotBlank() } ?: "*"
-        val file = File(urlDir, "url_$hash.url")
-        val displayName = cleanedUrl.substringAfterLast('/').substringBefore('?').ifBlank { hash }
-        val pointerText = """
-// ==LSPosedScript==
-// @name         URL Script $displayName
-// @id           $id
-// @version      1.0.0
-// @author       URL
-// @description  Remote URL script: $cleanedUrl
-// @target       $target
-// @process      *
-// @run-at       package-loaded
-// @grant        java.full
-// @grant        xposed.hook
-// @mode         url
-// @url          $cleanedUrl
-// ==/LSPosedScript==
-$cleanedUrl
-""".trimIndent() + "\n"
-        runCatching { file.writeText(pointerText, StandardCharsets.UTF_8) }.getOrElse { error ->
-            if (!allowRootFallback) throw error
-            val cmd = "cat > ${shellQuote(file.absolutePath)} <<'EOF'\n$pointerText\nEOF"
-            val result = runRootCommand(cmd, timeoutSeconds = 5)
-            if (result.timedOut || result.exitCode != 0) {
-                throw IllegalStateException("写入 URL 指针失败：${result.stderr.trim()}", error)
-            }
-        }
-        Log.d(TAG, "createUrlScriptPointer: url=$cleanedUrl, target=$target, file=${file.absolutePath}")
-        file
-    }
 
-    fun packageScriptFingerprint(
-        packageName: String,
-        allowRootFallback: Boolean = true
-    ): String {
-        val sources = readPublicScriptSources(packageName, allowRootFallback)
-            .filter { it.metadata.supportsPackage(packageName) }
-            .sortedBy { it.metadata.id }
-        val raw = sources.joinToString("\n") { source ->
-            "${source.metadata.id}:${source.metadata.sourceMode}:${source.metadata.url}:${sha1(source.content)}"
+        val scripts = selected.map { source ->
+            val remoteName = source.metadata.remoteName.ifBlank { remoteNameFor(source.metadata.id) }
+            val contentToWrite = resolveScriptContentForApply(source)
+            Log.d(
+                TAG,
+                "syncEnabledAppsScriptsToRemote: write remoteName=$remoteName, file=${source.file.absolutePath}, id=${source.metadata.id}, source=${source.source}, mode=${source.metadata.sourceMode}, urlRefresh=${source.metadata.urlRefreshOnApply}, chars=${contentToWrite.length}"
+            )
+            writeRemoteFile(service, remoteName, contentToWrite)
+            source.metadata.copy(remoteName = remoteName)
         }
-        val fingerprint = sha1(raw)
-        Log.d(TAG, "packageScriptFingerprint: package=$packageName, count=${sources.size}, fingerprint=$fingerprint")
-        return fingerprint
+
+        prefs.edit()
+            .putString(ScriptPrefs.SCRIPT_INDEX_JSON, scripts.toJson().toString())
+            .apply()
+
+        Log.d(
+            TAG,
+            "syncEnabledAppsScriptsToRemote: saved index count=${scripts.size}, enabledPackages=${enabledPackages.joinToString()}"
+        )
+        scripts
     }
 
     fun parseMetadata(script: String, fallbackId: String): ScriptMetadata {
@@ -579,6 +396,12 @@ $cleanedUrl
         }
 
         val id = values.first("id") ?: fallbackId
+        val url = values.first("url").orEmpty().trim()
+        val refreshOnApply = values.first("url-refresh")
+            ?: values.first("url-refresh-on-apply")
+            ?: values.first("refresh-url")
+            ?: values.first("remote-refresh")
+
         return ScriptMetadata(
             id = id,
             name = values.first("name") ?: id,
@@ -590,8 +413,9 @@ $cleanedUrl
             runAt = values.first("run-at") ?: "package-loaded",
             grants = values["grant"].orEmpty().flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() },
             remoteName = remoteNameFor(id),
-            sourceMode = values.first("mode") ?: values.first("source") ?: "local",
-            url = values.first("url") ?: ""
+            sourceMode = if (url.isNotBlank()) "url-meta" else "local",
+            url = url,
+            urlRefreshOnApply = parseBooleanLike(refreshOnApply)
         )
     }
 
@@ -611,6 +435,7 @@ $cleanedUrl
                 put("remoteName", script.remoteName.ifBlank { remoteNameFor(script.id) })
                 put("sourceMode", script.sourceMode)
                 put("url", script.url)
+                put("urlRefreshOnApply", script.urlRefreshOnApply)
             })
         }
         return array
@@ -635,8 +460,9 @@ $cleanedUrl
                             runAt = obj.optString("runAt", "package-loaded"),
                             grants = obj.optJSONArray("grants").toStringList(),
                             remoteName = obj.optString("remoteName", remoteNameFor(obj.optString("id"))),
-                            sourceMode = obj.optString("sourceMode", "local"),
-                            url = obj.optString("url", "")
+                            sourceMode = obj.optString("sourceMode", if (obj.optString("url").isNotBlank()) "url-meta" else "local"),
+                            url = obj.optString("url", ""),
+                            urlRefreshOnApply = obj.optBoolean("urlRefreshOnApply", false)
                         )
                     )
                 }
@@ -647,86 +473,50 @@ $cleanedUrl
         }
     }
 
-    private fun enabledPackages(prefs: SharedPreferences): List<String> {
-        return prefs.all
-            .filter { (key, value) -> key.startsWith("app_enabled_") && value == true }
-            .map { it.key.removePrefix("app_enabled_") }
-            .filter { it.isNotBlank() }
-            .sorted()
-    }
 
-    private fun isSupportedScriptPointer(file: File): Boolean {
-        return file.extension.equals("js", ignoreCase = true) || file.extension.equals("url", ignoreCase = true)
-    }
-
-    private fun extractUrlFromPointer(pointerContent: String, metadataUrl: String): String? {
-        cleanUrlCandidate(metadataUrl)?.let { return it }
-
-        val direct = pointerContent.lineSequence()
-            .map { it.trim() }
-            .mapNotNull { line ->
-                when {
-                    line.startsWith("http://") || line.startsWith("https://") -> line
-                    line.startsWith("url=", ignoreCase = true) -> line.substringAfter('=').trim()
-                    line.startsWith("// @url") -> line.removePrefix("// @url").trim()
-                    line.startsWith("@url") -> line.removePrefix("@url").trim()
-                    else -> null
-                }
-            }
-            .firstNotNullOfOrNull { cleanUrlCandidate(it) }
-        if (direct != null) return direct
-
-        // 兼容用户手写的 “URL Script qidian.js <http://host/qidian.js>” 这类格式。
-        val inline = Regex("https?://[^\\s<>\"']+")
-            .find(pointerContent)
-            ?.value
-            ?.let { cleanUrlCandidate(it) }
-        if (inline != null) {
-            Log.d(TAG, "extractUrlFromPointer: extracted inline url=$inline")
+    private fun resolveScriptContentForApply(source: ScriptSource): String {
+        val metadata = source.metadata
+        if (metadata.url.isBlank() || !metadata.urlRefreshOnApply) {
+            return source.content
         }
-        return inline
-    }
 
-    private fun cleanUrlCandidate(raw: String?): String? {
-        val cleaned = raw
-            ?.trim()
-            ?.trim('<', '>', '"', '\'', '`', ' ', '\t', '\r', '\n')
-            ?.trimEnd(',', ';', ')', ']', '}')
-            ?.trim()
-            .orEmpty()
-        return cleaned.takeIf { it.startsWith("http://") || it.startsWith("https://") }
-    }
-
-    private fun downloadUrlText(url: String): String {
-        val cleanedUrl = cleanUrlCandidate(url) ?: throw IllegalArgumentException("无效 URL：$url")
-        if (cleanedUrl.startsWith("http://127.0.0.1") || cleanedUrl.startsWith("http://localhost")) {
-            Log.w(TAG, "downloadUrlText(OkHttp): 127.0.0.1/localhost 指向手机本机；如果服务在电脑上，请使用电脑局域网 IP，或先执行 adb reverse tcp:8000 tcp:8000")
+        Log.d(TAG, "resolveScriptContentForApply: refresh URL before apply, id=${metadata.id}, url=${metadata.url}")
+        return downloadUrlText(metadata.url).getOrElse { error ->
+            Log.e(TAG, "resolveScriptContentForApply: URL refresh failed, id=${metadata.id}, url=${metadata.url}", error)
+            throw IllegalStateException("URL 脚本拉取失败：${metadata.name} <${metadata.url}>", error)
         }
-        Log.d(TAG, "downloadUrlText(OkHttp): start url=$cleanedUrl")
+    }
+
+    private fun downloadUrlText(url: String): Result<String> = runCatching {
+        if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
+            throw IllegalArgumentException("仅支持 http/https URL：$url")
+        }
+        if (url.contains("127.0.0.1") || url.contains("localhost", ignoreCase = true)) {
+            Log.w(TAG, "downloadUrlText: 127.0.0.1/localhost 指向手机本机；电脑服务请使用 adb reverse 或电脑局域网 IP")
+        }
+
+        Log.d(TAG, "downloadUrlText: start url=$url")
         val request = Request.Builder()
-            .url(cleanedUrl)
+            .url(url)
             .header("User-Agent", "XiaoHeiHook/1.0")
-            .header("Accept", "text/javascript, application/javascript, text/plain, */*")
-            .get()
             .build()
-
         httpClient.newCall(request).execute().use { response ->
-            val code = response.code
-            val finalUrl = response.request.url.toString()
-            val contentType = response.header("Content-Type").orEmpty()
-            val bodyText = response.body?.string().orEmpty()
-            Log.d(
-                TAG,
-                "downloadUrlText(OkHttp): response code=$code, type=$contentType, finalUrl=$finalUrl, chars=${bodyText.length}"
-            )
+            val body = response.body?.string().orEmpty()
+            Log.d(TAG, "downloadUrlText: code=${response.code}, finalUrl=${response.request.url}, chars=${body.length}")
             if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP $code ${bodyText.take(300)}")
+                throw IllegalStateException("HTTP ${response.code}: $url")
             }
-            if (bodyText.isBlank()) {
-                throw IllegalStateException("URL 脚本内容为空：$cleanedUrl")
+            if (body.isBlank()) {
+                throw IllegalStateException("远端脚本为空：$url")
             }
-            Log.d(TAG, "downloadUrlText(OkHttp): success url=$cleanedUrl, sha1=${sha1(bodyText).take(12)}")
-            return bodyText
+            body
+        }
+    }
+
+    private fun parseBooleanLike(value: String?): Boolean {
+        return when (value?.trim()?.lowercase()) {
+            "1", "true", "yes", "y", "on", "always", "apply", "sync" -> true
+            else -> false
         }
     }
 

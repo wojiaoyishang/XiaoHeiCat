@@ -21,7 +21,8 @@ data class ScriptMetadata(
     val grants: List<String> = emptyList(),
     val remoteName: String = "",
     val sourceMode: String = "local",
-    val url: String = ""
+    val url: String = "",
+    val urlRefreshOnApply: Boolean = false
 ) {
     fun supportsPackage(packageName: String): Boolean {
         return targets.isEmpty() || targets.any { it == "*" || it == packageName }
@@ -40,6 +41,4 @@ object ScriptPrefs {
 
     fun scriptEnabledKey(packageName: String, scriptId: String): String =
         "script_enabled_${packageName}_${scriptId}"
-
-    fun hotReloadEnabledKey(packageName: String): String = "hot_reload_$packageName"
 }

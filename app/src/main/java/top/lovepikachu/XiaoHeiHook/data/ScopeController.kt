@@ -60,19 +60,6 @@ object ScopeController {
             ?: false
     }
 
-    fun setHotReloadEnabled(packageName: String, enabled: Boolean) {
-        XiaoHeiApplication.remotePreferences
-            ?.edit()
-            ?.putBoolean(ScriptPrefs.hotReloadEnabledKey(packageName), enabled)
-            ?.apply()
-    }
-
-    fun isHotReloadEnabled(packageName: String): Boolean {
-        return XiaoHeiApplication.remotePreferences
-            ?.getBoolean(ScriptPrefs.hotReloadEnabledKey(packageName), false)
-            ?: false
-    }
-
     private fun main(block: () -> Unit) {
         Handler(Looper.getMainLooper()).post(block)
     }
