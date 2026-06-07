@@ -1,0 +1,143 @@
+{
+  "version": 1,
+  "title": "全部配置项测试",
+  "fields": [
+    { "type": "heading", "label": "基础设置" },
+    {
+      "type": "info",
+      "tone": "info",
+      "title": "说明",
+      "message": "这是 settings.json 动态表单测试脚本。设置值会按 packageName + scriptId 分应用保存。"
+    },
+    {
+      "key": "enabled",
+      "type": "switch",
+      "label": "启用脚本逻辑",
+      "description": "关闭后脚本只打印 settings 内容，不安装业务 hook。",
+      "default": true
+    },
+    {
+      "key": "strictMode",
+      "type": "checkbox",
+      "label": "严格模式",
+      "description": "复选框样式，和 switch 都是布尔值。",
+      "default": false
+    },
+    {
+      "key": "maxLogLength",
+      "type": "number",
+      "label": "日志最大长度",
+      "description": "滑块 + 数字输入；支持滚轮调整。",
+      "default": 240,
+      "min": 20,
+      "max": 2000,
+      "step": 10,
+      "integer": true
+    },
+    {
+      "key": "tag",
+      "type": "text",
+      "label": "日志 TAG",
+      "default": "XHH-SettingsTest",
+      "placeholder": "输入 TAG"
+    },
+    {
+      "key": "note",
+      "type": "text",
+      "label": "多行备注",
+      "default": "第一行\n第二行",
+      "multiline": true,
+      "maxLength": 2000
+    },
+    {
+      "key": "passwordLike",
+      "type": "text",
+      "label": "掩码文本",
+      "default": "secret",
+      "masked": true
+    },
+    {
+      "key": "mode",
+      "type": "select",
+      "label": "运行模式",
+      "default": "basic",
+      "options": [
+        { "label": "基础", "value": "basic" },
+        { "label": "详细", "value": "verbose" },
+        { "label": "静默", "value": "silent" }
+      ]
+    },
+    {
+      "type": "group",
+      "label": "Radio 分组",
+      "description": "group 内包含 radio 时，前端按单选组布局展示。",
+      "items": [
+        { "key": "radioMode", "type": "radio", "label": "自动", "value": "auto", "default": "auto" },
+        { "key": "radioMode", "type": "radio", "label": "手动", "value": "manual" },
+        { "key": "radioMode", "type": "radio", "label": "关闭", "value": "off" }
+      ]
+    },
+    {
+      "key": "headers",
+      "type": "tags",
+      "label": "脱敏 Header 标签",
+      "default": ["authorization", "cookie", "x-api-key"],
+      "maxItems": 64
+    },
+    {
+      "key": "rewriteMap",
+      "type": "custom",
+      "label": "自定义键值对",
+      "description": "用于测试任意字符串映射。",
+      "default": {
+        "from": "old-value",
+        "to": "new-value"
+      },
+      "maxItems": 32
+    },
+    {
+      "type": "heading",
+      "label": "规则列表"
+    },
+    {
+      "key": "rules",
+      "type": "list",
+      "label": "规则列表",
+      "description": "支持添加、删除、复制、上移、下移、展开/折叠，并通过 name 去重。",
+      "uniqueKey": "name",
+      "maxItems": 16,
+      "items": [
+        { "key": "name", "type": "text", "label": "规则名", "default": "default-rule" },
+        { "key": "active", "type": "switch", "label": "启用", "default": true },
+        {
+          "key": "level",
+          "type": "select",
+          "label": "等级",
+          "default": "normal",
+          "options": [
+            { "label": "低", "value": "low" },
+            { "label": "普通", "value": "normal" },
+            { "label": "高", "value": "high" }
+          ]
+        },
+        { "key": "limit", "type": "number", "label": "限制", "default": 5, "min": 0, "max": 100, "step": 1, "integer": true },
+        { "key": "patterns", "type": "tags", "label": "匹配标签", "default": ["demo", "test"] },
+        {
+          "type": "info",
+          "tone": "warning",
+          "title": "列表项内提示",
+          "message": "list 的每个子项可以继续嵌套任意设置类型。"
+        }
+      ],
+      "default": [
+        {
+          "name": "default-rule",
+          "active": true,
+          "level": "normal",
+          "limit": 5,
+          "patterns": ["demo", "test"]
+        }
+      ]
+    }
+  ]
+}
