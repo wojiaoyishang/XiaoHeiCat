@@ -3,10 +3,13 @@ package top.lovepikachu.XiaoHeiHook.pages
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import android.provider.DocumentsContract
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
+import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -53,10 +56,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 import top.lovepikachu.XiaoHeiHook.data.AppControl
 import top.lovepikachu.XiaoHeiHook.data.AppLogRepository
@@ -1206,6 +1211,8 @@ private fun AppRow(
     }
 }
 
+private const val SCRIPT_FILE_PROVIDER_AUTHORITY = "top.lovepikachu.XiaoHeiHook.scriptfileprovider"
+
 private fun openScriptLocation(context: Context, script: ScriptMetadata) {
     val targetRelativePath = when {
         script.kind == "directory" && script.rootPath.isNotBlank() -> script.rootPath
@@ -1220,46 +1227,108 @@ private fun openScriptLocation(context: Context, script: ScriptMetadata) {
     }
 
     val isDirectory = script.kind == "directory" || (script.rootPath.isNotBlank() && targetRelativePath == script.rootPath)
-    val uri = externalStorageDocumentUri(targetRelativePath)
-    val mime = if (isDirectory) "vnd.android.document/directory" else when {
-        targetRelativePath.endsWith(".js", ignoreCase = true) -> "text/javascript"
-        targetRelativePath.endsWith(".json", ignoreCase = true) -> "application/json"
+
+    if (isDirectory) {
+        openScriptDirectory(context, targetRelativePath)
+    } else {
+        openScriptFile(context, targetRelativePath)
+    }
+}
+
+private fun openScriptFile(context: Context, relativePath: String) {
+    val file = resolveScriptFile(relativePath)
+    if (!file.isFile) {
+        Toast.makeText(context, "脚本文件不存在：$relativePath", Toast.LENGTH_SHORT).show()
+        openScriptDirectory(context, relativePath.substringBeforeLast('/', ""))
+        return
+    }
+
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, SCRIPT_FILE_PROVIDER_AUTHORITY, file)
+    }.getOrElse { error ->
+        Toast.makeText(context, error.message ?: "无法生成脚本文件 Uri", Toast.LENGTH_LONG).show()
+        return
+    }
+
+    val mime = when {
+        relativePath.endsWith(".js", ignoreCase = true) -> "text/javascript"
+        relativePath.endsWith(".json", ignoreCase = true) -> "application/json"
+        relativePath.endsWith(".md", ignoreCase = true) -> "text/markdown"
+        relativePath.endsWith(".txt", ignoreCase = true) -> "text/plain"
         else -> "text/plain"
     }
 
-    val intent = Intent(Intent.ACTION_VIEW).apply {
+    val viewIntent = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(uri, mime)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 
-    runCatching { context.startActivity(intent) }
-        .onFailure {
-            val fallback = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(externalStorageDocumentUri(""), "vnd.android.document/directory")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            runCatching { context.startActivity(fallback) }
-                .onFailure { error ->
-                    Toast.makeText(context, error.message ?: "无法打开脚本文件", Toast.LENGTH_LONG).show()
-                }
-        }
+    grantScriptFileUri(context, uri, viewIntent)
+
+    runCatching {
+        context.startActivity(Intent.createChooser(viewIntent, "打开脚本文件").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        })
+    }.onFailure {
+        // Fallback to system file picker near the script. This avoids showing a raw permission error.
+        openScriptDirectory(context, relativePath.substringBeforeLast('/', ""))
+    }
 }
 
-private fun externalStorageDocumentUri(relativePath: String): Uri {
+private fun openScriptDirectory(context: Context, relativePath: String) {
     val clean = relativePath.trim('/').replace('\\', '/')
-    val documentId = if (clean.isBlank()) {
+    val docId = if (clean.isBlank()) {
         "primary:Documents/XiaoHeiHook"
     } else {
         "primary:Documents/XiaoHeiHook/$clean"
     }
-    return Uri.Builder()
-        .scheme("content")
-        .authority("com.android.externalstorage.documents")
-        .appendPath("document")
-        .appendPath(documentId)
-        .build()
+
+    val initialUri = DocumentsContract.buildTreeDocumentUri(
+        "com.android.externalstorage.documents",
+        docId
+    )
+
+    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+        putExtra(DocumentsContract.EXTRA_INITIAL_URI, initialUri)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+    }
+
+    runCatching { context.startActivity(intent) }
+        .onFailure { error ->
+            Toast.makeText(context, error.message ?: "无法打开脚本目录", Toast.LENGTH_LONG).show()
+        }
+}
+
+private fun resolveScriptFile(relativePath: String): File {
+    val clean = relativePath.trim('/').replace('\\', '/')
+    val root = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "XiaoHeiHook").canonicalFile
+    val target = File(root, clean).canonicalFile
+    require(target.path == root.path || target.path.startsWith(root.path + File.separator)) {
+        "脚本路径越界"
+    }
+    return target
+}
+
+private fun grantScriptFileUri(context: Context, uri: Uri, intent: Intent) {
+    val pm = context.packageManager
+    val activities = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()))
+    } else {
+        @Suppress("DEPRECATION")
+        pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+    }
+    for (info in activities) {
+        val packageName = info.activityInfo?.packageName ?: continue
+        runCatching {
+            context.grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
 }
 
 @Composable

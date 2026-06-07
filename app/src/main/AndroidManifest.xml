@@ -35,6 +35,16 @@
             android:authorities="top.lovepikachu.XiaoHeiHook.webide.bridge"
             android:exported="false" />
 
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="top.lovepikachu.XiaoHeiHook.scriptfileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/xiaohei_script_file_paths" />
+        </provider>
+
         <service
             android:name=".webide.WebIdeForegroundService"
             android:enabled="true"

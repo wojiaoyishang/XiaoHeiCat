@@ -805,6 +805,84 @@ public final class JsHookRuntime {
         public void e(String tag, Object msg, Object throwable) { log(Log.ERROR, tag, msg, throwable); }
         public void wtf(String tag, Object msg) { log(Log.ASSERT, tag, msg); }
 
+        /**
+         * Return the current Java stack as a printable string.
+         * This includes XiaoHeiHook/Rhino/internal frames and is useful when diagnosing runtime behavior.
+         */
+        public String getJavaStackTraceString() {
+            return JsHookRuntime.this.buildStackTraceString(false, 120, false);
+        }
+
+        /**
+         * Return the current Java stack as a printable string, filtering XiaoHeiHook/Rhino/reflection frames.
+         * This is usually the most useful API for finding who called the hooked method.
+         */
+        public String getAppStackTraceString() {
+            return JsHookRuntime.this.buildStackTraceString(true, 120, false);
+        }
+
+        /** Print the full Java stack to XiaoHeiHook terminal logs. */
+        public void printJavaStackTrace(Object tag, Object title) {
+            String safeTag = safeStackTag(tag);
+            String safeTitle = title == null ? "" : String.valueOf(title);
+            d(safeTag, "========== Java Stack: " + safeTitle + " =========="
+                    + "\n" + getJavaStackTraceString()
+                    + "========== End Java Stack ==========");
+        }
+
+        /** Print the app-focused Java stack to XiaoHeiHook terminal logs. */
+        public void printAppStackTrace(Object tag, Object title) {
+            String safeTag = safeStackTag(tag);
+            String safeTitle = title == null ? "" : String.valueOf(title);
+            d(safeTag, "========== App Stack: " + safeTitle + " =========="
+                    + "\n" + getAppStackTraceString()
+                    + "========== End App Stack ==========");
+        }
+
+        /** Short alias for printAppStackTrace. */
+        public void printAppStack(Object tag, Object title) {
+            printAppStackTrace(tag, title);
+        }
+
+        /** Short alias for printJavaStackTrace. */
+        public void printJavaStack(Object tag, Object title) {
+            printJavaStackTrace(tag, title);
+        }
+
+        /** Return the full Java stack as structured frames. */
+        public List<Map<String, Object>> getJavaStackTrace() {
+            return JsHookRuntime.this.collectStackTraceFrames(false, 120, false);
+        }
+
+        /** Return an app-focused Java stack as structured frames. */
+        public List<Map<String, Object>> getAppStackTrace() {
+            return JsHookRuntime.this.collectStackTraceFrames(true, 120, false);
+        }
+
+        /**
+         * Flexible structured stack API.
+         * JS example:
+         *   xposed.stackTrace({ appOnly: true, maxDepth: 40, skipNative: false })
+         */
+        public List<Map<String, Object>> stackTrace() {
+            return stackTrace(null);
+        }
+
+        public List<Map<String, Object>> stackTrace(Object options) {
+            boolean appOnly = optionBoolean(options, "appOnly", false);
+            boolean skipNative = optionBoolean(options, "skipNative", false);
+            int maxDepth = optionInt(options, "maxDepth", 120);
+            if (maxDepth <= 0) maxDepth = 120;
+            if (maxDepth > 512) maxDepth = 512;
+            return JsHookRuntime.this.collectStackTraceFrames(appOnly, maxDepth, skipNative);
+        }
+
+        private String safeStackTag(Object tag) {
+            if (tag == null) return "XHH-Stack";
+            String text = String.valueOf(tag);
+            return text.length() == 0 ? "XHH-Stack" : text;
+        }
+
         public Object getApiVersion() { return invokeNoArg(module, "getApiVersion"); }
         public Object getFrameworkName() { return invokeNoArg(module, "getFrameworkName"); }
         public Object getFrameworkVersion() { return invokeNoArg(module, "getFrameworkVersion"); }
@@ -2334,6 +2412,91 @@ public final class JsHookRuntime {
         }
         if (value == Context.getUndefinedValue() || value == Scriptable.NOT_FOUND || value == Undefined.instance) return null;
         return value;
+    }
+
+    private boolean optionBoolean(Object options, String key, boolean fallback) {
+        Object value = optionValue(options, key);
+        if (value == null || value == Undefined.instance || value == Scriptable.NOT_FOUND) return fallback;
+        Object unwrapped = unwrap(value);
+        if (unwrapped instanceof Boolean) return (Boolean) unwrapped;
+        String text = String.valueOf(unwrapped).trim();
+        if ("true".equalsIgnoreCase(text) || "1".equals(text) || "yes".equalsIgnoreCase(text)) return true;
+        if ("false".equalsIgnoreCase(text) || "0".equals(text) || "no".equalsIgnoreCase(text)) return false;
+        return fallback;
+    }
+
+    private int optionInt(Object options, String key, int fallback) {
+        Object value = optionValue(options, key);
+        if (value == null || value == Undefined.instance || value == Scriptable.NOT_FOUND) return fallback;
+        Object unwrapped = unwrap(value);
+        if (unwrapped instanceof Number) return ((Number) unwrapped).intValue();
+        try {
+            return Integer.parseInt(String.valueOf(unwrapped).trim());
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    private Object optionValue(Object options, String key) {
+        if (options == null || options == Undefined.instance || options == Scriptable.NOT_FOUND) return null;
+        Object unwrapped = unwrap(options);
+        if (unwrapped instanceof Map<?, ?>) return ((Map<?, ?>) unwrapped).get(key);
+        if (options instanceof Scriptable) return ScriptableObject.getProperty((Scriptable) options, key);
+        return null;
+    }
+
+    private String buildStackTraceString(boolean appOnly, int maxDepth, boolean skipNative) {
+        StringBuilder sb = new StringBuilder();
+        List<Map<String, Object>> frames = collectStackTraceFrames(appOnly, maxDepth, skipNative);
+        for (int i = 0; i < frames.size(); i++) {
+            Object text = frames.get(i).get("text");
+            sb.append('#').append(i).append(' ').append(text == null ? "null" : text).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private List<Map<String, Object>> collectStackTraceFrames(boolean appOnly, int maxDepth, boolean skipNative) {
+        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (StackTraceElement frame : stack) {
+            if (frame == null) continue;
+            if (skipNative && frame.isNativeMethod()) continue;
+            if (appOnly && shouldSkipAppStackFrame(frame)) continue;
+
+            LinkedHashMap<String, Object> item = new LinkedHashMap<>();
+            item.put("className", frame.getClassName());
+            item.put("methodName", frame.getMethodName());
+            item.put("fileName", frame.getFileName());
+            item.put("lineNumber", frame.getLineNumber());
+            item.put("nativeMethod", frame.isNativeMethod());
+            item.put("text", frame.toString());
+            result.add(item);
+            if (result.size() >= maxDepth) break;
+        }
+        return result;
+    }
+
+    private boolean shouldSkipAppStackFrame(StackTraceElement frame) {
+        String cls = frame.getClassName();
+        if (cls == null) return true;
+
+        // XiaoHeiHook implementation frames.
+        if (cls.startsWith("top.lovepikachu.XiaoHeiHook")) return true;
+
+        // Rhino JavaScript engine frames.
+        if (cls.startsWith("org.mozilla.javascript")) return true;
+
+        // libxposed / legacy Xposed / framework trampoline frames.
+        if (cls.startsWith("io.github.libxposed")) return true;
+        if (cls.startsWith("de.robv.android.xposed")) return true;
+
+        // Reflection / runtime helpers that usually do not identify the app caller.
+        if (cls.startsWith("java.lang.reflect.")) return true;
+        if (cls.startsWith("sun.reflect.")) return true;
+        if (cls.startsWith("com.android.internal.os.")) return true;
+        if (cls.equals("java.lang.Thread")) return true;
+
+        return false;
     }
 
     @Nullable
