@@ -1,7 +1,3 @@
-# 项目简介
-
-> ⚠️ 模块属于自用开发阶段，出现问题请提 PR，不确保不同品牌手机的兼容性。
-
 ![XiaoHeiHook](./docs/source/_static/XiaoHeiHook.png)
 
 <p align="center">
@@ -15,6 +11,10 @@
         <img src="https://img.shields.io/badge/Android-8.0%2B-brightgreen" alt="Android 8.0+">
     </a>
 </p>
+
+# 项目简介
+
+> ⚠️ 模块属于自用开发阶段，出现问题请提 PR，不确保不同品牌手机的兼容性。
 
 XiaoHeiHook 是 **一个基于现代 LSPosed 与 Rhino 的动态 Hook 脚本模块**。
 
