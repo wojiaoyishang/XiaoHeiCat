@@ -90,7 +90,7 @@ WebIDE 中支持断点调试等功能，便于编写脚本。
 
 如果你在使用过程中遇到问题，建议优先查阅项目文档：
 
-- 项目文档：<https://lab.lovepikachu.top/document/xiaoheihook/>
+- 项目文档：<https://lab.lovepikachu.top/document/xiaoheihook/welcome/introduction.html>
 - 开源仓库：<https://github.com/wojiaoyishang/XiaoHeiCat/>
 - 问题反馈：<https://github.com/wojiaoyishang/XiaoHeiCat/issues>
 - 功能建议：欢迎提交 Issue 或 Pull Request

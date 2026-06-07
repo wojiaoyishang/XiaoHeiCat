@@ -16,3 +16,6 @@ local.properties
 node_modules
 app/src/main/assets/webide
 _build
+keystore.properties
+*.jks
+*.keystore
