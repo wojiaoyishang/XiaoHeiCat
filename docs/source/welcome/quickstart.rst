@@ -4,13 +4,17 @@
 准备环境
 -----------------
 
+.. note::
+	**此外，模块仅支持现代 API 接口（API101），请确保 LSPosed 管理器支持新接口的模块。**
+
 你需要准备：
 
-- 已安装 LSPosed 的 Android 设备。
+- 安装 LSPosed 并且确保版本 >= 2.0.4
 - 已安装 XiaoHeiHook 管理端应用。
 - 已在 LSPosed 中启用 XiaoHeiHook 模块。
-- 对需要 Hook 的目标应用启用模块作用域。
+- 对需要 Hook 的目标应用启用模块作用域（可选，模块会自动申请）。
 - 授予 XiaoHeiHook 管理脚本目录所需的文件权限。
+- 授予 XiaoHeiHook Root 权限（可选，主要用于重启应用）
 
 .. important::
    XiaoHeiHook 的脚本目录位于公共文档目录下。部分 Android 版本需要授予“管理所有文件”权限，否则可能无法扫描或保存脚本。

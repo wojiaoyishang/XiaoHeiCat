@@ -1,10 +1,16 @@
-WebIDE 使用
+基本使用说明
 ==================
 
 WebIDE 是 XiaoHeiHook 的电脑端脚本开发界面。手机端启动本地 HTTP 服务后，电脑浏览器可以访问并编辑脚本。
 
+.. _webide使用:
+
 启动 WebIDE
 -----------------
+
+.. image:: ../_static/开启WebIDE.png
+   :target: ../_static/开启WebIDE.png
+   :align: center
 
 1. 打开 XiaoHeiHook 设置页。
 2. 如需后台稳定运行，先点击“忽略电池优化”。
@@ -23,7 +29,7 @@ WebIDE 是 XiaoHeiHook 的电脑端脚本开发界面。手机端启动本地 HT
    http://127.0.0.1:8787/
 
 .. warning::
-   WebIDE 可以编辑和同步 Hook 脚本。绑定到局域网地址或 ``0.0.0.0`` 可能让同一网络中的其他设备访问脚本编辑入口，请谨慎开启。
+   WebIDE 可以编辑和同步 Hook 脚本，一定程度上拥有极高的权限。绑定到局域网地址或 ``0.0.0.0`` 可能让同一网络中的其他设备访问脚本编辑入口，请谨慎开启。在使用之后一定要确认关闭！
 
 界面区域
 -----------------
@@ -37,6 +43,10 @@ WebIDE 使用朴素的传统 IDE 布局：
    中间区域：Monaco 多标签编辑器
    右侧面板：Hook 设置 / 脚本设置
    底部终端：实时日志与同步结果
+   
+.. image:: ../_static/WebIDE界面演示.png
+   :target: ../_static/WebIDE界面演示.png
+   :align: center
 
 快捷键
 -----------------
@@ -70,3 +80,7 @@ WebIDE 使用朴素的传统 IDE 布局：
 -----------------
 
 WebIDE 终端支持单独打开页面查看，适合把日志放到另一块屏幕或另一个浏览器窗口中。
+
+.. image:: ../_static/单开日志页面.png
+   :target: ../_static/单开日志页面.png
+   :align: center

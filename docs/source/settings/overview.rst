@@ -2,7 +2,7 @@
 ==================
 
 .. tip::
-	具体包含设置项的脚本可以参考仓库目录 `example/settings_all_types` 下的脚本，其中包含了所有支持的设置项的演示。
+	具体包含设置项的脚本可以参考仓库目录 `example/settings_all_types <https://github.com/wojiaoyishang/XiaoHeiCat/tree/master/example/settings_all_types>`_  下的脚本，其中包含了所有支持的设置项的演示。
 
 配置项工作流
 -----------------
@@ -12,6 +12,12 @@
 3. 用户在某个应用详情页中修改配置
 4. 按 packageName + scriptId 单独保存配置值
 5. 目标 App 进程运行脚本时读取自己的配置
+
+如果一个脚本存在设置项配置，将会在 **开关左侧** 展示一个设置项按钮，如下图所示：
+
+.. image:: ../_static/脚本设置项入口.png
+   :target: ../_static/脚本设置项入口.png
+   :align: center
 
 保存位置
 -----------------

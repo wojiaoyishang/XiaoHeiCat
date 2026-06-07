@@ -6,42 +6,20 @@
 
 适合少量脚本管理：
 
-.. code-block:: text
-
-   创建 / 修改脚本
-      ↓
-   打开 XiaoHeiHook 应用详情页
-      ↓
-   启用应用与脚本
-      ↓
-   修改脚本设置
-      ↓
-   同步脚本
-      ↓
-   重启目标应用
-      ↓
-   查看日志
+.. image:: ../_static/手机工作流.png
+   :target: ../_static/手机工作流.png
+   :align: center
+   
+**注意：手机App不具备脚本编辑的功能，脚本编辑功能只在 WebIDE 提供，手机仅提供脚本启用、设置功能。**
 
 WebIDE 工作流
 -----------------
 
-适合电脑端持续开发：
+请查阅 :ref:`WebIDE使用` 章节，此方式适合电脑端持续开发：
 
-.. code-block:: text
-
-   手机端开启 WebIDE
-      ↓
-   adb forward tcp:8787 tcp:8787
-      ↓
-   浏览器访问 http://127.0.0.1:8787/
-      ↓
-   选择应用 / 打开脚本
-      ↓
-   Monaco 编辑器编写 JS
-      ↓
-   保存、同步并重启
-      ↓
-   底部终端实时查看日志
+.. image:: ../_static/电脑工作流.png
+   :target: ../_static/电脑工作流.png
+   :align: center
 
 .. tip::
    推荐先绑定 ``127.0.0.1``，再通过 ``adb forward`` 访问 WebIDE。绑定到 ``0.0.0.0`` 或局域网地址会暴露脚本编辑入口，请谨慎使用。

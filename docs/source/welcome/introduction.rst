@@ -1,12 +1,29 @@
 项目简介
 ==================
 
-一句话介绍
------------------
+.. warning::
+	模块属于自用开发阶段，出现问题请提 PR ，不确保不同品牌手机的兼容性。
 
-XiaoHeiHook 是 **一个基于现代 LSPosed 与 Rhino 的动态 Hook 脚本平台**。
+.. image:: ../_static/XiaoHeiHook.png
+   :target: ../_static/XiaoHeiHook.png
+   :align: center
 
-十字简介：**现代动态 Hook 脚本平台**。
+XiaoHeiHook 是 **一个基于现代 LSPosed 与 Rhino 的动态 Hook 脚本模块**。
+
+目标是让开发者能够使用极简的 JS 脚本调用 LSPosed 提供的强大 Hook 功能，而无需为了每个应用程序都撰写一个独立的 LSPosed 模块。
+
+在现代设备上，LSPosed 注入的隐藏能力已经远大于 Firda 脚本，使用 LSPosed 框架编写代码可以减少大部分环境问题。
+
+此外，该模块尝试提供一种类似 Firda 脚本的体验：
+
+- **快速上手**：只需编写 JS 脚本，无需额外 Java/Kotlin 开发。
+- **多应用支持**：同一脚本可在不同应用中复用，并能针对每个应用独立配置开关和参数。
+- **动态执行**：脚本可在目标应用运行时被加载、修改和调试，无需重启应用或重新安装模块。
+- **可视化配置**：提供丰富的设置项支持，包括布尔值、数字、字符串、下拉选择、多选、列表等类型，让脚本行为可控。
+- **兼容性与安全性**：封装 LSPosed 现代接口，保证 Hook 稳定运行，同时通过脚本沙箱和 schema 校验减少运行时错误和安全风险。
+- **开发者友好**：提供 WebIDE 和日志系统支持，方便调试、断点和查看远程日志，形成完整的开发闭环。
+
+总体而言，XiaoHeiHook 的设计理念是 **“轻量 JS + 强大 Hook”**，它把 LSPosed 的复杂 Hook 逻辑抽象成可直接使用的 JS 接口，让开发者专注于业务逻辑而非底层实现，同时兼顾安全性与可维护性。
 
 它解决的问题
 -----------------
@@ -16,15 +33,9 @@ XiaoHeiHook 将固定模块与动态脚本拆开：模块负责接入 LSPosed、
 
 因此你可以把它理解为：
 
-.. code-block:: text
-
-   固定 LSPosed 模块
-      ↓
-   管理端选择应用与脚本
-      ↓
-   脚本同步到 LSPosed Remote Files / Preferences
-      ↓
-   目标应用进程启动时执行 JavaScript Hook
+.. image:: ../_static/程序流程.png
+   :target: ../_static/程序流程.png
+   :align: center
 
 核心特性
 -----------------

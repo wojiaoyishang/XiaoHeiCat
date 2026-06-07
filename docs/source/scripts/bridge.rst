@@ -3,6 +3,24 @@
 
 XiaoHeiHook 的 JS API 是对现代 LSPosed/libxposed API 的一层脚本化封装。理解这层映射关系，有助于判断某个 JS 方法背后实际调用的是哪个 libxposed 能力。
 
+.. tip::
+
+	虽然代码是通过 JS 脚本进行编写的，但是对于处理一些来自 Java 层的对象（如 Java 的 String），不建议直接使用：
+	 
+	.. code-block:: javascript
+	
+		"com.example.app" !== param.getPackageName()  // 这样比较始终返回 false，因为类型对不上
+		
+	的方式进行比较，而是使用：
+		
+	.. code-block:: javascript
+	
+		param.getPackageName().equals("com.example.app")  // 使用 Java 的比较方法
+		// 或者
+		"com.example.app" !== String(param.getPackageName())  // 先进行一次数据类型转化
+		
+	在使用 Java 对象和 JS 对象进行脚本编写的时候需要注意。
+
 整体调用链
 ------------------
 
