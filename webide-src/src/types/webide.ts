@@ -35,6 +35,9 @@ export interface ScriptMeta {
   processes?: string[]
   runAt?: string
   grants?: string[]
+  kind?: 'file' | 'directory' | string
+  entryPath?: string
+  rootPath?: string
   url?: string
   urlRefreshOnApply?: boolean
 }
@@ -45,6 +48,9 @@ export interface ScriptInfo {
   id?: string
   enabled?: boolean
   metadata?: ScriptMeta
+  kind?: 'file' | 'directory' | string
+  entryPath?: string
+  rootPath?: string
 }
 
 export interface HookScriptInfo {
@@ -105,4 +111,36 @@ export interface DebugBreakpointsResponse {
   scriptPath?: string | null
   lines: number[]
   breakpoints?: Record<string, number[]>
+}
+
+export interface ScriptTreeNode {
+  type: 'file' | 'directory'
+  name: string
+  path: string
+  script?: boolean
+  entry?: boolean
+  metadata?: ScriptMeta
+  children?: ScriptTreeNode[]
+}
+
+export interface ScriptTreeResponse {
+  ok: boolean
+  root: ScriptTreeNode
+}
+
+export interface ScriptFileEntry {
+  type: 'file' | 'directory'
+  name: string
+  path: string
+  extension?: string
+  size?: number
+  modifiedAt?: number
+  scriptRole?: 'script' | 'entry' | 'dependency' | ''
+}
+
+export interface ScriptFileListResponse {
+  ok: boolean
+  dir: string
+  parent: string
+  entries: ScriptFileEntry[]
 }

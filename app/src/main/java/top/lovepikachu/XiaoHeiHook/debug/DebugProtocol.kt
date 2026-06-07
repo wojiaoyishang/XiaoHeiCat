@@ -6,8 +6,11 @@ object DebugProtocol {
 
     const val PREF_GROUP = "XiaoHeiHookSetting"
     const val DEBUG_ENABLED_PREFIX = "debugger_enabled_"
+    const val DEBUG_SESSION_PREFIX = "debugger_session_"
+    const val DEBUG_EXPIRES_AT_PREFIX = "debugger_expires_at_"
     const val DEBUG_COMMAND_PREFIX = "debugger_command_"
     const val DEBUG_BREAKPOINTS_PREFIX = "debugger_line_breakpoints_"
+    const val DEFAULT_DEBUG_SESSION_MILLIS = 30L * 60L * 1000L
 
     const val EXTRA_EVENT_JSON = "eventJson"
     const val EXTRA_PACKAGE_NAME = "packageName"
@@ -27,6 +30,12 @@ object DebugProtocol {
 
     @JvmStatic
     fun debugEnabledKey(packageName: String): String = DEBUG_ENABLED_PREFIX + packageName
+
+    @JvmStatic
+    fun debugSessionKey(packageName: String): String = DEBUG_SESSION_PREFIX + packageName
+
+    @JvmStatic
+    fun debugExpiresAtKey(packageName: String): String = DEBUG_EXPIRES_AT_PREFIX + packageName
 
     @JvmStatic
     fun debugCommandKey(pauseId: String): String = DEBUG_COMMAND_PREFIX + pauseId

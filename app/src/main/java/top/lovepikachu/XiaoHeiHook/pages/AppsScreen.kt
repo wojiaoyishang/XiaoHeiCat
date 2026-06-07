@@ -773,10 +773,12 @@ private fun ScriptEnableScreen(
     onOpenTerminal: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var appEnabled by remember(app.packageName, XiaoHeiApplication.remotePreferences) {
         mutableStateOf(ScopeController.isAppEnabled(XiaoHeiApplication.remotePreferences, app.packageName))
     }
     var menuExpanded by remember { mutableStateOf(false) }
+    var showScriptHelpDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(app.packageName, initialAutoScan) {
         if (initialAutoScan) {
@@ -786,6 +788,19 @@ private fun ScriptEnableScreen(
         } else {
             Log.d(TAG, "ScriptEnableScreen: entered package=${app.packageName}, skip auto rescan; use menu to scan manually")
         }
+    }
+
+    if (showScriptHelpDialog) {
+        AlertDialog(
+            onDismissRequest = { showScriptHelpDialog = false },
+            title = { Text("脚本保存位置") },
+            text = { Text("脚本保存在 /Documents/XiaoHeiHook 下。\n\n单文件脚本放在根目录，例如 qidian.js；多文件脚本放在文件夹中，并使用 index.js 作为入口。") },
+            confirmButton = {
+                TextButton(onClick = { showScriptHelpDialog = false }) {
+                    Text("知道了")
+                }
+            }
+        )
     }
 
     Column(
@@ -923,10 +938,28 @@ private fun ScriptEnableScreen(
             }
         )
 
-        AppSectionTitle(
-            text = "脚本开关",
-            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "脚本开关",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 4.dp, vertical = 4.dp)
+            )
+            IconButton(
+                onClick = { showScriptHelpDialog = true },
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(Icons.Filled.Info, contentDescription = "脚本保存位置")
+            }
+        }
 
         if (scripts.isEmpty()) {
             AssistCard(
@@ -943,7 +976,8 @@ private fun ScriptEnableScreen(
                     ScriptRow(
                         script = script,
                         packageName = app.packageName,
-                        enabled = moduleActive && appEnabled
+                        enabled = moduleActive && appEnabled,
+                        onOpenLocation = { openScriptLocation(context, it) }
                     )
                 }
             }
@@ -1055,13 +1089,6 @@ private fun AppLogScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        AssistCard(
-            title = "日志文件",
-            text = "${AppLogRepository.logPath(context, app.packageName)}\nJS 的 console.log / xposed.log 会通过广播写入这里。"
-        )
-
         Spacer(modifier = Modifier.height(12.dp))
 
         AppCard(
@@ -1079,7 +1106,7 @@ private fun AppLogScreen(
                     item {
                         SelectionContainer {
                             Text(
-                                text = logText.ifBlank { "暂无日志。" },
+                                text = logText.ifBlank { "暂无日志" },
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 12.sp,
                                 lineHeight = 17.sp,
@@ -1179,8 +1206,64 @@ private fun AppRow(
     }
 }
 
+private fun openScriptLocation(context: Context, script: ScriptMetadata) {
+    val targetRelativePath = when {
+        script.kind == "directory" && script.rootPath.isNotBlank() -> script.rootPath
+        script.path.isNotBlank() -> script.path
+        script.remoteName.startsWith("scripts/") -> script.remoteName.removePrefix("scripts/")
+        else -> ""
+    }.trim('/').replace('\\', '/')
+
+    if (targetRelativePath.isBlank()) {
+        Toast.makeText(context, "无法确定脚本文件位置", Toast.LENGTH_SHORT).show()
+        return
+    }
+
+    val isDirectory = script.kind == "directory" || (script.rootPath.isNotBlank() && targetRelativePath == script.rootPath)
+    val uri = externalStorageDocumentUri(targetRelativePath)
+    val mime = if (isDirectory) "vnd.android.document/directory" else when {
+        targetRelativePath.endsWith(".js", ignoreCase = true) -> "text/javascript"
+        targetRelativePath.endsWith(".json", ignoreCase = true) -> "application/json"
+        else -> "text/plain"
+    }
+
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, mime)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    runCatching { context.startActivity(intent) }
+        .onFailure {
+            val fallback = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(externalStorageDocumentUri(""), "vnd.android.document/directory")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(fallback) }
+                .onFailure { error ->
+                    Toast.makeText(context, error.message ?: "无法打开脚本文件", Toast.LENGTH_LONG).show()
+                }
+        }
+}
+
+private fun externalStorageDocumentUri(relativePath: String): Uri {
+    val clean = relativePath.trim('/').replace('\\', '/')
+    val documentId = if (clean.isBlank()) {
+        "primary:Documents/XiaoHeiHook"
+    } else {
+        "primary:Documents/XiaoHeiHook/$clean"
+    }
+    return Uri.Builder()
+        .scheme("content")
+        .authority("com.android.externalstorage.documents")
+        .appendPath("document")
+        .appendPath(documentId)
+        .build()
+}
+
 @Composable
-private fun ScriptRow(script: ScriptMetadata, packageName: String, enabled: Boolean) {
+private fun ScriptRow(script: ScriptMetadata, packageName: String, enabled: Boolean, onOpenLocation: (ScriptMetadata) -> Unit) {
     var checked by remember(packageName, script.id, XiaoHeiApplication.remotePreferences) {
         mutableStateOf(ScopeController.isScriptEnabled(packageName, script.id))
     }
@@ -1193,7 +1276,15 @@ private fun ScriptRow(script: ScriptMetadata, packageName: String, enabled: Bool
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(script.name, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text = script.name,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { onOpenLocation(script) }
+                )
                 Text(
                     text = "${script.id} · ${script.version} · ${script.runAt}",
                     fontSize = 12.sp,

@@ -11,6 +11,7 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import org.mozilla.javascript.BaseFunction;
 import org.mozilla.javascript.Context;
 import org.mozilla.javascript.Function;
 import org.mozilla.javascript.NativeArray;
@@ -35,7 +36,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -43,6 +46,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -84,6 +88,9 @@ public final class JsHookRuntime {
     private final String currentEvent;
     private final Object currentRawParam;
     private final boolean rawEnabled;
+    private final Map<String, String> scriptFiles;
+    private final Map<String, String> scriptFileHashes;
+    private final Map<String, Object> commonJsModuleCache = new ConcurrentHashMap<>();
     private final Object jsLock = new Object();
     private final ThreadLocal<Integer> debugFrameDepth = new ThreadLocal<>();
     private final ThreadLocal<DebugStepState> debugStepState = new ThreadLocal<>();
@@ -126,6 +133,43 @@ public final class JsHookRuntime {
         this.currentEvent = currentEvent;
         this.currentRawParam = currentRawParam;
         this.rawEnabled = rawEnabled;
+        this.scriptFiles = new LinkedHashMap<>();
+        this.scriptFileHashes = new LinkedHashMap<>();
+    }
+
+    public JsHookRuntime(
+            @NonNull HookEntry module,
+            @NonNull String packageName,
+            @NonNull String processName,
+            @NonNull ClassLoader appClassLoader,
+            @NonNull String currentEvent,
+            @Nullable Object currentRawParam,
+            boolean rawEnabled,
+            @Nullable Map<String, String> scriptFiles
+    ) {
+        this(module, packageName, processName, appClassLoader, currentEvent, currentRawParam, rawEnabled, scriptFiles, null);
+    }
+
+    public JsHookRuntime(
+            @NonNull HookEntry module,
+            @NonNull String packageName,
+            @NonNull String processName,
+            @NonNull ClassLoader appClassLoader,
+            @NonNull String currentEvent,
+            @Nullable Object currentRawParam,
+            boolean rawEnabled,
+            @Nullable Map<String, String> scriptFiles,
+            @Nullable Map<String, String> scriptFileHashes
+    ) {
+        this.module = module;
+        this.packageName = packageName;
+        this.processName = processName;
+        this.appClassLoader = appClassLoader;
+        this.currentEvent = currentEvent;
+        this.currentRawParam = currentRawParam;
+        this.rawEnabled = rawEnabled;
+        this.scriptFiles = normalizeScriptFileMap(scriptFiles);
+        this.scriptFileHashes = normalizeScriptFileMap(scriptFileHashes);
     }
 
     public void evaluate(@NonNull String scriptName, @NonNull String source) {
@@ -151,22 +195,31 @@ public final class JsHookRuntime {
             try {
                 Thread.currentThread().setContextClassLoader(appClassLoader);
                 cx.setOptimizationLevel(-1);
-                cx.setGeneratingDebug(true);
-                cx.setGeneratingSource(true);
-                JsDebugTrace.i("rhino context configured"
-                        + " optimizationLevel=" + cx.getOptimizationLevel()
-                        + " generatingDebug=true"
-                        + " generatingSource=true"
-                        + " sourceName=" + canonicalSourceName);
+                boolean debugMode = isSoftDebuggerEnabled();
+                if (debugMode) {
+                    cx.setGeneratingDebug(true);
+                    cx.setGeneratingSource(true);
+                    JsDebugTrace.i("rhino context configured"
+                            + " optimizationLevel=" + cx.getOptimizationLevel()
+                            + " generatingDebug=true"
+                            + " generatingSource=true"
+                            + " sourceName=" + canonicalSourceName);
 
-                cx.setDebugger(new RhinoLineDebugger(canonicalSourceName), null);
-                JsDebugTrace.i("rhino debugger installed sourceName=" + canonicalSourceName);
+                    cx.setDebugger(new RhinoLineDebugger(canonicalSourceName), null);
+                    JsDebugTrace.i("rhino debugger installed sourceName=" + canonicalSourceName);
+                } else {
+                    JsDebugTrace.i("rhino context configured"
+                            + " optimizationLevel=" + cx.getOptimizationLevel()
+                            + " debugMode=false"
+                            + " sourceName=" + canonicalSourceName);
+                }
 
                 scope = cx.initStandardObjects();
 
                 ScriptableObject.putProperty(scope, "env", Context.javaToJS(new Env(scriptName, canonicalSourceName), scope));
                 ScriptableObject.putProperty(scope, "console", Context.javaToJS(new Console(), scope));
                 ScriptableObject.putProperty(scope, "Java", Context.javaToJS(new JavaBridge(), scope));
+                ScriptableObject.putProperty(scope, "require", createRequireFunction(canonicalSourceName));
                 ScriptableObject.putProperty(scope, "xposed", Context.javaToJS(new XposedFacade(), scope));
                 ScriptableObject.putProperty(scope, "debuggerx", Context.javaToJS(new DebuggerFacade(canonicalSourceName, scriptName), scope));
 
@@ -198,6 +251,19 @@ public final class JsHookRuntime {
         }
         while (value.startsWith("/")) value = value.substring(1);
         return value.isEmpty() ? fallbackName : value;
+    }
+
+    private static Map<String, String> normalizeScriptFileMap(@Nullable Map<String, String> input) {
+        LinkedHashMap<String, String> result = new LinkedHashMap<>();
+        if (input == null) return result;
+        for (Map.Entry<String, String> entry : input.entrySet()) {
+            String path = normalizeScriptSourceName(entry.getKey(), entry.getKey());
+            String remoteName = entry.getValue() == null ? "" : entry.getValue().trim();
+            if (!path.isEmpty() && !remoteName.isEmpty()) {
+                result.put(path, remoteName);
+            }
+        }
+        return result;
     }
 
     public static String readRemoteText(@NonNull ParcelFileDescriptor pfd) throws Exception {
@@ -366,14 +432,16 @@ public final class JsHookRuntime {
             try {
                 Thread.currentThread().setContextClassLoader(appClassLoader);
                 cx.setOptimizationLevel(-1);
-                cx.setGeneratingDebug(true);
-                cx.setGeneratingSource(true);
-                cx.setDebugger(new RhinoLineDebugger(callbackSourceName), null);
-                JsDebugTrace.d("callJs debugger installed"
-                        + " package=" + packageName
-                        + " process=" + processName
-                        + " sourceName=" + callbackSourceName
-                        + " function=" + JsDebugTrace.safe(function));
+                if (isSoftDebuggerEnabled()) {
+                    cx.setGeneratingDebug(true);
+                    cx.setGeneratingSource(true);
+                    cx.setDebugger(new RhinoLineDebugger(callbackSourceName), null);
+                    JsDebugTrace.d("callJs debugger installed"
+                            + " package=" + packageName
+                            + " process=" + processName
+                            + " sourceName=" + callbackSourceName
+                            + " function=" + JsDebugTrace.safe(function));
+                }
 
                 Object[] wrappedArgs = new Object[args == null ? 0 : args.length];
                 for (int i = 0; i < wrappedArgs.length; i++) {
@@ -386,6 +454,130 @@ public final class JsHookRuntime {
             }
         }
     }
+
+    private BaseFunction createRequireFunction(@NonNull String baseScriptPath) {
+        CommonJsRequire require = new CommonJsRequire(baseScriptPath);
+        if (scope != null) {
+            require.setParentScope(scope);
+            require.setPrototype(ScriptableObject.getFunctionPrototype(scope));
+        }
+        return require;
+    }
+
+    private final class CommonJsRequire extends BaseFunction {
+        private final String baseScriptPath;
+
+        CommonJsRequire(@NonNull String baseScriptPath) {
+            this.baseScriptPath = normalizeScriptSourceName(baseScriptPath, baseScriptPath);
+        }
+
+        @Override
+        public Object call(Context cx, Scriptable callScope, Scriptable thisObj, Object[] args) {
+            if (args == null || args.length == 0) {
+                throw new IllegalArgumentException("require(path) 缺少路径参数");
+            }
+            String request = String.valueOf(Context.jsToJava(args[0], String.class));
+            String resolvedPath = resolveRequirePath(baseScriptPath, request);
+            return loadCommonJsModule(cx, resolvedPath);
+        }
+    }
+
+    private String resolveRequirePath(@NonNull String baseScriptPath, @NonNull String request) {
+        String req = request == null ? "" : request.trim().replace('\\', '/');
+        if (req.isEmpty()) throw new IllegalArgumentException("require(path) 路径为空");
+        if (!req.startsWith("./") && !req.startsWith("../")) {
+            throw new IllegalArgumentException("暂只支持相对 require：" + req);
+        }
+
+        String base = normalizeScriptSourceName(baseScriptPath, baseScriptPath);
+        String dir = base.contains("/") ? base.substring(0, base.lastIndexOf('/')) : "";
+        String combined = dir.isEmpty() ? req : dir + "/" + req;
+        String normalized = normalizeRelativePath(combined);
+        ArrayList<String> candidates = new ArrayList<>();
+        candidates.add(normalized);
+        if (!normalized.endsWith(".js")) {
+            candidates.add(normalized + ".js");
+            candidates.add(normalized + "/index.js");
+        }
+
+        for (String candidate : candidates) {
+            if (scriptFiles.containsKey(candidate)) return candidate;
+        }
+        throw new IllegalArgumentException("找不到 require 模块：" + request + "，base=" + base + "，candidates=" + candidates + "，available=" + scriptFiles.keySet());
+    }
+
+    private static String normalizeRelativePath(@NonNull String path) {
+        String[] parts = path.replace('\\', '/').split("/");
+        ArrayDeque<String> stack = new ArrayDeque<>();
+        for (String raw : parts) {
+            String part = raw == null ? "" : raw.trim();
+            if (part.isEmpty() || ".".equals(part)) continue;
+            if ("..".equals(part)) {
+                if (stack.isEmpty()) throw new IllegalArgumentException("require 路径越界：" + path);
+                stack.removeLast();
+            } else {
+                stack.addLast(part);
+            }
+        }
+        return String.join("/", stack);
+    }
+
+    private Object loadCommonJsModule(@NonNull Context cx, @NonNull String resolvedPath) {
+        Object cached = commonJsModuleCache.get(resolvedPath);
+        if (cached != null) return cached;
+        if (scope == null) throw new IllegalStateException("JS scope 尚未初始化，无法 require：" + resolvedPath);
+
+        String remoteName = scriptFiles.get(resolvedPath);
+        if (remoteName == null || remoteName.isEmpty()) {
+            throw new IllegalArgumentException("require 模块未同步到 Remote Files：" + resolvedPath);
+        }
+
+        try {
+            String source = module.readRemoteTextFile(remoteName, scriptFileHashes.get(resolvedPath), resolvedPath);
+            Scriptable moduleObj = cx.newObject(scope);
+            Scriptable exportsObj = cx.newObject(scope);
+            ScriptableObject.putProperty(moduleObj, "exports", exportsObj);
+            commonJsModuleCache.put(resolvedPath, exportsObj);
+
+            BaseFunction localRequire = createRequireFunction(resolvedPath);
+            String dirname = resolvedPath.contains("/") ? resolvedPath.substring(0, resolvedPath.lastIndexOf('/')) : "";
+            // Execute CommonJS modules inside a wrapper function so that top-level
+            // const/let declarations are local to the module. Evaluating module files
+            // directly in a Scriptable scope can still collide with the root lexical
+            // environment on Rhino, causing errors such as
+            // "重新声明了常量 config" when both index.js and logger.js declare
+            // `const config = require(...)`.
+            // Keep the wrapper opening on the same physical line as the source so
+            // Rhino line numbers for module files stay aligned with editor lines.
+            String wrappedSource = "(function(require,module,exports,__filename,__dirname){"
+                    + source
+                    + "\n})";
+            Object wrapperObj = cx.evaluateString(scope, wrappedSource, resolvedPath, 1, null);
+            if (!(wrapperObj instanceof Function)) {
+                throw new IllegalStateException("CommonJS wrapper did not return a function: " + resolvedPath);
+            }
+            Function wrapper = (Function) wrapperObj;
+            wrapper.call(cx, scope, scope, new Object[]{
+                    localRequire,
+                    moduleObj,
+                    exportsObj,
+                    resolvedPath,
+                    dirname
+            });
+            Object exported = ScriptableObject.getProperty(moduleObj, "exports");
+            if (exported == Scriptable.NOT_FOUND || exported == Undefined.instance) exported = exportsObj;
+            commonJsModuleCache.put(resolvedPath, exported);
+            JsDebugTrace.d("requireLoaded base=" + activeScriptSourceName + " path=" + resolvedPath + " remoteName=" + remoteName);
+            return exported;
+        } catch (RuntimeException e) {
+            commonJsModuleCache.remove(resolvedPath);
+            throw e;
+        } catch (Throwable t) {
+            commonJsModuleCache.remove(resolvedPath);
+            throw new RuntimeException("加载 require 模块失败：" + resolvedPath + " -> " + remoteName, t);
+        }
+    }
+
 
     private Object jsToJavaValue(Object value) {
         Object unwrapped = unwrap(value);
@@ -1292,7 +1484,15 @@ public final class JsHookRuntime {
         try {
             SharedPreferences prefs = module.getRemotePreferences(DebugProtocol.PREF_GROUP);
             if (prefs == null) return false;
-            return prefs.getBoolean(DebugProtocol.debugEnabledKey(packageName), false);
+            boolean enabled = prefs.getBoolean(DebugProtocol.debugEnabledKey(packageName), false);
+            if (!enabled) return false;
+            long expiresAt = prefs.getLong(DebugProtocol.debugExpiresAtKey(packageName), 0L);
+            if (expiresAt <= System.currentTimeMillis()) {
+                JsDebugTrace.d("debugDisabled reason=expired package=" + packageName + " expiresAt=" + expiresAt);
+                return false;
+            }
+            String sessionId = prefs.getString(DebugProtocol.debugSessionKey(packageName), "");
+            return sessionId != null && !sessionId.isEmpty();
         } catch (Throwable ignored) {
             return false;
         }

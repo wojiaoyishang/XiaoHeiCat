@@ -88,9 +88,30 @@ class WebIdeBridgeClient(private val context: Context) {
             .put("ok", true)
             .put("packageName", b.getString("packageName") ?: packageName)
             .put("enabled", b.getBoolean("enabled", enabled))
+            .put("sessionId", b.getString("sessionId") ?: "")
+            .put("expiresAt", b.getLong("expiresAt", 0L))
     }
 
-    fun debugEnabled(packageName: String): Boolean = getBoolean(DebugProtocol.debugEnabledKey(packageName), false)
+    fun clearAllDebugState(): JSONObject {
+        val b = callChecked(WebIdeBridgeProvider.METHOD_CLEAR_DEBUG_STATE)
+        return JSONObject()
+            .put("ok", true)
+            .put("removed", b.getInt("removed", 0))
+    }
+
+    fun debugEnabled(packageName: String): Boolean {
+        val enabled = getBoolean(DebugProtocol.debugEnabledKey(packageName), false)
+        if (!enabled) return false
+        val b = call(
+            WebIdeBridgeProvider.METHOD_GET_LONG,
+            Bundle().apply {
+                putString(WebIdeBridgeProvider.ARG_KEY, DebugProtocol.debugExpiresAtKey(packageName))
+                putLong(WebIdeBridgeProvider.ARG_DEFAULT_LONG, 0L)
+            }
+        )
+        val expiresAt = b.getLong("value", 0L)
+        return expiresAt > System.currentTimeMillis()
+    }
 
     fun getDebugBreakpoints(packageName: String): JSONObject {
         val b = call(

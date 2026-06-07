@@ -38,6 +38,8 @@ class WebIdeApi(private val context: Context) {
 
                 "/api/debug/events" -> debugEvents(request)
                 "/api/debug/enabled" -> debugEnabled(request)
+                "/api/debug/start" -> debugStart(request)
+                "/api/debug/stop" -> debugStop(request)
                 "/api/debug/breakpoints" -> debugBreakpoints(request)
                 "/api/debug/continue" -> debugCommand(request, DebugProtocol.COMMAND_CONTINUE)
                 "/api/debug/abort" -> debugCommand(request, DebugProtocol.COMMAND_ABORT)
@@ -53,12 +55,19 @@ class WebIdeApi(private val context: Context) {
                 "/api/apps/launch" -> launchApp(request)
 
                 "/api/scripts" -> scripts(request)
+                "/api/scripts/tree" -> scriptsTree(request)
                 "/api/scripts/read" -> readScript(request)
                 "/api/scripts/save" -> saveScript(request)
                 "/api/scripts/create" -> createScript(request)
                 "/api/scripts/delete" -> deleteScript(request)
                 "/api/scripts/rename" -> renameScript(request)
                 "/api/scripts/sync" -> syncScripts(request)
+
+                "/api/files/list" -> listFiles(request)
+                "/api/files/create-file" -> createFile(request)
+                "/api/files/create-folder" -> createFolder(request)
+                "/api/files/delete" -> deleteFileOrFolder(request)
+                "/api/files/rename" -> renameFileOrFolder(request)
 
                 "/api/hook-settings" -> hookSettings(request)
                 "/api/hook-settings/app-enabled" -> setAppEnabled(request)
@@ -79,7 +88,7 @@ class WebIdeApi(private val context: Context) {
         return json(
             JSONObject()
                 .put("ok", true)
-                .put("server", "xhh-webide-v14.2-source-name-unified")
+                .put("server", "xhh-webide-v15-debug-isolated-root-scripts")
                 .put("running", status.running)
                 .put("host", status.host)
                 .put("port", status.port)
@@ -92,6 +101,7 @@ class WebIdeApi(private val context: Context) {
                 .put("remotePreferences", bridgeStatus.remotePreferencesReady)
                 .put("mainProcess", bridgeStatus.process)
                 .put("bridgeOk", bridgeStatus.ok)
+                .put("webIdeToken", WebIdeSecurity.token(context))
         )
     }
 
@@ -259,6 +269,43 @@ class WebIdeApi(private val context: Context) {
     }
 
 
+    private fun debugStart(request: HttpRequest): HttpResponse {
+        val body = request.jsonBody(required = false)
+        val packageName = body.optString("packageName").trim()
+        val restart = body.optBoolean("restart", true)
+        val launch = body.optBoolean("launch", true)
+        require(packageName.isNotBlank()) { "packageName 不能为空" }
+
+        val enabled = bridge.setDebugEnabled(packageName, true)
+        val sync = bridge.syncScripts(packageName)
+        val extra = JSONObject().put("debugEnabled", enabled)
+        if (restart) {
+            extra.put("forceStop", AppControl.forceStop(packageName).fold({ "ok" }, { it.message ?: it.javaClass.simpleName }))
+            if (launch) {
+                extra.put("launch", AppControl.launchPackage(context, packageName).fold({ "ok" }, { it.message ?: it.javaClass.simpleName }))
+            }
+        }
+        return json(JSONObject()
+            .put("ok", true)
+            .put("packageName", packageName)
+            .put("debug", true)
+            .put("sync", sync)
+            .put("extra", extra))
+    }
+
+    private fun debugStop(request: HttpRequest): HttpResponse {
+        val body = request.jsonBody(required = false)
+        val packageName = body.optString("packageName").trim()
+        require(packageName.isNotBlank()) { "packageName 不能为空" }
+        val disabled = bridge.setDebugEnabled(packageName, false)
+        DebugEventRepository.clear(context)
+        return json(JSONObject()
+            .put("ok", true)
+            .put("packageName", packageName)
+            .put("debug", false)
+            .put("debugDisabled", disabled))
+    }
+
     private fun debugBreakpoints(request: HttpRequest): HttpResponse {
         if (request.method == "GET") {
             val packageName = request.param("packageName").orEmpty().trim()
@@ -424,8 +471,13 @@ class WebIdeApi(private val context: Context) {
         val packageName = body.optString("packageName").ifBlank { null }
         val restart = body.optBoolean("restart", false)
         val launch = body.optBoolean("launch", false)
-        val obj = bridge.syncScripts(packageName)
+        val debug = body.optBoolean("debug", false)
         val extra = JSONObject()
+        if (!packageName.isNullOrBlank() && !debug) {
+            // 普通同步/运行必须关闭 WebIDE 调试模式，避免手机端或普通运行进入 Rhino 行调试慢路径。
+            extra.put("debugDisabled", bridge.setDebugEnabled(packageName, false))
+        }
+        val obj = bridge.syncScripts(packageName)
         if (!packageName.isNullOrBlank() && restart) {
             extra.put("forceStop", AppControl.forceStop(packageName).fold({ "ok" }, { it.message ?: it.javaClass.simpleName }))
             if (launch) {
@@ -479,14 +531,72 @@ class WebIdeApi(private val context: Context) {
         return json(JSONObject().put("ok", true).put("scripts", JSONArray(array)).put("count", array.size))
     }
 
+
+    private fun scriptsTree(request: HttpRequest): HttpResponse {
+        ScriptRepository.ensurePublicFolderAndSample()
+        val root = ScriptRepository.publicScriptsDir
+        fun jsFileNode(file: File): JSONObject {
+            val path = relativePath(file)
+            val text = runCatching { file.readText(StandardCharsets.UTF_8) }.getOrDefault("")
+            val metadata = if (file.name.equals("index.js", ignoreCase = true)) {
+                ScriptRepository.parseMetadata(text, file.nameWithoutExtension).withWebIdePath(path)
+            } else {
+                null
+            }
+            return JSONObject()
+                .put("type", "file")
+                .put("name", file.name)
+                .put("path", path)
+                .put("script", path.endsWith("/index.js", ignoreCase = true) || file.parentFile?.canonicalFile == root.canonicalFile)
+                .put("entry", path.endsWith("/index.js", ignoreCase = true))
+                .apply { if (metadata != null) put("metadata", metadataJson(metadata)) }
+        }
+
+        fun directoryNode(dir: File): JSONObject {
+            val children = JSONArray()
+            dir.listFiles()
+                ?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
+                ?.forEach { child ->
+                    if (child.isDirectory) {
+                        val nested = directoryNode(child)
+                        if (nested.optJSONArray("children")?.length() ?: 0 > 0) children.put(nested)
+                    } else if (child.isFile && child.extension.equals("js", ignoreCase = true)) {
+                        children.put(jsFileNode(child))
+                    }
+                }
+            return JSONObject()
+                .put("type", "directory")
+                .put("name", dir.name)
+                .put("path", relativePath(dir))
+                .put("script", File(dir, "index.js").isFile)
+                .put("children", children)
+        }
+
+        val children = JSONArray()
+        if (root.exists()) {
+            root.listFiles()
+                ?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
+                ?.forEach { entry ->
+                    if (entry.isDirectory) {
+                        val node = directoryNode(entry)
+                        if (node.optJSONArray("children")?.length() ?: 0 > 0) children.put(node)
+                    } else if (entry.isFile && entry.extension.equals("js", ignoreCase = true)) {
+                        children.put(jsFileNode(entry))
+                    }
+                }
+        }
+        return json(JSONObject().put("ok", true).put("root", JSONObject().put("type", "directory").put("name", "XiaoHeiHook").put("path", "").put("children", children)))
+    }
+
     private fun readScript(request: HttpRequest): HttpResponse {
         val file = resolveScriptFile(request.param("path"), mustExist = true)
         val content = file.readText(StandardCharsets.UTF_8)
-        val metadata = ScriptRepository.parseMetadata(content, file.nameWithoutExtension)
+        val path = relativePath(file)
+        val metadata = ScriptRepository.parseMetadata(content, file.nameWithoutExtension).withWebIdePath(path)
         return json(
             JSONObject()
                 .put("ok", true)
-                .put("path", relativePath(file))
+                .put("path", path)
                 .put("metadata", metadataJson(metadata))
                 .put("content", content)
         )
@@ -498,11 +608,12 @@ class WebIdeApi(private val context: Context) {
         val content = body.optString("content", "")
         file.parentFile?.mkdirs()
         file.writeText(content, StandardCharsets.UTF_8)
-        val metadata = ScriptRepository.parseMetadata(content, file.nameWithoutExtension)
+        val path = relativePath(file)
+        val metadata = ScriptRepository.parseMetadata(content, file.nameWithoutExtension).withWebIdePath(path)
         return json(
             JSONObject()
                 .put("ok", true)
-                .put("path", relativePath(file))
+                .put("path", path)
                 .put("size", file.length())
                 .put("metadata", metadataJson(metadata))
         )
@@ -552,6 +663,106 @@ class WebIdeApi(private val context: Context) {
         return json(bridge.syncScripts(packageName))
     }
 
+
+    private fun listFiles(request: HttpRequest): HttpResponse {
+        ScriptRepository.ensurePublicFolderAndSample()
+        val dirPath = request.param("dir").orEmpty()
+        val root = ScriptRepository.publicScriptsDir.canonicalFile
+        val dir = if (dirPath.isBlank()) root else SafeScriptPath.resolve(root, dirPath, mustExist = true, expectDirectory = true)
+        require(dir.isDirectory) { "目录不存在：$dirPath" }
+        val entries = JSONArray()
+        dir.listFiles()
+            ?.filter { !it.name.startsWith(".") }
+            ?.sortedWith(compareBy<File> { !it.isDirectory }.thenBy { it.name.lowercase() })
+            ?.forEach { file -> entries.put(fileEntryJson(root, file)) }
+        val relative = if (dir == root) "" else dir.relativeTo(root).path.replace(File.separatorChar, '/')
+        val parent = relative.substringBeforeLast('/', "")
+        return json(
+            JSONObject()
+                .put("ok", true)
+                .put("dir", relative)
+                .put("parent", parent)
+                .put("entries", entries)
+        )
+    }
+
+    private fun createFile(request: HttpRequest): HttpResponse {
+        val body = request.jsonBody()
+        val root = ScriptRepository.ensurePublicFolderAndSample().getOrThrow().canonicalFile
+        val path = ensureAllowedFileExtension(body.optString("path"))
+        val file = SafeScriptPath.resolve(root, path, mustExist = false, expectDirectory = false)
+        if (file.exists()) return json(409, error("文件已存在：${relativePath(file)}"))
+        file.parentFile?.mkdirs()
+        file.writeText(body.optString("content", ""), StandardCharsets.UTF_8)
+        return json(JSONObject().put("ok", true).put("path", relativePath(file)).put("entry", fileEntryJson(root, file)))
+    }
+
+    private fun createFolder(request: HttpRequest): HttpResponse {
+        val body = request.jsonBody()
+        val root = ScriptRepository.ensurePublicFolderAndSample().getOrThrow().canonicalFile
+        val dir = SafeScriptPath.resolve(root, body.optString("path"), mustExist = false, expectDirectory = true)
+        if (dir.exists()) return json(409, error("文件夹已存在：${relativePath(dir)}"))
+        if (!dir.mkdirs()) return json(500, error("创建文件夹失败：${relativePath(dir)}"))
+        return json(JSONObject().put("ok", true).put("path", relativePath(dir)).put("entry", fileEntryJson(root, dir)))
+    }
+
+    private fun deleteFileOrFolder(request: HttpRequest): HttpResponse {
+        val body = request.jsonBody()
+        val root = ScriptRepository.ensurePublicFolderAndSample().getOrThrow().canonicalFile
+        val target = SafeScriptPath.resolve(root, body.optString("path"), mustExist = true)
+        val recursive = body.optBoolean("recursive", false)
+        if (target.isDirectory) {
+            if (!recursive && target.listFiles()?.isNotEmpty() == true) {
+                return json(409, error("文件夹非空，需要 recursive=true"))
+            }
+            if (!target.deleteRecursively()) return json(500, error("删除文件夹失败：${relativePath(target)}"))
+        } else if (!target.delete()) {
+            return json(500, error("删除文件失败：${relativePath(target)}"))
+        }
+        return json(JSONObject().put("ok", true))
+    }
+
+    private fun renameFileOrFolder(request: HttpRequest): HttpResponse {
+        val body = request.jsonBody()
+        val root = ScriptRepository.ensurePublicFolderAndSample().getOrThrow().canonicalFile
+        val from = SafeScriptPath.resolve(root, body.optString("from"), mustExist = true)
+        val to = SafeScriptPath.resolve(root, body.optString("to"), mustExist = false, expectDirectory = from.isDirectory)
+        if (to.exists()) return json(409, error("目标已存在：${relativePath(to)}"))
+        to.parentFile?.mkdirs()
+        if (!from.renameTo(to)) return json(500, error("重命名失败"))
+        return json(JSONObject().put("ok", true).put("path", relativePath(to)).put("type", if (to.isDirectory) "directory" else "file"))
+    }
+
+    private fun fileEntryJson(root: File, file: File): JSONObject {
+        val path = if (file == root) "" else file.relativeTo(root).path.replace(File.separatorChar, '/')
+        val isDir = file.isDirectory
+        val ext = if (isDir) "" else file.extension.lowercase()
+        val role = when {
+            isDir -> ""
+            !ext.equals("js", ignoreCase = true) -> ""
+            path.endsWith("/index.js", ignoreCase = true) -> "entry"
+            !path.contains("/") -> "script"
+            else -> "dependency"
+        }
+        return JSONObject()
+            .put("type", if (isDir) "directory" else "file")
+            .put("name", file.name)
+            .put("path", path)
+            .put("extension", ext)
+            .put("size", if (isDir) JSONObject.NULL else file.length())
+            .put("modifiedAt", file.lastModified())
+            .put("scriptRole", role)
+            .put("hasIndex", if (isDir) File(file, "index.js").isFile else false)
+    }
+
+    private fun ensureAllowedFileExtension(path: String): String {
+        val clean = path.trim()
+        val ext = clean.substringAfterLast('.', "").lowercase()
+        if (ext.isBlank()) return "$clean.js"
+        require(ext in setOf("js", "json", "md", "txt")) { "不允许的文件类型：.$ext" }
+        return clean
+    }
+
     private data class ScriptEntry(
         val path: String,
         val file: File,
@@ -562,16 +773,27 @@ class WebIdeApi(private val context: Context) {
         ScriptRepository.ensurePublicFolderAndSample()
         val dir = ScriptRepository.publicScriptsDir
         if (!dir.exists()) return emptyList()
-        return dir.walkTopDown()
-            .filter { it.isFile && it.extension.equals("js", ignoreCase = true) }
-            .mapNotNull { file ->
-                val text = runCatching { file.readText(StandardCharsets.UTF_8) }.getOrNull() ?: return@mapNotNull null
-                val metadata = ScriptRepository.parseMetadata(text, file.nameWithoutExtension)
-                if (!packageName.isNullOrBlank() && !metadata.supportsPackage(packageName)) return@mapNotNull null
-                ScriptEntry(file.relativeTo(dir).path.replace(File.separatorChar, '/'), file, metadata)
-            }
-            .sortedWith(compareBy<ScriptEntry> { it.metadata.name.lowercase() }.thenBy { it.path.lowercase() })
-            .toList()
+        val result = mutableListOf<ScriptEntry>()
+        dir.listFiles()?.sortedBy { it.name.lowercase() }?.forEach { entry ->
+            val file = when {
+                entry.isFile && entry.extension.equals("js", ignoreCase = true) -> entry
+                entry.isDirectory && File(entry, "index.js").isFile -> File(entry, "index.js")
+                else -> null
+            } ?: return@forEach
+            val text = runCatching { file.readText(StandardCharsets.UTF_8) }.getOrNull() ?: return@forEach
+            val path = file.relativeTo(dir).path.replace(File.separatorChar, '/')
+            val kind = if (path.endsWith("/index.js", ignoreCase = true)) "directory" else "file"
+            val rootPath = if (kind == "directory") path.substringBeforeLast("/index.js") else ""
+            val metadata = ScriptRepository.parseMetadata(text, file.nameWithoutExtension).copy(
+                path = path,
+                kind = kind,
+                entryPath = path,
+                rootPath = rootPath
+            )
+            if (!packageName.isNullOrBlank() && !metadata.supportsPackage(packageName)) return@forEach
+            result += ScriptEntry(path, file, metadata)
+        }
+        return result.sortedWith(compareBy<ScriptEntry> { it.metadata.name.lowercase() }.thenBy { it.path.lowercase() })
     }
 
     private fun InstalledAppInfo.toJson(enabled: Boolean): JSONObject {
@@ -596,9 +818,19 @@ class WebIdeApi(private val context: Context) {
             .put("remoteName", metadata.remoteName)
             .put("path", metadata.path)
             .put("scriptPath", metadata.path)
+            .put("kind", metadata.kind)
+            .put("entryPath", metadata.entryPath.ifBlank { metadata.path })
+            .put("rootPath", metadata.rootPath)
             .put("sourceMode", metadata.sourceMode)
             .put("url", metadata.url)
             .put("urlRefreshOnApply", metadata.urlRefreshOnApply)
+    }
+
+
+    private fun ScriptMetadata.withWebIdePath(path: String): ScriptMetadata {
+        val kind = if (path.endsWith("/index.js", ignoreCase = true)) "directory" else "file"
+        val rootPath = if (kind == "directory") path.substringBeforeLast("/index.js") else ""
+        return copy(path = path, kind = kind, entryPath = path, rootPath = rootPath)
     }
 
     private fun resolveScriptFile(rawPath: String?, mustExist: Boolean): File {
@@ -715,7 +947,7 @@ data class HttpResponse(
     fun withCors(): HttpResponse {
         headers["Access-Control-Allow-Origin"] = "*"
         headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        headers["Access-Control-Allow-Headers"] = "Content-Type"
+        headers["Access-Control-Allow-Headers"] = "Content-Type, X-XiaoHeiHook-Token"
         return this
     }
 

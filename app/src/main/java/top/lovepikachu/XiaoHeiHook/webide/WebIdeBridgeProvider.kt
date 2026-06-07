@@ -16,6 +16,7 @@ import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.UUID
 
 /**
  * Runs in the main app process and bridges WebIDE(:webide) requests to LSPosed
@@ -32,11 +33,13 @@ class WebIdeBridgeProvider : ContentProvider() {
             when (method) {
                 METHOD_STATUS -> status()
                 METHOD_GET_BOOLEAN -> getBoolean(extras)
+                METHOD_GET_LONG -> getLong(extras)
                 METHOD_PUT_BOOLEAN -> putBoolean(extras)
                 METHOD_SET_APP_ENABLED -> setAppEnabled(extras)
                 METHOD_SET_SCRIPT_ENABLED -> setScriptEnabled(extras)
                 METHOD_SYNC_SCRIPTS -> syncScripts(extras)
                 METHOD_SET_DEBUG_ENABLED -> setDebugEnabled(extras)
+                METHOD_CLEAR_DEBUG_STATE -> clearDebugState()
                 METHOD_SEND_DEBUG_COMMAND -> sendDebugCommand(extras)
                 METHOD_GET_DEBUG_BREAKPOINTS -> getDebugBreakpoints(extras)
                 METHOD_SET_DEBUG_BREAKPOINTS -> setDebugBreakpoints(extras)
@@ -63,6 +66,17 @@ class WebIdeBridgeProvider : ContentProvider() {
         val value = prefs?.getBoolean(key, defValue) ?: defValue
         return okBundle()
             .putBool("value", value)
+            .putBool("remotePreferencesReady", prefs != null)
+    }
+
+    private fun getLong(extras: Bundle?): Bundle {
+        val key = extras?.getString(ARG_KEY).orEmpty()
+        val defValue = extras?.getLong(ARG_DEFAULT_LONG, 0L) ?: 0L
+        if (key.isBlank()) return errorBundle("key 不能为空")
+        val prefs = awaitRemotePreferences(1200)
+        val value = prefs?.getLong(key, defValue) ?: defValue
+        return okBundle()
+            .putLongValue("value", value)
             .putBool("remotePreferencesReady", prefs != null)
     }
 
@@ -167,10 +181,47 @@ class WebIdeBridgeProvider : ContentProvider() {
         val enabled = extras?.getBoolean(ARG_ENABLED, false) ?: false
         if (packageName.isBlank()) return errorBundle("packageName 不能为空")
         val prefs = awaitRemotePreferences(2000) ?: return errorBundle("LSPosed Remote Preferences 未连接")
-        prefs.edit().putBoolean(DebugProtocol.debugEnabledKey(packageName), enabled).commit()
+        val editor = prefs.edit()
+        val sessionId: String
+        val expiresAt: Long
+        if (enabled) {
+            sessionId = UUID.randomUUID().toString()
+            expiresAt = System.currentTimeMillis() + DebugProtocol.DEFAULT_DEBUG_SESSION_MILLIS
+            editor.putBoolean(DebugProtocol.debugEnabledKey(packageName), true)
+                .putString(DebugProtocol.debugSessionKey(packageName), sessionId)
+                .putLong(DebugProtocol.debugExpiresAtKey(packageName), expiresAt)
+                .commit()
+        } else {
+            sessionId = ""
+            expiresAt = 0L
+            editor.putBoolean(DebugProtocol.debugEnabledKey(packageName), false)
+                .remove(DebugProtocol.debugSessionKey(packageName))
+                .remove(DebugProtocol.debugExpiresAtKey(packageName))
+                .commit()
+        }
         return okBundle()
             .putStringValue("packageName", packageName)
             .putBool("enabled", enabled)
+            .putStringValue("sessionId", sessionId)
+            .putLongValue("expiresAt", expiresAt)
+    }
+
+    private fun clearDebugState(): Bundle {
+        val prefs = awaitRemotePreferences(2000) ?: return errorBundle("LSPosed Remote Preferences 未连接")
+        val editor = prefs.edit()
+        var removed = 0
+        prefs.all.keys.forEach { key ->
+            if (key.startsWith(DebugProtocol.DEBUG_ENABLED_PREFIX)
+                || key.startsWith(DebugProtocol.DEBUG_SESSION_PREFIX)
+                || key.startsWith(DebugProtocol.DEBUG_EXPIRES_AT_PREFIX)
+                || key.startsWith(DebugProtocol.DEBUG_COMMAND_PREFIX)
+            ) {
+                editor.remove(key)
+                removed++
+            }
+        }
+        editor.commit()
+        return okBundle().putIntValue("removed", removed)
     }
 
     private fun sendDebugCommand(extras: Bundle?): Bundle {
@@ -268,21 +319,26 @@ class WebIdeBridgeProvider : ContentProvider() {
 
     private fun Bundle.putBool(key: String, value: Boolean): Bundle = apply { putBoolean(key, value) }
     private fun Bundle.putStringValue(key: String, value: String): Bundle = apply { putString(key, value) }
+    private fun Bundle.putLongValue(key: String, value: Long): Bundle = apply { putLong(key, value) }
+    private fun Bundle.putIntValue(key: String, value: Int): Bundle = apply { putInt(key, value) }
 
     companion object {
         const val AUTHORITY = "top.lovepikachu.XiaoHeiHook.webide.bridge"
         const val METHOD_STATUS = "status"
         const val METHOD_GET_BOOLEAN = "getBoolean"
+        const val METHOD_GET_LONG = "getLong"
         const val METHOD_PUT_BOOLEAN = "putBoolean"
         const val METHOD_SET_APP_ENABLED = "setAppEnabled"
         const val METHOD_SET_SCRIPT_ENABLED = "setScriptEnabled"
         const val METHOD_SYNC_SCRIPTS = "syncScripts"
         const val METHOD_SET_DEBUG_ENABLED = "setDebugEnabled"
+        const val METHOD_CLEAR_DEBUG_STATE = "clearDebugState"
         const val METHOD_SEND_DEBUG_COMMAND = "sendDebugCommand"
         const val METHOD_GET_DEBUG_BREAKPOINTS = "getDebugBreakpoints"
         const val METHOD_SET_DEBUG_BREAKPOINTS = "setDebugBreakpoints"
         const val ARG_KEY = "key"
         const val ARG_DEFAULT = "default"
+        const val ARG_DEFAULT_LONG = "defaultLong"
         const val ARG_VALUE = "value"
         const val ARG_PACKAGE = "packageName"
         const val ARG_SCRIPT_ID = "scriptId"

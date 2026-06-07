@@ -1069,3 +1069,626 @@ body,
 .debug-edit-grid.compact-only .debug-edit-card.compact {
   max-width: 420px;
 }
+
+/* v15 WebIDE-only debug run controls */
+.debug-btn {
+  width: 30px;
+  min-width: 30px;
+  color: #8a5a00;
+  border-color: #9a7300;
+  background: #fff6d8;
+}
+.debug-btn:hover,
+.debug-btn.active {
+  color: #5f3f00;
+  border-color: #7a5700;
+  background: #ffe7a1;
+}
+.debug-btn .fa-icon,
+.stop-debug-btn .fa-icon {
+  width: 17px;
+  height: 17px;
+  margin-right: 0;
+}
+.stop-debug-btn {
+  width: 30px;
+  min-width: 30px;
+  color: #9a1f1f;
+  border-color: #9a3a3a;
+  background: #fff0f0;
+}
+.stop-debug-btn:hover {
+  color: #6f1111;
+  border-color: #7c2323;
+  background: #ffdede;
+}
+
+/* v15.1 slim scrollbars + log follow UI */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #7a7a7a transparent;
+}
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #777;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
+.console-actions button.active,
+.terminal-toolbar button.active {
+  background: #e8f1ff;
+  border-color: #5d83c6;
+  color: #173d78;
+  font-weight: 600;
+}
+
+/* v15.3 script file manager */
+.script-manager-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border-bottom: 1px solid #d8d8d8;
+  background: #eeeeee;
+  flex-wrap: wrap;
+}
+.script-manager-toolbar button {
+  padding: 2px 7px;
+  min-height: 23px;
+}
+.script-manager-hint {
+  border-bottom: 1px solid #dedede;
+  background: #f9f9f9;
+}
+.script-manager-hint code {
+  font-family: Consolas, 'Courier New', monospace;
+  color: #164a8b;
+}
+.script-tree-list {
+  flex: 1;
+  background: #fbfbfb;
+}
+.tree-row {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-bottom: 1px solid #eeeeee;
+  color: #222;
+  user-select: none;
+}
+.tree-row.directory {
+  background: #f4f4f4;
+  font-weight: 600;
+}
+.tree-row.file {
+  cursor: pointer;
+}
+.tree-row.file:hover,
+.tree-row.selected {
+  background: var(--sel);
+}
+.tree-row.entry .tree-name {
+  font-weight: 700;
+}
+.tree-icon {
+  width: 14px;
+  flex: 0 0 14px;
+  color: #666;
+  text-align: center;
+  font-family: Consolas, 'Courier New', monospace;
+}
+.tree-main {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr);
+  gap: 1px;
+}
+.tree-name,
+.tree-script-name,
+.tree-path {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tree-script-name {
+  color: #333;
+  font-size: 12px;
+  font-weight: normal;
+}
+.tree-path {
+  color: var(--muted);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: normal;
+}
+.tree-badge {
+  flex: 0 0 auto;
+  border: 1px solid #91a9c8;
+  background: #edf4ff;
+  color: #254c7a;
+  font-size: 10px;
+  padding: 0 4px;
+}
+/* hide old in-panel collapse buttons; side panels are controlled only by toolbar */
+.tool-collapse { display: none !important; }
+
+/* v15.4 editor tab context menu */
+.tab {
+  user-select: none;
+}
+.tab-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 184px;
+  padding: 4px;
+  background: #f5f5f5;
+  border: 1px solid #9a9a9a;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  font-size: 12px;
+  color: #202020;
+}
+.tab-context-menu button {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 6px 9px;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.tab-context-menu button:hover:not(:disabled) {
+  background: #dce8f8;
+}
+.tab-context-menu button:disabled {
+  color: #999;
+  cursor: not-allowed;
+}
+.tab-menu-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: #d3d3d3;
+}
+
+/* v15.5 log filtering, colors and log page */
+.console-filter,
+.terminal-filter,
+.logs-toolbar input[type="text"],
+.logs-toolbar select {
+  height: 22px;
+  min-width: 130px;
+  max-width: 240px;
+  padding: 2px 6px;
+  border: 1px solid #555;
+  background: #191919;
+  color: #ddd;
+  font-size: 12px;
+  outline: none;
+}
+.console-filter:focus,
+.terminal-filter:focus,
+.logs-toolbar input[type="text"]:focus,
+.logs-toolbar select:focus {
+  border-color: #7aa7e8;
+}
+.console .log-error,
+.terminal-console .log-error,
+.logs-console .log-error {
+  color: #ff7b72;
+  font-weight: 600;
+}
+.console .log-warn,
+.terminal-console .log-warn,
+.logs-console .log-warn {
+  color: #f2cc60;
+}
+.console .log-info,
+.terminal-console .log-info,
+.logs-console .log-info {
+  color: #7ee787;
+}
+.console .log-debug,
+.terminal-console .log-debug,
+.logs-console .log-debug {
+  color: #79c0ff;
+}
+.console .log-verbose,
+.terminal-console .log-verbose,
+.logs-console .log-verbose {
+  color: #b7b7b7;
+}
+.console .log-target,
+.terminal-console .log-target,
+.logs-console .log-target {
+  color: #d8d8d8;
+}
+.logs-page {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: #111;
+  color: #d8d8d8;
+}
+.logs-toolbar {
+  height: 34px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #2b2b2b;
+  border-bottom: 1px solid #444;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.logs-toolbar b {
+  flex: 0 0 auto;
+  margin-right: 4px;
+}
+.logs-toolbar button,
+.logs-toolbar select {
+  cursor: pointer;
+}
+.logs-toolbar button.active {
+  background: #e8f1ff;
+  border-color: #5d83c6;
+  color: #173d78;
+  font-weight: 600;
+}
+.logs-console {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 17px;
+  background: #111;
+  color: #d8d8d8;
+}
+/* Slimmer than before, especially inside logs/terminal/editor side panes. */
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #666;
+  border-radius: 6px;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #666 transparent;
+}
+
+/* v15.6 folder-style file manager and terminal toolbar cleanup */
+.terminal-toolbar,
+.logs-toolbar {
+  min-height: 40px;
+  height: auto;
+  flex-wrap: wrap;
+  row-gap: 5px;
+  overflow: visible;
+  align-content: center;
+}
+.terminal-toolbar input[type="text"],
+.logs-toolbar input[type="text"] {
+  width: min(360px, 34vw);
+  min-width: 180px;
+}
+.terminal-filter,
+.logs-toolbar input[type="text"]:not(:first-of-type) {
+  width: min(260px, 24vw) !important;
+  min-width: 150px;
+}
+.terminal-status {
+  display: none;
+}
+.file-manager-pathbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 7px;
+  border-bottom: 1px solid #d8d8d8;
+  background: #f5f5f5;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.path-crumb {
+  border: 0;
+  background: transparent;
+  color: #174b8f;
+  padding: 1px 4px;
+  min-height: 20px;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.path-crumb:hover {
+  background: #ffffff;
+  border: 1px solid #b8c8e0;
+  padding: 0 3px;
+}
+.path-sep {
+  color: #777;
+}
+.file-manager-toolbar {
+  border-top: 0;
+}
+.file-grid {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  background: #fbfbfb;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  align-content: start;
+  gap: 8px;
+}
+.file-card {
+  border: 1px solid #d6d6d6;
+  background: #ffffff;
+  min-height: 86px;
+  padding: 7px;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.file-card:hover,
+.file-card.selected {
+  border-color: #6f95d0;
+  background: #eef5ff;
+}
+.file-card.directory {
+  background: #fffdf5;
+}
+.file-card-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.file-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+.file-name {
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 18px;
+  color: #666;
+  font-size: 11px;
+  overflow: hidden;
+}
+.file-script-name {
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-actions {
+  margin-top: auto;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.file-actions button {
+  min-height: 20px;
+  padding: 1px 5px;
+  font-size: 11px;
+}
+
+/* v15.7 classic file-manager list; keep it plain and IDE-like instead of card/grid style. */
+.classic-file-manager .classic-pathbar {
+  background: #ececec;
+  border-bottom: 1px solid #bdbdbd;
+  font-family: Tahoma, Arial, sans-serif;
+}
+.classic-file-manager .path-label {
+  color: #555;
+  font-size: 12px;
+  margin-right: 4px;
+}
+.classic-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 6px;
+  border-bottom: 1px solid #cfcfcf;
+  background: #f2f2f2;
+  flex-wrap: wrap;
+}
+.classic-toolbar-row button {
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid #8f8f8f;
+  background: linear-gradient(#ffffff, #e2e2e2);
+  color: #222;
+  border-radius: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.classic-toolbar-row button:hover:not(:disabled) {
+  background: linear-gradient(#ffffff, #d7e7ff);
+  border-color: #6f8fc0;
+}
+.classic-toolbar-row button:disabled {
+  color: #999;
+  cursor: not-allowed;
+}
+.classic-toolbar-row input[type="text"] {
+  height: 22px;
+  min-width: 120px;
+  flex: 1 1 150px;
+  border: 1px solid #8f8f8f;
+  border-radius: 0;
+  background: #fff;
+  color: #111;
+  padding: 2px 5px;
+  font-size: 12px;
+}
+.classic-file-table {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #fff;
+  font-family: Tahoma, Arial, sans-serif;
+  font-size: 12px;
+}
+.classic-file-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(120px, 1.7fr) 58px 64px 118px 116px;
+  align-items: center;
+  min-height: 25px;
+  border-bottom: 1px solid #eeeeee;
+  color: #222;
+  cursor: default;
+  user-select: none;
+}
+.classic-file-row > div {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 2px 5px;
+  box-sizing: border-box;
+}
+.classic-file-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 24px;
+  background: #e5e5e5;
+  border-top: 1px solid #c6c6c6;
+  border-bottom: 1px solid #a9a9a9;
+  color: #333;
+  font-weight: 600;
+}
+.classic-file-row:not(.classic-file-head):hover,
+.classic-file-row.selected {
+  background: #dbeaff;
+}
+.classic-file-row.directory {
+  font-weight: 600;
+}
+.classic-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.classic-name .file-icon {
+  font-size: 14px;
+  width: 16px;
+  text-align: center;
+  flex: 0 0 16px;
+}
+.classic-name .file-name {
+  font-weight: inherit;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.classic-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.classic-file-actions button {
+  border: 1px solid #a0a0a0;
+  background: #efefef;
+  min-height: 19px;
+  padding: 0 4px;
+  font-size: 11px;
+  border-radius: 0;
+  cursor: pointer;
+}
+.classic-file-actions button:hover {
+  background: #dcecff;
+}
+.classic-script-caption {
+  grid-column: 1 / -1;
+  margin-top: -2px;
+  padding-left: 26px !important;
+  min-height: 17px;
+  color: #666;
+  font-size: 11px;
+  background: #fafafa;
+  border-top: 1px dotted #eeeeee;
+}
+.classic-empty {
+  padding: 12px 8px;
+}
+.classic-file-manager .file-grid,
+.classic-file-manager .file-card {
+  display: none;
+}
+
+/* v15.8 file manager polish */
+.classic-file-row:not(.classic-file-head) {
+  cursor: pointer;
+}
+.classic-file-row.up-entry {
+  cursor: pointer;
+}
+.classic-file-row.up-entry:hover {
+  background: #dbeaff;
+}
+.file-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 132px;
+  border: 1px solid #777;
+  background: #f3f3f3;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.28);
+  padding: 2px;
+  font-family: Tahoma, Arial, sans-serif;
+  font-size: 12px;
+}
+.file-context-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #111;
+  padding: 4px 24px 4px 18px;
+  text-align: left;
+  min-height: 22px;
+  cursor: pointer;
+}
+.file-context-menu button:hover {
+  background: #0a64ad;
+  color: #fff;
+}
+.file-context-menu button.danger:hover {
+  background: #9b1c1c;
+  color: #fff;
+}

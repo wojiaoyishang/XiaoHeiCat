@@ -38,6 +38,7 @@ import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
 import top.lovepikachu.XiaoHeiHook.webide.BatteryOptimizationHelper
 import top.lovepikachu.XiaoHeiHook.webide.WebIdeDefaults
 import top.lovepikachu.XiaoHeiHook.webide.WebIdeManager
+import top.lovepikachu.XiaoHeiHook.webide.WebIdeLogMaintenance
 
 @Composable
 fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
@@ -49,16 +50,20 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
     var showDangerDialog by remember { mutableStateOf(false) }
     var pendingError by remember { mutableStateOf<String?>(null) }
     var batteryIgnored by remember { mutableStateOf(BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)) }
+    var logSizeBytes by remember { mutableStateOf(WebIdeLogMaintenance.totalLogSize(context)) }
+    var showClearLogsDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         WebIdeManager.syncStatusWithSavedConfig(context)
         batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
+        logSizeBytes = WebIdeLogMaintenance.totalLogSize(context)
     }
 
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
+                logSizeBytes = WebIdeLogMaintenance.totalLogSize(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -113,102 +118,180 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
         )
     }
 
-    AppCard(modifier = modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "WebIDE",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (status.running) "正在监听 ${status.baseUrl}" else "未启动。开启后可在电脑浏览器编辑脚本。",
-                        fontSize = 13.sp,
-                        lineHeight = 19.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+
+    if (showClearLogsDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearLogsDialog = false },
+            title = { Text("清空所有日志") },
+            text = {
+                Text("当前日志大小：${WebIdeLogMaintenance.formatBytes(logSizeBytes)}。\n\n确定清空所有目标应用日志吗？此操作不会删除脚本。")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val result = WebIdeLogMaintenance.clearAllLogs(context)
+                        logSizeBytes = WebIdeLogMaintenance.totalLogSize(context)
+                        showClearLogsDialog = false
+                        Toast.makeText(
+                            context,
+                            "已清空 ${result.deletedFiles} 个日志文件，释放 ${WebIdeLogMaintenance.formatBytes(result.clearedBytes)}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                ) {
+                    Text("确认清空")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearLogsDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        AppCard(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "WebIDE",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (status.running) "正在监听 ${status.baseUrl}" else "未启动。开启后可在电脑浏览器编辑脚本。",
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = status.running,
+                        onCheckedChange = { checked ->
+                            if (checked) {
+                                showDangerDialog = true
+                            } else {
+                                WebIdeManager.stop(context)
+                                Toast.makeText(context, "WebIDE 已关闭", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     )
                 }
-                Switch(
-                    checked = status.running,
-                    onCheckedChange = { checked ->
-                        if (checked) {
-                            showDangerDialog = true
-                        } else {
-                            WebIdeManager.stop(context)
-                            Toast.makeText(context, "WebIDE 已关闭", Toast.LENGTH_SHORT).show()
+
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = hostText,
+                        onValueChange = { hostText = it },
+                        enabled = !status.running,
+                        singleLine = true,
+                        label = { Text("绑定地址") },
+                        placeholder = { Text(WebIdeDefaults.DEFAULT_HOST) },
+                        modifier = Modifier.weight(1.35f)
+                    )
+                    OutlinedTextField(
+                        value = portText,
+                        onValueChange = { value -> portText = value.filter { it.isDigit() }.take(5) },
+                        enabled = !status.running,
+                        singleLine = true,
+                        label = { Text("端口") },
+                        placeholder = { Text(WebIdeDefaults.DEFAULT_PORT.toString()) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(0.75f)
+                    )
+                }
+
+                Text(
+                    text = if (status.running) {
+                        "电脑访问：adb forward tcp:${status.port} tcp:${status.port} 后打开 http://127.0.0.1:${status.port}/"
+                    } else {
+                        "默认 127.0.0.1 只允许本机/ADB 转发访问；0.0.0.0 会暴露到网络，请谨慎。"
+                    },
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (!batteryIgnored) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "未忽略电池优化时，部分系统会在后台冻结 WebIDE。请先允许忽略电池优化，再切后台使用。",
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(
+                            onClick = {
+                                val opened = BatteryOptimizationHelper.requestIgnoreBatteryOptimizations(context)
+                                if (!opened) {
+                                    batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
+                                }
+                            }
+                        ) {
+                            Text("忽略电池优化")
                         }
                     }
-                )
-            }
+                }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = hostText,
-                    onValueChange = { hostText = it },
-                    enabled = !status.running,
-                    singleLine = true,
-                    label = { Text("绑定地址") },
-                    placeholder = { Text(WebIdeDefaults.DEFAULT_HOST) },
-                    modifier = Modifier.weight(1.35f)
-                )
-                OutlinedTextField(
-                    value = portText,
-                    onValueChange = { value -> portText = value.filter { it.isDigit() }.take(5) },
-                    enabled = !status.running,
-                    singleLine = true,
-                    label = { Text("端口") },
-                    placeholder = { Text(WebIdeDefaults.DEFAULT_PORT.toString()) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(0.75f)
-                )
-            }
-
-            Text(
-                text = if (status.running) {
-                    "电脑访问：adb forward tcp:${status.port} tcp:${status.port} 后打开 http://127.0.0.1:${status.port}/"
-                } else {
-                    "默认 127.0.0.1 只允许本机/ADB 转发访问；0.0.0.0 会暴露到网络，请谨慎。"
-                },
-                fontSize = 12.sp,
-                lineHeight = 18.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            if (!batteryIgnored) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val errorText = pendingError ?: status.lastError
+                if (!errorText.isNullOrBlank()) {
                     Text(
-                        text = "未忽略电池优化时，部分系统会在后台冻结 WebIDE。请先允许忽略电池优化，再切后台使用。",
+                        text = errorText,
                         fontSize = 12.sp,
                         lineHeight = 18.sp,
                         color = MaterialTheme.colorScheme.error
                     )
-                    Button(
-                        onClick = {
-                            val opened = BatteryOptimizationHelper.requestIgnoreBatteryOptimizations(context)
-                            if (!opened) {
-                                batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
-                            }
-                        }
-                    ) {
-                        Text("忽略电池优化")
-                    }
                 }
             }
+        }
 
-            val errorText = pendingError ?: status.lastError
-            if (!errorText.isNullOrBlank()) {
+        AppCard(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "日志维护",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "统计目录：${WebIdeLogMaintenance.logDir(context).absolutePath}",
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
                 Text(
-                    text = errorText,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp,
-                    color = MaterialTheme.colorScheme.error
+                    text = "日志大小：${WebIdeLogMaintenance.formatBytes(logSizeBytes)}，文件数：${WebIdeLogMaintenance.logFileCount(context)}",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { logSizeBytes = WebIdeLogMaintenance.totalLogSize(context) }) {
+                        Text("刷新日志大小")
+                    }
+                    Button(onClick = { showClearLogsDialog = true }) {
+                        Text("清空所有日志")
+                    }
+                }
             }
         }
     }

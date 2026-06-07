@@ -50,6 +50,22 @@ function pretty(value: unknown) {
   }
 }
 
+function classifyLogLine(text: string, fallback?: string) {
+  if (fallback === 'err' || /\sE\//.test(text) || /\bERROR\b/i.test(text)) return 'log-error'
+  if (fallback === 'warn' || /\sW\//.test(text) || /\bWARN(?:ING)?\b/i.test(text)) return 'log-warn'
+  if (fallback === 'ok' || /\sI\//.test(text) || /\bINFO\b/i.test(text)) return 'log-info'
+  if (/\sD\//.test(text) || /\bDEBUG\b/i.test(text)) return 'log-debug'
+  if (/\sV\//.test(text) || /\bVERBOSE\b/i.test(text)) return 'log-verbose'
+  if (fallback === 'target') return 'log-target'
+  return fallback || ''
+}
+
+function matchesFilter(text: string, filter: string) {
+  const q = filter.trim().toLowerCase()
+  if (!q) return true
+  return text.toLowerCase().includes(q)
+}
+
 function variableRows(value: unknown): Array<{ name: string; type: string; value: string }> {
   if (!value || typeof value !== 'object') return []
   const obj = value as Record<string, unknown>
@@ -95,6 +111,8 @@ export function BottomConsole({
   const [evalExpression, setEvalExpression] = useState('')
   const consoleRef = useRef<HTMLPreElement | null>(null)
   const debugRef = useRef<HTMLDivElement | null>(null)
+  const [followLogs, setFollowLogs] = useState(true)
+  const [logFilter, setLogFilter] = useState('')
   const dragStateRef = useRef<{ startY: number; startHeight: number } | null>(null)
 
   const pausedEvents = useMemo(
@@ -103,14 +121,31 @@ export function BottomConsole({
   )
   const latestPaused = pausedEvents[pausedEvents.length - 1] || null
   const currentVariables = useMemo(() => variableRows(latestPaused?.locals), [latestPaused?.locals])
+  const visibleLines = useMemo(() => lines.filter((line) => matchesFilter(line.text, logFilter)), [lines, logFilter])
 
-  // 输出与调试事件都采用 newest-first。
-  // 不自动滚到底部，避免 Eval / Step / 日志刷新后滚动条跳动。
-  // 当新结果到达时保持置顶，让最新执行结果出现在最上方。
   useEffect(() => {
     const el = consoleRef.current
-    if (el) el.scrollTop = 0
-  }, [lines, tab])
+    if (el && followLogs) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [lines, tab, followLogs])
+
+  const handleConsoleScroll = useCallback(() => {
+    const el = consoleRef.current
+    if (!el || !followLogs) return
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distanceToBottom > 24) {
+      setFollowLogs(false)
+    }
+  }, [followLogs])
+
+  const enableFollowLogs = useCallback(() => {
+    setFollowLogs(true)
+    requestAnimationFrame(() => {
+      const el = consoleRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    })
+  }, [])
 
   useEffect(() => {
     const el = debugRef.current
@@ -181,16 +216,32 @@ export function BottomConsole({
         </div>
         {livePackage ? <span className="console-live">实时日志：{livePackage}</span> : <span className="console-live muted">未选择应用</span>}
         <div className="console-actions">
+          <input
+            className="console-filter"
+            value={logFilter}
+            placeholder="过滤日志..."
+            onChange={(ev) => setLogFilter(ev.target.value)}
+            title="按关键词过滤当前终端日志"
+          />
           <button onClick={onOpenStandalone} title={livePackage ? `单独打开终端：${livePackage}` : '单独打开终端'}><Icon name="terminal" /> 单开</button>
+          <button onClick={() => {
+            const pkg = livePackage ? `?packageName=${encodeURIComponent(livePackage)}` : ''
+            window.open(`/logs${pkg}`, 'xhh-logs')
+          }} title={livePackage ? `打开日志页面：${livePackage}` : '打开日志页面'}>日志</button>
+          <button
+            className={followLogs ? 'active' : ''}
+            onClick={enableFollowLogs}
+            title={followLogs ? '正在跟踪最新日志；手动滚动会暂停自动滚动' : '恢复跟踪最新日志并滚动到底部'}
+          >跟踪</button>
           <button onClick={onClear} title="清空终端"><Icon name="clear" /> 清空</button>
           <button onClick={onHide} title="隐藏下方终端 Ctrl+Alt+T"><Icon name="hide" /> 隐藏</button>
         </div>
       </div>
 
       {tab === 'output' ? (
-        <pre ref={consoleRef} className="console">
-          {[...lines].reverse().map((line) => (
-            <div key={line.id} className={line.type || ''}>{line.text}</div>
+        <pre ref={consoleRef} className="console" onScroll={handleConsoleScroll}>
+          {visibleLines.map((line) => (
+            <div key={line.id} className={`${line.type || ''} ${classifyLogLine(line.text, line.type)}`}>{line.text}</div>
           ))}
         </pre>
       ) : (

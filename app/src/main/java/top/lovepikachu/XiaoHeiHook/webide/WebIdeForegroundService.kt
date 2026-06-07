@@ -126,6 +126,8 @@ class WebIdeForegroundService : Service() {
     private fun stopRuntime(updateSavedConfig: Boolean) {
         stopServerOnly()
         releaseKeepAliveLocks()
+        runCatching { WebIdeBridgeClient(applicationContext).clearAllDebugState() }
+            .onFailure { Log.w(TAG, "clear WebIDE debug state failed", it) }
         WebIdeManager.markServiceStopped(this, runningHost, runningPort, updateSavedConfig)
     }
 

@@ -45,7 +45,10 @@ export function MonacoCodeEditor({
 
     monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
       noSemanticValidation: false,
-      noSyntaxValidation: false
+      noSyntaxValidation: false,
+      // TS/JS diagnostic 80001: "File is a CommonJS module; it may be converted to an ES module."
+      // XiaoHeiHook intentionally supports CommonJS require/module.exports for multi-file scripts.
+      diagnosticCodesToIgnore: [80001]
     })
     monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
       allowNonTsExtensions: true,

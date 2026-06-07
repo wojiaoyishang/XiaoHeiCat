@@ -9,6 +9,10 @@ import type {
   ScriptMeta,
   DebugEvent,
   DebugBreakpointsResponse,
+  ScriptTreeResponse,
+  ScriptTreeNode,
+  ScriptFileEntry,
+  ScriptFileListResponse,
 } from "./types/webide";
 import { TopBar } from "./components/TopBar";
 import { AppListPanel } from "./components/AppListPanel";
@@ -34,11 +38,15 @@ export function App() {
   const [apps, setApps] = useState<AppInfo[]>([]);
   const [scripts, setScripts] = useState<ScriptInfo[]>([]);
   const [allScripts, setAllScripts] = useState<ScriptInfo[]>([]);
+  const [scriptTree, setScriptTree] = useState<ScriptTreeNode | null>(null);
+  const [scriptFiles, setScriptFiles] = useState<ScriptFileEntry[]>([]);
+  const [scriptManagerDir, setScriptManagerDir] = useState("");
   const [selectedApp, setSelectedApp] = useState<AppInfo | null>(null);
   const [hookSettings, setHookSettings] = useState<HookSettings | null>(null);
   const [appQuery, setAppQuery] = useState("");
   const [showSystem, setShowSystem] = useState(false);
   const [pageMode, setPageMode] = useState<PageMode>("apps");
+  const [rightMode, setRightMode] = useState<PageMode>("apps");
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [logs, setLogs] = useState<ConsoleLine[]>([]);
@@ -60,6 +68,7 @@ export function App() {
     const saved = Number(window.localStorage.getItem("xhh.rightPanelWidth"));
     return Number.isFinite(saved) && saved > 0 ? saved : 320;
   });
+  const [tabMenu, setTabMenu] = useState<{ path: string; x: number; y: number } | null>(null);
 
   const selectedPackage = selectedApp?.packageName;
   const activeTab = useMemo(
@@ -87,7 +96,7 @@ export function App() {
 
   const statusText = useMemo(() => {
     if (!status) return "未连接";
-    return `${status.server || "WebIDE"} | ${status.process || ""} | ${status.scriptDir || ""}`;
+    return status.running ? `就绪 ${status.host || "127.0.0.1"}:${status.port || ""}` : "未启动";
   }, [status]);
 
   const log = useCallback((text: string, type?: ConsoleLine["type"]) => {
@@ -150,12 +159,17 @@ export function App() {
     setStatus(data);
   }, []);
 
-  const loadApps = useCallback(async () => {
+  const loadApps = useCallback(async (force = false) => {
     const data = await api<{ ok: boolean; apps: AppInfo[]; count?: number }>(
-      `/api/apps?query=${encodeURIComponent(appQuery)}&showSystem=${showSystem ? "true" : "false"}`,
+      `/api/apps?query=${encodeURIComponent(appQuery)}&showSystem=${showSystem ? "true" : "false"}&force=${force ? "true" : "false"}`,
     );
     setApps(data.apps || []);
-  }, [appQuery, showSystem]);
+
+    if (selectedPackage) {
+      const current = (data.apps || []).find((app) => app.packageName === selectedPackage) || null;
+      setSelectedApp(current);
+    }
+  }, [appQuery, showSystem, selectedPackage]);
 
   const loadScripts = useCallback(async (packageName?: string) => {
     const suffix = packageName
@@ -178,6 +192,18 @@ export function App() {
     setAllScripts(data.scripts || []);
   }, []);
 
+  const loadScriptTree = useCallback(async () => {
+    const data = await api<ScriptTreeResponse>("/api/scripts/tree");
+    setScriptTree(data.root || null);
+  }, []);
+
+  const loadScriptFiles = useCallback(async (dir?: string) => {
+    const targetDir = dir === undefined ? scriptManagerDir : dir;
+    const data = await api<ScriptFileListResponse>(`/api/files/list?dir=${encodeURIComponent(targetDir || "")}`);
+    setScriptManagerDir(data.dir || "");
+    setScriptFiles(data.entries || []);
+  }, [scriptManagerDir]);
+
   const loadHookSettings = useCallback(
     async (packageName: string) => {
       const data = await api<HookSettings>(
@@ -191,8 +217,25 @@ export function App() {
 
   const refreshScriptLists = useCallback(async () => {
     await loadAllScripts();
+    await loadScriptTree();
+    await loadScriptFiles();
     if (selectedPackage) await loadScripts(selectedPackage);
-  }, [loadAllScripts, loadScripts, selectedPackage]);
+  }, [loadAllScripts, loadScriptTree, loadScriptFiles, loadScripts, selectedPackage]);
+
+  const refreshAppsAndSyncState = useCallback(async () => {
+    await loadApps(true);
+    await loadAllScripts();
+    await loadScriptTree();
+    await loadScriptFiles();
+    if (selectedPackage) {
+      await loadScripts(selectedPackage);
+      await loadHookSettings(selectedPackage);
+      log(`已刷新应用列表并同步状态：${selectedPackage}`, "ok");
+    } else {
+      await loadScripts();
+      log("已刷新应用列表并同步脚本状态", "ok");
+    }
+  }, [loadApps, loadAllScripts, loadScriptTree, loadScriptFiles, loadScripts, loadHookSettings, selectedPackage, log]);
 
   const setTabContent = useCallback(
     (value: string) => {
@@ -253,7 +296,7 @@ export function App() {
   );
 
   const saveTab = useCallback(
-    async (tab: OpenTab) => {
+    async (tab: OpenTab): Promise<string> => {
       const data = await post<{
         ok: boolean;
         path: string;
@@ -279,6 +322,7 @@ export function App() {
       log(`已保存：${data.path} (${data.size} bytes)`, "ok");
       await refreshScriptLists();
       if (selectedPackage) await loadHookSettings(selectedPackage);
+      return data.path;
     },
     [currentPath, refreshScriptLists, selectedPackage, loadHookSettings, log],
   );
@@ -290,6 +334,80 @@ export function App() {
     }
     await saveTab(activeTab);
   }, [activeTab, saveTab, log]);
+
+  const closeTabsWithPrompt = useCallback(
+    async (paths: string[]) => {
+      const uniquePaths = Array.from(new Set(paths.filter(Boolean)));
+      if (!uniquePaths.length) return;
+
+      const pathsToClose = new Set<string>();
+
+      for (const path of uniquePaths) {
+        const tab = openTabs.find((item) => item.path === path);
+        if (!tab) continue;
+
+        if (tab.dirty) {
+          const choice = window.prompt(
+            `文件 ${tab.path} 尚未保存。\n输入 s 保存后关闭，d 不保存直接关闭，c 取消`,
+            "s",
+          );
+          const normalized = (choice || "").trim().toLowerCase();
+
+          if (!normalized || normalized === "c" || normalized === "cancel") {
+            return;
+          }
+
+          if (normalized === "s" || normalized === "save") {
+            const savedPath = await saveTab(tab);
+            pathsToClose.add(savedPath);
+            pathsToClose.add(tab.path);
+            continue;
+          }
+
+          if (!(normalized === "d" || normalized === "discard" || normalized === "n" || normalized === "no")) {
+            log("关闭已取消：请输入 s、d 或 c", "warn");
+            return;
+          }
+        }
+
+        pathsToClose.add(tab.path);
+      }
+
+      if (!pathsToClose.size) return;
+
+      setOpenTabs((old) => {
+        const next = old.filter((tab) => !pathsToClose.has(tab.path));
+        if (currentPath && pathsToClose.has(currentPath)) {
+          const closedIndex = old.findIndex((tab) => tab.path === currentPath);
+          const fallback = next[Math.max(0, Math.min(closedIndex, next.length - 1))];
+          setCurrentPath(fallback?.path || null);
+        }
+        return next;
+      });
+
+      log(`已关闭 ${pathsToClose.size} 个标签页`, "ok");
+    },
+    [openTabs, currentPath, saveTab, log],
+  );
+
+  const revealScriptInManager = useCallback(
+    async (path: string) => {
+      setTabMenu(null);
+      setPageMode("scripts");
+      setLeftPanelVisible(true);
+      const slash = path.lastIndexOf("/");
+      if (slash >= 0) {
+        await loadScriptFiles(path.substring(0, slash));
+      } else {
+        await loadScriptFiles("");
+      }
+      await loadAllScripts();
+      await loadScriptTree();
+      await openScript(path);
+      log(`已在脚本管理中选中：${path}`, "ok");
+    },
+    [loadAllScripts, loadScriptTree, loadScriptFiles, openScript, log],
+  );
 
 
   const loadDebugBreakpoints = useCallback(async (packageName: string, scriptPath?: string | null) => {
@@ -328,24 +446,201 @@ export function App() {
     log(`${exists ? "移除" : "添加"}行断点：${currentPath}:${line}`, exists ? "warn" : "ok");
   }, [selectedPackage, currentPath, scriptBreakpoints, log]);
 
-  const createScript = useCallback(async () => {
+  const singleScriptTemplate = useCallback((name: string, targetPackage: string) => `// ==LSPosedScript==
+// @name         ${name}
+// @id           ${name.replace(/[^A-Za-z0-9_.-]/g, ".").replace(/^\.+|\.+$/g, "") || "new.script"}
+// @version      1.0.0
+// @author       XiaoHeiHook
+// @description  WebIDE 创建的单脚本
+// @target       ${targetPackage}
+// @process      ${targetPackage}
+// @run-at       package-loaded
+// @grant        java.full
+// @grant        xposed.full
+// ==/LSPosedScript==
+
+const TAG = "${name}";
+
+xposed.onPackageLoaded(function (param) {
+  console.log("loaded", param.getPackageName(), env.processName);
+});
+`, []);
+
+  const multiScriptTemplates = useCallback((folder: string, targetPackage: string) => {
+    const safeId = folder.replace(/[^A-Za-z0-9_.-]/g, ".").replace(/^\.+|\.+$/g, "") || "multi.script";
+    return {
+      [`${folder}/index.js`]: `// ==LSPosedScript==
+// @name         ${folder} 多文件脚本
+// @id           ${safeId}.multi
+// @version      1.0.0
+// @author       XiaoHeiHook
+// @description  WebIDE 创建的多文件脚本，index.js 为入口。
+// @target       ${targetPackage}
+// @process      ${targetPackage}
+// @run-at       package-loaded
+// @grant        java.full
+// @grant        xposed.full
+// ==/LSPosedScript==
+
+const config = require("./config.js");
+const logger = require("./logger.js");
+const hooks = require("./hooks.js");
+
+xposed.onPackageLoaded(function (param) {
+  logger.info("loaded package=" + param.getPackageName() + ", process=" + env.processName);
+  hooks.install(param, config, logger);
+});
+`,
+      [`${folder}/config.js`]: `module.exports = {
+  TAG: "XHH-${folder}",
+  targetPackage: "${targetPackage}"
+};
+`,
+      [`${folder}/logger.js`]: `const config = require("./config.js");
+
+function text(value) {
+  if (value === null || value === undefined) return "null";
+  try { return String(value); } catch (e) { return "<toString failed>"; }
+}
+
+module.exports = {
+  debug(message) { xposed.d(config.TAG, text(message)); },
+  info(message) { xposed.i(config.TAG, text(message)); },
+  warn(message) { xposed.w(config.TAG, text(message)); },
+  error(message, throwable) {
+    if (throwable) xposed.e(config.TAG, text(message), throwable);
+    else xposed.e(config.TAG, text(message));
+  }
+};
+`,
+      [`${folder}/hooks.js`]: `function install(param, config, logger) {
+  const packageName = String(param.getPackageName());
+  if (config.targetPackage !== "*" && packageName !== config.targetPackage) {
+    logger.warn("skip package=" + packageName);
+    return;
+  }
+
+  logger.info("install hooks here");
+}
+
+module.exports = { install };
+`,
+    };
+  }, []);
+
+  const createSingleScript = useCallback(async () => {
     const defaultName = selectedPackage
       ? `${selectedPackage.replace(/[^A-Za-z0-9_.-]/g, "_")}.js`
       : "new_script.js";
-    const path = window.prompt("新脚本文件名：", defaultName);
+    const path = window.prompt("新建单脚本文件名：", defaultName);
     if (!path) return;
+    const cleanPath = path.endsWith(".js") ? path : `${path}.js`;
+    const name = cleanPath.split("/").pop()?.replace(/\.js$/i, "") || "new_script";
+    const target = selectedPackage || "*";
     const data = await post<{ ok: boolean; path: string }>(
       "/api/scripts/create",
       {
-        path,
-        target: selectedPackage || "*",
+        path: cleanPath,
+        target,
+        content: singleScriptTemplate(name, target),
       },
     );
-    log(`已创建：${data.path}`, "ok");
+    log(`已创建单脚本：${data.path}`, "ok");
     await refreshScriptLists();
     if (selectedPackage) await loadHookSettings(selectedPackage);
     await openScript(data.path);
-  }, [selectedPackage, openScript, refreshScriptLists, loadHookSettings, log]);
+  }, [selectedPackage, openScript, refreshScriptLists, loadHookSettings, log, singleScriptTemplate]);
+
+  const createMultiScript = useCallback(async () => {
+    const defaultFolder = selectedPackage
+      ? selectedPackage.replace(/[^A-Za-z0-9_.-]/g, "_")
+      : "multi_script";
+    const folderInput = window.prompt("新建多脚本目录名：", defaultFolder);
+    if (!folderInput) return;
+    const folder = folderInput.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!folder || folder.includes("..") || folder.endsWith(".js")) {
+      log("多脚本目录名非法", "err");
+      return;
+    }
+    const target = selectedPackage || "*";
+    const templates = multiScriptTemplates(folder, target);
+    let entryPath = `${folder}/index.js`;
+    for (const [path, content] of Object.entries(templates)) {
+      await post<{ ok: boolean; path: string }>("/api/scripts/save", { path, content });
+    }
+    log(`已创建多脚本：${entryPath}`, "ok");
+    await refreshScriptLists();
+    if (selectedPackage) await loadHookSettings(selectedPackage);
+    await openScript(entryPath);
+  }, [selectedPackage, openScript, refreshScriptLists, loadHookSettings, log, multiScriptTemplates]);
+
+  const createFileInFolder = useCallback(async (baseDir?: string) => {
+    const prefix = baseDir ? `${baseDir.replace(/\/$/, "")}/` : "";
+    const path = window.prompt("新建 JS 文件路径：", `${prefix}helper.js`);
+    if (!path) return;
+    const cleanPath = path.endsWith(".js") ? path : `${path}.js`;
+    const data = await post<{ ok: boolean; path: string }>("/api/scripts/save", {
+      path: cleanPath,
+      content: `// ${cleanPath}\n\nmodule.exports = {};\n`,
+    });
+    log(`已创建文件：${data.path}`, "ok");
+    await refreshScriptLists();
+    await openScript(data.path);
+  }, [openScript, refreshScriptLists, log]);
+
+  const openScriptDir = useCallback(async (dir: string) => {
+    await loadScriptFiles(dir);
+  }, [loadScriptFiles]);
+
+  const goUpScriptDir = useCallback(async () => {
+    const clean = scriptManagerDir.replace(/^\/+|\/+$/g, "");
+    const idx = clean.lastIndexOf("/");
+    const parent = idx >= 0 ? clean.substring(0, idx) : "";
+    await loadScriptFiles(parent);
+  }, [scriptManagerDir, loadScriptFiles]);
+
+  const createFolderInManager = useCallback(async (baseDir?: string) => {
+    const prefix = baseDir ? `${baseDir.replace(/\/$/, "")}/` : "";
+    const path = window.prompt("新建文件夹路径：", `${prefix}new_folder`);
+    if (!path) return;
+    const data = await post<{ ok: boolean; path: string }>("/api/files/create-folder", { path });
+    log(`已创建文件夹：${data.path}`, "ok");
+    await refreshScriptLists();
+    const slash = data.path.lastIndexOf("/");
+    await loadScriptFiles(slash >= 0 ? data.path.substring(0, slash) : "");
+  }, [refreshScriptLists, loadScriptFiles, log]);
+
+  const renamePathInManager = useCallback(async (path: string) => {
+    const to = window.prompt("重命名为：", path);
+    if (!to || to === path) return;
+    const data = await post<{ ok: boolean; path: string; type?: string }>("/api/files/rename", { from: path, to });
+    log(`已重命名：${path} -> ${data.path}`, "ok");
+    setOpenTabs((old) => old.map((tab) => tab.path === path ? { ...tab, path: data.path } : tab));
+    if (currentPath === path) setCurrentPath(data.path);
+    await refreshScriptLists();
+    const slash = data.path.lastIndexOf("/");
+    await loadScriptFiles(slash >= 0 ? data.path.substring(0, slash) : "");
+  }, [currentPath, refreshScriptLists, loadScriptFiles, log]);
+
+  const deletePathInManager = useCallback(async (path: string) => {
+    if (!window.confirm(`确定删除 ${path} 吗？如果是文件夹，将删除其中所有内容。`)) return;
+    await post<{ ok: boolean }>("/api/files/delete", { path, recursive: true });
+    log(`已删除：${path}`, "ok");
+    setOpenTabs((old) => old.filter((tab) => tab.path !== path && !tab.path.startsWith(path + "/")));
+    if (currentPath === path || (currentPath && currentPath.startsWith(path + "/"))) setCurrentPath(null);
+    await refreshScriptLists();
+    await loadScriptFiles(scriptManagerDir);
+  }, [currentPath, scriptManagerDir, refreshScriptLists, loadScriptFiles, log]);
+
+  const createScript = useCallback(async () => {
+    const choice = window.prompt("新建类型：输入 1 创建单脚本，输入 2 创建多脚本", "1");
+    if (!choice) return;
+    if (choice.trim() === "2") {
+      await createMultiScript();
+    } else {
+      await createSingleScript();
+    }
+  }, [createSingleScript, createMultiScript]);
 
   const renameScript = useCallback(async () => {
     if (!activeTab) {
@@ -401,6 +696,7 @@ export function App() {
   const selectApp = useCallback(
     async (app: AppInfo) => {
       setSelectedApp(app);
+      setRightMode("apps");
       await loadHookSettings(app.packageName);
       await loadScripts(app.packageName);
     },
@@ -454,11 +750,13 @@ export function App() {
       packageName: selectedPackage,
       restart: false,
       launch: false,
+      debug: false,
     });
     log(
       `同步完成：${data.count} 个脚本 ${JSON.stringify(data.scripts || [])}`,
       "ok",
     );
+    setDebugEnabledState(false);
   }, [selectedPackage, activeTab, saveTab, log]);
 
   const restartCurrentApp = useCallback(async () => {
@@ -491,12 +789,48 @@ export function App() {
       packageName: selectedPackage,
       restart: true,
       launch: true,
+      debug: false,
     });
     log(
       `同步并重启完成：${data.count} 个脚本 ${JSON.stringify(data.scripts || [])}`,
       "ok",
     );
+    setDebugEnabledState(false);
   }, [selectedPackage, activeTab, saveTab, log]);
+
+  const debugRunCurrentApp = useCallback(async () => {
+    if (!selectedPackage) {
+      log("请选择应用", "warn");
+      return;
+    }
+    if (activeTab?.dirty) await saveTab(activeTab);
+    const data = await post<{
+      ok: boolean;
+      packageName: string;
+      debug: boolean;
+      sync?: { count?: number; scripts?: string[] };
+      extra?: Record<string, unknown>;
+    }>("/api/debug/start", {
+      packageName: selectedPackage,
+      restart: true,
+      launch: true,
+    });
+    setDebugEnabledState(true);
+    log(`调试运行已启动：${data.packageName}，仅本次 WebIDE 调试会话启用断点`, "warn");
+  }, [selectedPackage, activeTab, saveTab, log]);
+
+  const stopDebugCurrentApp = useCallback(async () => {
+    if (!selectedPackage) {
+      log("请选择应用", "warn");
+      return;
+    }
+    await post<{ ok: boolean; packageName: string; debug: boolean }>("/api/debug/stop", {
+      packageName: selectedPackage,
+    });
+    setDebugEnabledState(false);
+    setDebugEvents([]);
+    log(`已停止调试：${selectedPackage}`, "ok");
+  }, [selectedPackage, log]);
 
   const continueDebugEvent = useCallback(async (event: DebugEvent, returnValue?: { enabled: boolean; text: string }) => {
     if (!event.pauseId || !event.packageName) {
@@ -613,6 +947,29 @@ export function App() {
     setTerminalVisible((old) => !old);
   }, []);
 
+  useEffect(() => {
+    if (!tabMenu) return;
+
+    const close = () => setTabMenu(null);
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") close();
+    };
+
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [tabMenu]);
+
   const startLeftResize = useCallback((ev: ReactMouseEvent<HTMLDivElement>) => {
     ev.preventDefault();
     const startX = ev.clientX;
@@ -672,6 +1029,8 @@ export function App() {
       await loadStatus();
       await loadApps();
       await loadAllScripts();
+      await loadScriptTree();
+      await loadScriptFiles("");
       await loadScripts();
     });
   }, []);
@@ -683,7 +1042,7 @@ export function App() {
 
   useEffect(() => {
     if (pageMode === "scripts") {
-      run(loadAllScripts);
+      run(async () => { await loadAllScripts(); await loadScriptTree(); await loadScriptFiles(); });
     } else if (selectedPackage) {
       run(() => loadScripts(selectedPackage));
     }
@@ -693,6 +1052,18 @@ export function App() {
     const onKeyDown = (ev: KeyboardEvent) => {
       const ctrl = ev.ctrlKey || ev.metaKey;
       const key = ev.key.toLowerCase();
+
+      if (ev.key === "F5" && ctrl) {
+        ev.preventDefault();
+        run(debugRunCurrentApp);
+        return;
+      }
+
+      if (ev.key === "F5" && ev.shiftKey) {
+        ev.preventDefault();
+        run(stopDebugCurrentApp);
+        return;
+      }
 
       if (ev.key === "F5") {
         ev.preventDefault();
@@ -730,6 +1101,8 @@ export function App() {
     syncCurrentApp,
     restartCurrentApp,
     syncAndRestartCurrentApp,
+    debugRunCurrentApp,
+    stopDebugCurrentApp,
     toggleTerminal,
     run,
   ]);
@@ -874,7 +1247,7 @@ export function App() {
 
   const tabTitle = activeTab ? activeTab.path : "未打开脚本";
   const leftToolTitle = pageMode === "apps" ? "软件列表" : "全部脚本";
-  const rightToolTitle = pageMode === "apps" ? "Hook 设置" : "脚本信息";
+  const rightToolTitle = rightMode === "apps" ? "Hook 设置" : "脚本信息";
   const gridTemplateColumns = [
     leftPanelVisible ? `${leftPanelWidth}px` : null,
     "minmax(0, 1fr)",
@@ -889,7 +1262,10 @@ export function App() {
         statusText={statusText}
         hasDirty={hasAnyDirty}
         pageMode={pageMode}
-        onPageModeChange={setPageMode}
+        onPageModeChange={(mode) => {
+          setPageMode(mode);
+          setRightMode(mode);
+        }}
         onSave={() => run(saveScript)}
         onNew={() => run(createScript)}
         onRename={() => run(renameScript)}
@@ -897,6 +1273,9 @@ export function App() {
         onSync={() => run(syncCurrentApp)}
         onRestart={() => run(restartCurrentApp)}
         onSyncRestart={() => run(syncAndRestartCurrentApp)}
+        onDebugRun={() => run(debugRunCurrentApp)}
+        onStopDebug={() => run(stopDebugCurrentApp)}
+        debugEnabled={debugEnabled}
         terminalVisible={terminalVisible}
         leftPanelVisible={leftPanelVisible}
         rightPanelVisible={rightPanelVisible}
@@ -924,16 +1303,25 @@ export function App() {
                 showSystem={showSystem}
                 onQueryChange={setAppQuery}
                 onShowSystemChange={setShowSystem}
-                onReload={() => run(loadApps)}
+                onReload={() => run(refreshAppsAndSyncState)}
                 onSelect={(app) => run(() => selectApp(app))}
               />
             ) : (
               <ScriptManagerPanel
                 scripts={allScripts}
+                entries={scriptFiles}
+                currentDir={scriptManagerDir}
                 currentPath={currentPath}
-                onOpenScript={(path) => run(() => openScript(path))}
-                onNewScript={() => run(createScript)}
-                onReload={() => run(loadAllScripts)}
+                onOpenScript={(path) => run(async () => { setRightMode("scripts"); await openScript(path); })}
+                onOpenDir={(path) => run(() => openScriptDir(path))}
+                onGoUp={() => run(goUpScriptDir)}
+                onNewSingleScript={() => run(createSingleScript)}
+                onNewMultiScript={() => run(createMultiScript)}
+                onNewFile={(baseDir) => run(() => createFileInFolder(baseDir))}
+                onNewFolder={(baseDir) => run(() => createFolderInManager(baseDir))}
+                onRenamePath={(path) => run(() => renamePathInManager(path))}
+                onDeletePath={(path) => run(() => deletePathInManager(path))}
+                onReload={() => run(async () => { await loadAllScripts(); await loadScriptTree(); await loadScriptFiles(); })}
               />
             )}
             <div
@@ -941,13 +1329,7 @@ export function App() {
               title="拖动调整左侧区域宽度"
               onMouseDown={startLeftResize}
             />
-            <button
-              className="tool-collapse left"
-              title={`隐藏${leftToolTitle}`}
-              onClick={() => setLeftPanelVisible(false)}
-            >
-              ‹
-            </button>
+
           </div>
         ) : null}
 
@@ -965,7 +1347,16 @@ export function App() {
                     "tab" + (tab.path === currentPath ? " active" : "")
                   }
                   title={tab.path}
-                  onClick={() => setCurrentPath(tab.path)}
+                  onClick={() => {
+                    setCurrentPath(tab.path);
+                    setTabMenu(null);
+                  }}
+                  onContextMenu={(ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    setCurrentPath(tab.path);
+                    setTabMenu({ path: tab.path, x: ev.clientX, y: ev.clientY });
+                  }}
                 >
                   <span>
                     {tab.dirty ? "● " : ""}
@@ -976,7 +1367,8 @@ export function App() {
                     title="关闭标签页"
                     onClick={(ev) => {
                       ev.stopPropagation();
-                      closeTab(tab.path);
+                      setTabMenu(null);
+                      run(() => closeTabsWithPrompt([tab.path]));
                     }}
                   >
                     ×
@@ -985,6 +1377,55 @@ export function App() {
               ))
             )}
           </div>
+          {tabMenu ? (() => {
+            const menuPath = tabMenu.path;
+            const idx = openTabs.findIndex((tab) => tab.path === menuPath);
+            const leftPaths = idx > 0 ? openTabs.slice(0, idx).map((tab) => tab.path) : [];
+            const rightPaths = idx >= 0 ? openTabs.slice(idx + 1).map((tab) => tab.path) : [];
+            return (
+              <div
+                className="tab-context-menu"
+                style={{ left: tabMenu.x, top: tabMenu.y }}
+                onClick={(ev) => ev.stopPropagation()}
+                onContextMenu={(ev) => ev.preventDefault()}
+              >
+                <button
+                  onClick={() => {
+                    setTabMenu(null);
+                    run(() => closeTabsWithPrompt([menuPath]));
+                  }}
+                >
+                  关闭当前文件
+                </button>
+                <button
+                  disabled={!leftPaths.length}
+                  onClick={() => {
+                    setTabMenu(null);
+                    run(() => closeTabsWithPrompt(leftPaths));
+                  }}
+                >
+                  关闭左侧文件
+                </button>
+                <button
+                  disabled={!rightPaths.length}
+                  onClick={() => {
+                    setTabMenu(null);
+                    run(() => closeTabsWithPrompt(rightPaths));
+                  }}
+                >
+                  关闭右侧文件
+                </button>
+                <div className="tab-menu-separator" />
+                <button
+                  onClick={() => {
+                    run(() => revealScriptInManager(menuPath));
+                  }}
+                >
+                  在脚本管理中打开
+                </button>
+              </div>
+            );
+          })() : null}
           <div className="editor-wrap">
             <MonacoCodeEditor
               key={currentPath || "empty-editor"}
@@ -1006,7 +1447,7 @@ export function App() {
               title="拖动调整右侧区域宽度"
               onMouseDown={startRightResize}
             />
-            {pageMode === "apps" ? (
+            {rightMode === "apps" ? (
               <HookSettingsPanel
                 settings={hookSettings}
                 metadata={metadata}
@@ -1016,7 +1457,15 @@ export function App() {
                 onScriptEnabledChange={(scriptId, enabled) =>
                   run(() => setScriptEnabled(scriptId, enabled))
                 }
-                onOpenScript={(path) => run(() => openScript(path))}
+                onOpenScript={(path) => run(async () => {
+                  setPageMode("scripts");
+                  setRightMode("apps");
+                  const slash = path.lastIndexOf("/");
+                  await loadScriptFiles(slash >= 0 ? path.substring(0, slash) : "");
+                  await loadAllScripts();
+                  await loadScriptTree();
+                  await openScript(path);
+                })}
               />
             ) : (
               <ScriptInfoPanel
@@ -1025,13 +1474,7 @@ export function App() {
                 dirty={dirty}
               />
             )}
-            <button
-              className="tool-collapse right"
-              title={`隐藏${rightToolTitle}`}
-              onClick={() => setRightPanelVisible(false)}
-            >
-              ›
-            </button>
+
           </div>
         ) : null}
       </main>

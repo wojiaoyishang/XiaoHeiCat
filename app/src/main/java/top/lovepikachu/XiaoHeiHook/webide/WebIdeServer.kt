@@ -145,13 +145,19 @@ class WebIdeServer(
 
         val path = request.path
         return when {
-            path.startsWith("/api/") -> api.serve(request)
+            path.startsWith("/api/") -> {
+                if (requiresToken(request) && !isAuthorized(request)) {
+                    HttpResponse.json(401, "{\"ok\":false,\"error\":\"WebIDE token 无效或缺失\"}")
+                } else {
+                    api.serve(request)
+                }
+            }
 
             // Vite/Monaco production build emits hashed files under /assets/*.
             // The old v12 route only served /app.js and /app.css, which made
             // /assets/vendor-xxxx.js return 404 even when the file existed in
             // app/src/main/assets/webide/assets/.
-            path == "/" || path == "/index.html" || path == "/terminal" || path == "/terminal/" -> serveWebIdeAsset("index.html")
+            path == "/" || path == "/index.html" || path == "/terminal" || path == "/terminal/" || path == "/logs" || path == "/logs/" -> serveWebIdeAsset("index.html")
             path.startsWith("/assets/") -> serveWebIdeAsset(path.removePrefix("/"))
 
             // Keep compatibility with the pre-Vite fallback page.
@@ -164,6 +170,18 @@ class WebIdeServer(
             // chunks or sourcemap-like assets without touching router code again.
             else -> serveWebIdeAsset(path.removePrefix("/"))
         }
+    }
+
+    private fun requiresToken(request: HttpRequest): Boolean {
+        return !request.method.equals("GET", ignoreCase = true)
+            && !request.method.equals("HEAD", ignoreCase = true)
+            && !request.method.equals("OPTIONS", ignoreCase = true)
+    }
+
+    private fun isAuthorized(request: HttpRequest): Boolean {
+        val header = request.headers["x-xiaoheihook-token"]
+        val queryToken = request.param("token")
+        return WebIdeSecurity.isValid(appContext, header) || WebIdeSecurity.isValid(appContext, queryToken)
     }
 
     private fun serveWebIdeAsset(relativePath: String): HttpResponse {

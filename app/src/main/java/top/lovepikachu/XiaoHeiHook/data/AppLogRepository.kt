@@ -4,7 +4,7 @@ import android.content.Context
 import java.io.File
 
 object AppLogRepository {
-    private const val LOG_DIR_NAME = "xiaoheihook_logs"
+    private const val LOG_DIR_NAME = "logs"
     private const val LOG_FILE_NAME = "xiaoheihook.log"
     private const val MAX_LOG_BYTES = 1024L * 1024L
 
@@ -33,10 +33,7 @@ object AppLogRepository {
             return@runCatching moduleText
         }
 
-        "暂无日志。\n\n" +
-                "日志路径：${moduleFile.absolutePath}\n\n" +
-                "请先同步脚本并重启目标应用，然后触发 Hook。\n" +
-                "console.log / xposed.log 会通过广播写入 XiaoHeiHook 自己的私有目录。"
+        "暂无日志"
     }
 
     fun clearLog(context: Context, packageName: String): Result<Unit> = runCatching {

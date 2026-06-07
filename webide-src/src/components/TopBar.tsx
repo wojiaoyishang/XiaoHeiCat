@@ -12,6 +12,9 @@ interface Props {
   onSync: () => void
   onRestart: () => void
   onSyncRestart: () => void
+  onDebugRun: () => void
+  onStopDebug: () => void
+  debugEnabled: boolean
   terminalVisible: boolean
   leftPanelVisible: boolean
   rightPanelVisible: boolean
@@ -70,7 +73,9 @@ export function TopBar(props: Props) {
       <span className="sep" />
       <button className="icon-btn" onClick={props.onSync} title="同步当前应用 Ctrl+Shift+S"><Icon name="sync" /></button>
       <button className="icon-btn" onClick={props.onRestart} title="重启应用 Alt+R"><Icon name="restart" /></button>
-      <button className="icon-btn run-btn" onClick={props.onSyncRestart} title="运行：同步并重启应用 F5"><Icon name="run" /></button>
+      <button className="icon-btn run-btn" onClick={props.onSyncRestart} title="运行：普通模式同步并重启应用 F5"><Icon name="run" /></button>
+      <button className={props.debugEnabled ? 'icon-btn debug-btn active' : 'icon-btn debug-btn'} onClick={props.onDebugRun} title="调试运行：启用 WebIDE 调试模式、同步并重启应用 Ctrl+F5"><Icon name="debug" /></button>
+      <button className="icon-btn stop-debug-btn" onClick={props.onStopDebug} title="停止调试 Shift+F5"><Icon name="stop" /></button>
       <span className="status">{props.statusText}</span>
     </div>
   )

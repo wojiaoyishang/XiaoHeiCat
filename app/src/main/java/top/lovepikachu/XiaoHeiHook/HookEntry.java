@@ -12,6 +12,10 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.security.MessageDigest;
+import java.nio.charset.StandardCharsets;
 
 import io.github.libxposed.api.XposedModule;
 import top.lovepikachu.XiaoHeiHook.script.JsHookRuntime;
@@ -84,6 +88,7 @@ public class HookEntry extends XposedModule {
 
             try {
                 String source = JsHookRuntime.readRemoteText(openRemoteFile(script.remoteName));
+                verifyRemoteText(script.sourceName(), script.remoteName, source, script.fileHashes.get(script.sourceName()));
                 JsHookRuntime runtime = new JsHookRuntime(
                         this,
                         packageName,
@@ -91,12 +96,33 @@ public class HookEntry extends XposedModule {
                         classLoader,
                         runAt,
                         rawParam,
-                        script.rawEnabled()
+                        script.rawEnabled(),
+                        script.files,
+                        script.fileHashes
                 );
                 runtime.evaluate(script.displayName(), script.sourceName(), source);
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "加载脚本失败: " + script.id + " -> " + packageName + " @" + runAt, t);
             }
+        }
+    }
+
+    private void verifyRemoteText(String path, String remoteName, String source, String expectedSha256) {
+        if (expectedSha256 == null || expectedSha256.trim().isEmpty()) return;
+        String actual = sha256(source == null ? "" : source);
+        if (!expectedSha256.equalsIgnoreCase(actual)) {
+            throw new IllegalStateException("Remote File SHA-256 校验失败: " + path + " -> " + remoteName + ", expected=" + expectedSha256 + ", actual=" + actual);
+        }
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder out = new StringBuilder(digest.length * 2);
+            for (byte b : digest) out.append(String.format("%02x", b & 0xff));
+            return out.toString();
+        } catch (Throwable t) {
+            throw new IllegalStateException("SHA-256 计算失败", t);
         }
     }
 
@@ -125,7 +151,9 @@ public class HookEntry extends XposedModule {
                         obj.optString("runAt", JsHookRuntime.EVENT_PACKAGE_LOADED),
                         toStringList(obj.optJSONArray("grants")),
                         remoteName,
-                        obj.optString("path", obj.optString("scriptPath", ""))
+                        obj.optString("path", obj.optString("scriptPath", "")),
+                        parseFiles(obj.optJSONArray("files"), obj.optString("path", obj.optString("scriptPath", "")), remoteName),
+                        parseFileHashes(obj.optJSONArray("files"), obj.optString("path", obj.optString("scriptPath", "")), obj.optString("sha256", ""))
                 ));
             }
         } catch (Throwable t) {
@@ -144,6 +172,61 @@ public class HookEntry extends XposedModule {
         return list;
     }
 
+    private static Map<String, String> parseFiles(JSONArray array, String entryPath, String entryRemoteName) {
+        LinkedHashMap<String, String> map = new LinkedHashMap<>();
+        if (entryPath != null && !entryPath.trim().isEmpty() && entryRemoteName != null && !entryRemoteName.trim().isEmpty()) {
+            map.put(normalizeScriptPath(entryPath), entryRemoteName.trim());
+        }
+        if (array == null) return map;
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject obj = array.optJSONObject(i);
+            if (obj == null) continue;
+            String path = normalizeScriptPath(obj.optString("path", ""));
+            String remoteName = obj.optString("remoteName", "").trim();
+            if (!path.isEmpty() && !remoteName.isEmpty()) {
+                map.put(path, remoteName);
+            }
+        }
+        return map;
+    }
+
+    private static Map<String, String> parseFileHashes(JSONArray array, String entryPath, String entrySha256) {
+        LinkedHashMap<String, String> map = new LinkedHashMap<>();
+        String cleanEntry = normalizeScriptPath(entryPath);
+        if (!cleanEntry.isEmpty() && entrySha256 != null && !entrySha256.trim().isEmpty()) {
+            map.put(cleanEntry, entrySha256.trim());
+        }
+        if (array == null) return map;
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject obj = array.optJSONObject(i);
+            if (obj == null) continue;
+            String path = normalizeScriptPath(obj.optString("path", ""));
+            String sha256 = obj.optString("sha256", "").trim();
+            if (!path.isEmpty() && !sha256.isEmpty()) {
+                map.put(path, sha256);
+            }
+        }
+        return map;
+    }
+
+    private static String normalizeScriptPath(String path) {
+        if (path == null) return "";
+        String value = path.replace('\\', '/').trim();
+        while (value.startsWith("/")) value = value.substring(1);
+        while (value.contains("//")) value = value.replace("//", "/");
+        return value;
+    }
+
+    public String readRemoteTextFile(@NonNull String remoteName) throws Exception {
+        return JsHookRuntime.readRemoteText(openRemoteFile(remoteName));
+    }
+
+    public String readRemoteTextFile(@NonNull String remoteName, String expectedSha256, String path) throws Exception {
+        String source = JsHookRuntime.readRemoteText(openRemoteFile(remoteName));
+        verifyRemoteText(path == null ? remoteName : path, remoteName, source, expectedSha256);
+        return source;
+    }
+
     private static final class ScriptDescriptor {
         final String id;
         final String name;
@@ -153,6 +236,8 @@ public class HookEntry extends XposedModule {
         final List<String> grants;
         final String remoteName;
         final String path;
+        final Map<String, String> files;
+        final Map<String, String> fileHashes;
 
         ScriptDescriptor(
                 String id,
@@ -162,7 +247,9 @@ public class HookEntry extends XposedModule {
                 String runAt,
                 List<String> grants,
                 String remoteName,
-                String path
+                String path,
+                Map<String, String> files,
+                Map<String, String> fileHashes
         ) {
             this.id = id;
             this.name = name;
@@ -171,7 +258,12 @@ public class HookEntry extends XposedModule {
             this.runAt = runAt;
             this.grants = grants;
             this.remoteName = remoteName;
-            this.path = path == null ? "" : path.trim();
+            this.path = normalizeScriptPath(path);
+            this.files = files == null ? new LinkedHashMap<>() : files;
+            this.fileHashes = fileHashes == null ? new LinkedHashMap<>() : fileHashes;
+            if (!this.path.isEmpty() && !this.remoteName.isEmpty()) {
+                this.files.put(this.path, this.remoteName);
+            }
         }
 
         String displayName() {

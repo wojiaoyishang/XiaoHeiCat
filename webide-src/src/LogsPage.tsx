@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api/client'
 import { Icon } from './components/Icon'
 import type { ApiStatus } from './types/webide'
 
-interface TerminalLine {
+interface LogLine {
   id: number
   text: string
   type?: 'ok' | 'err' | 'warn' | 'target'
 }
 
-let terminalLogId = 1
+let logPageId = 1
 
 function readInitialPackageName() {
   return new URLSearchParams(window.location.search).get('packageName') || ''
@@ -25,35 +25,46 @@ function classifyLogLine(text: string, fallback?: string) {
   return fallback || ''
 }
 
-function matchesFilter(text: string, filter: string) {
-  const q = filter.trim().toLowerCase()
+function matchesKeyword(text: string, keyword: string) {
+  const q = keyword.trim().toLowerCase()
   if (!q) return true
   return text.toLowerCase().includes(q)
 }
 
-export function TerminalPage() {
+function matchesLevel(text: string, level: string, type?: string) {
+  if (!level || level === 'all') return true
+  const cls = classifyLogLine(text, type)
+  return cls === `log-${level}`
+}
+
+export function LogsPage() {
   const [status, setStatus] = useState<ApiStatus | null>(null)
   const [packageName, setPackageName] = useState(readInitialPackageName)
   const [connectedPackage, setConnectedPackage] = useState(readInitialPackageName)
-  const [lines, setLines] = useState<TerminalLine[]>([])
+  const [lines, setLines] = useState<LogLine[]>([])
   const [connected, setConnected] = useState(false)
-  const consoleRef = useRef<HTMLPreElement | null>(null)
+  const [keyword, setKeyword] = useState('')
+  const [level, setLevel] = useState('all')
   const [followLogs, setFollowLogs] = useState(true)
-  const [filter, setFilter] = useState('')
+  const consoleRef = useRef<HTMLPreElement | null>(null)
 
-  const append = useCallback((text: string, type?: TerminalLine['type']) => {
+  const append = useCallback((text: string, type?: LogLine['type']) => {
     const now = new Date().toLocaleTimeString()
     setLines((old) => {
-      const next = [...old, { id: terminalLogId++, text: `[${now}] ${text}`, type }]
-      return next.length > 5000 ? next.slice(next.length - 5000) : next
+      const next = [...old, { id: logPageId++, text: `[${now}] ${text}`, type }]
+      return next.length > 10000 ? next.slice(next.length - 10000) : next
     })
   }, [])
 
+  const visibleLines = useMemo(
+    () => lines.filter((line) => matchesKeyword(line.text, keyword) && matchesLevel(line.text, level, line.type)),
+    [lines, keyword, level]
+  )
+
   const clear = useCallback(() => setLines([]), [])
-  const visibleLines = lines.filter((line) => matchesFilter(line.text, filter))
 
   useEffect(() => {
-    document.title = 'XiaoHeiHook 终端'
+    document.title = 'XiaoHeiHook 日志'
     api<ApiStatus>('/api/status')
       .then(setStatus)
       .catch((e) => append(`状态读取失败：${e?.message || e}`, 'err'))
@@ -64,7 +75,7 @@ export function TerminalPage() {
     if (el && followLogs) {
       el.scrollTop = el.scrollHeight
     }
-  }, [lines, followLogs])
+  }, [visibleLines, followLogs])
 
   const handleConsoleScroll = useCallback(() => {
     const el = consoleRef.current
@@ -91,9 +102,9 @@ export function TerminalPage() {
 
     const pkg = connectedPackage.trim()
     setConnected(false)
-    append(`正在连接实时日志：${pkg}`)
+    append(`正在连接日志：${pkg}`)
 
-    api<{ ok: boolean; lines?: string[]; text?: string }>(`/api/logs?packageName=${encodeURIComponent(pkg)}&maxLines=1000`)
+    api<{ ok: boolean; lines?: string[]; text?: string }>(`/api/logs?packageName=${encodeURIComponent(pkg)}&maxLines=2000`)
       .then((data) => {
         const initialLines = data.lines?.length ? data.lines : (data.text || '').split(/\r?\n/)
         initialLines.filter(Boolean).forEach((line) => append(line, 'target'))
@@ -142,13 +153,13 @@ export function TerminalPage() {
   }, [packageName, append, clear])
 
   return (
-    <div className="terminal-page">
-      <div className="terminal-toolbar">
-        <b>XiaoHeiHook 终端</b>
+    <div className="logs-page">
+      <div className="logs-toolbar">
+        <b>XiaoHeiHook 日志</b>
         <input
           type="text"
           value={packageName}
-          placeholder="输入目标包名，例如 cn.am7code.tools"
+          placeholder="目标包名，例如 cn.am7code.tools"
           onChange={(ev) => setPackageName(ev.target.value)}
           onKeyDown={(ev) => {
             if (ev.key === 'Enter') connect()
@@ -156,22 +167,27 @@ export function TerminalPage() {
         />
         <button onClick={connect} title="连接指定应用日志"><Icon name="terminal" /> 连接</button>
         <input
-          className="terminal-filter"
           type="text"
-          value={filter}
-          placeholder="过滤日志..."
-          onChange={(ev) => setFilter(ev.target.value)}
+          value={keyword}
+          placeholder="关键词过滤..."
+          onChange={(ev) => setKeyword(ev.target.value)}
         />
-        <button onClick={() => {
-          const pkg = packageName.trim() ? `?packageName=${encodeURIComponent(packageName.trim())}` : ''
-          window.location.href = `/logs${pkg}`
-        }} title="打开日志过滤页面">日志页面</button>
+        <select value={level} onChange={(ev) => setLevel(ev.target.value)} title="按日志等级过滤">
+          <option value="all">全部等级</option>
+          <option value="error">Error</option>
+          <option value="warn">Warn</option>
+          <option value="info">Info</option>
+          <option value="debug">Debug</option>
+          <option value="verbose">Verbose</option>
+          <option value="target">Target</option>
+        </select>
         <button className={followLogs ? 'active' : ''} onClick={enableFollowLogs} title="跟踪最新日志；手动滚动会暂停自动滚动">跟踪</button>
-        <button onClick={clear} title="清空当前终端"><Icon name="clear" /> 清空</button>
+        <button onClick={clear} title="清空当前日志"><Icon name="clear" /> 清空</button>
         <button onClick={() => window.location.href = '/'} title="返回 WebIDE"><Icon name="apps" /> 返回 IDE</button>
         <span className={connected ? 'terminal-state ok' : 'terminal-state warn'}>{connected ? '已连接' : '未连接'}</span>
+        <span className="terminal-status">{visibleLines.length}/{lines.length} 行</span>
       </div>
-      <pre ref={consoleRef} className="terminal-console" onScroll={handleConsoleScroll}>
+      <pre ref={consoleRef} className="logs-console" onScroll={handleConsoleScroll}>
         {visibleLines.map((line) => (
           <div key={line.id} className={`${line.type || ''} ${classifyLogLine(line.text, line.type)}`}>{line.text}</div>
         ))}
