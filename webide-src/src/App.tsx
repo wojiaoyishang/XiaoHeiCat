@@ -13,6 +13,8 @@ import type {
   ScriptTreeNode,
   ScriptFileEntry,
   ScriptFileListResponse,
+  ScriptSettingsResponse,
+  ScriptSettingsSaveResponse,
 } from "./types/webide";
 import { TopBar } from "./components/TopBar";
 import { AppListPanel } from "./components/AppListPanel";
@@ -21,6 +23,7 @@ import { BottomConsole, type ConsoleLine } from "./components/BottomConsole";
 import { ScriptManagerPanel } from "./components/ScriptManagerPanel";
 import { ScriptInfoPanel } from "./components/ScriptInfoPanel";
 import { MonacoCodeEditor } from "./editor/MonacoCodeEditor";
+import { ScriptSettingsPanel } from "./components/ScriptSettingsPanel";
 
 type PageMode = "apps" | "scripts";
 
@@ -69,6 +72,9 @@ export function App() {
     return Number.isFinite(saved) && saved > 0 ? saved : 320;
   });
   const [tabMenu, setTabMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [settingsDialog, setSettingsDialog] = useState<ScriptSettingsResponse | null>(null);
+  const [settingsValues, setSettingsValues] = useState<Record<string, unknown>>({});
+  const [settingsSaving, setSettingsSaving] = useState(false);
 
   const selectedPackage = selectedApp?.packageName;
   const activeTab = useMemo(
@@ -935,8 +941,57 @@ module.exports = { install };
     log(`已发送变量修改：${cleanPath} @ ${event.pauseId}`, "ok");
   }, [log, parseDebugJson]);
 
-  const openTerminalPage = useCallback(() => {
-    const pkg = selectedPackage?.trim() || "";
+
+  const openScriptSettings = useCallback(async (scriptId: string, scriptPath: string) => {
+    if (!selectedPackage) {
+      log("请选择应用后再打开脚本设置", "warn");
+      return;
+    }
+    const data = await api<ScriptSettingsResponse>(
+      `/api/script-settings?packageName=${encodeURIComponent(selectedPackage)}&scriptId=${encodeURIComponent(scriptId)}&scriptPath=${encodeURIComponent(scriptPath)}`,
+    );
+    setSettingsDialog(data);
+    setSettingsValues(data.mergedValues || {});
+    log(`已加载脚本设置：${data.scriptId}`, "ok");
+  }, [selectedPackage, log]);
+
+  const saveScriptSettings = useCallback(async () => {
+    if (!settingsDialog) return;
+    setSettingsSaving(true);
+    try {
+      const data = await post<ScriptSettingsSaveResponse>("/api/script-settings/save", {
+        packageName: settingsDialog.packageName,
+        scriptId: settingsDialog.scriptId,
+        scriptPath: settingsDialog.scriptPath,
+        values: settingsValues,
+      });
+      setSettingsValues(data.mergedValues || data.values || {});
+      setSettingsDialog((old) => old ? { ...old, values: data.values || {}, mergedValues: data.mergedValues || {} } : old);
+      log(`已保存脚本设置：${settingsDialog.scriptId}`, "ok");
+    } finally {
+      setSettingsSaving(false);
+    }
+  }, [settingsDialog, settingsValues, log]);
+
+  const resetScriptSettings = useCallback(async () => {
+    if (!settingsDialog) return;
+    if (!window.confirm(`恢复 ${settingsDialog.scriptId} 的默认设置？`)) return;
+    setSettingsSaving(true);
+    try {
+      const data = await post<ScriptSettingsSaveResponse>("/api/script-settings/reset", {
+        packageName: settingsDialog.packageName,
+        scriptId: settingsDialog.scriptId,
+        scriptPath: settingsDialog.scriptPath,
+      });
+      setSettingsValues(data.mergedValues || {});
+      setSettingsDialog((old) => old ? { ...old, values: {}, mergedValues: data.mergedValues || {} } : old);
+      log(`已恢复默认脚本设置：${settingsDialog.scriptId}`, "ok");
+    } finally {
+      setSettingsSaving(false);
+    }
+  }, [settingsDialog, log]);
+
+  const openTerminalPage = useCallback(() => {    const pkg = selectedPackage?.trim() || "";
     const url = pkg
       ? `/terminal?packageName=${encodeURIComponent(pkg)}`
       : "/terminal";
@@ -1466,6 +1521,7 @@ module.exports = { install };
                   await loadScriptTree();
                   await openScript(path);
                 })}
+                onOpenSettings={(scriptId, scriptPath) => run(() => openScriptSettings(scriptId, scriptPath))}
               />
             ) : (
               <ScriptInfoPanel
@@ -1478,6 +1534,17 @@ module.exports = { install };
           </div>
         ) : null}
       </main>
+      {settingsDialog ? (
+        <ScriptSettingsPanel
+          data={settingsDialog}
+          values={settingsValues}
+          saving={settingsSaving}
+          onChange={setSettingsValues}
+          onSave={() => run(saveScriptSettings)}
+          onReset={() => run(resetScriptSettings)}
+          onClose={() => setSettingsDialog(null)}
+        />
+      ) : null}
       {terminalVisible ? (
         <BottomConsole
           lines={logs}

@@ -41,7 +41,13 @@ data class ScriptMetadata(
     val sourceMode: String = "local",
     val url: String = "",
     val urlRefreshOnApply: Boolean = false,
-    /** Remote JS files belonging to this script unit. For directory scripts this includes index.js and dependency .js files. */
+    /** Whether this directory script declares settings.json. Single-file scripts do not support settings. */
+    val hasSettings: Boolean = false,
+    /** Relative path of settings.json under Documents/XiaoHeiHook. */
+    val settingsPath: String = "",
+    /** Normalized settings schema JSON. Empty when hasSettings=false. */
+    val settingsSchema: String = "",
+    /** Remote JS/files belonging to this script unit. For directory scripts this includes index.js, dependencies and settings.json. */
     val files: List<ScriptFileAsset> = emptyList()
 ) {
     fun supportsPackage(packageName: String): Boolean {
@@ -62,4 +68,7 @@ object ScriptPrefs {
 
     fun scriptEnabledKey(packageName: String, scriptId: String): String =
         "script_enabled_${packageName}_${scriptId}"
+
+    fun scriptSettingsKey(packageName: String, scriptId: String): String =
+        ScriptSettings.settingsKey(packageName, scriptId)
 }

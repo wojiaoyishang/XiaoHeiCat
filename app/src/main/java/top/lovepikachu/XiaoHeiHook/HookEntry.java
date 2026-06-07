@@ -98,7 +98,8 @@ public class HookEntry extends XposedModule {
                         rawParam,
                         script.rawEnabled(),
                         script.files,
-                        script.fileHashes
+                        script.fileHashes,
+                        mergedSettingsJson(packageName, script)
                 );
                 runtime.evaluate(script.displayName(), script.sourceName(), source);
             } catch (Throwable t) {
@@ -134,6 +135,90 @@ public class HookEntry extends XposedModule {
         return "script_enabled_" + packageName + "_" + scriptId;
     }
 
+    private static String scriptSettingsKey(String packageName, String scriptId) {
+        return "script_settings_" + packageName + "_" + scriptId;
+    }
+
+    private String mergedSettingsJson(String packageName, ScriptDescriptor script) {
+        if (!script.hasSettings || script.settingsSchema == null) return "{}";
+        try {
+            JSONObject values = defaultsForFields(script.settingsSchema.optJSONArray("fields"));
+            String raw = prefs == null ? null : prefs.getString(scriptSettingsKey(packageName, script.id), "{}");
+            JSONObject saved = raw == null || raw.trim().isEmpty() ? new JSONObject() : new JSONObject(raw);
+            JSONObject savedValues = saved.optJSONObject("values");
+            if (savedValues == null) savedValues = saved;
+            mergeKnownValues(values, savedValues, script.settingsSchema.optJSONArray("fields"));
+            return values.toString();
+        } catch (Throwable t) {
+            log(Log.ERROR, TAG, "合并脚本设置失败: " + script.id + " -> " + packageName, t);
+            return "{}";
+        }
+    }
+
+    private static JSONObject defaultsForFields(JSONArray fields) {
+        JSONObject out = new JSONObject();
+        if (fields == null) return out;
+        for (int i = 0; i < fields.length(); i++) {
+            JSONObject field = fields.optJSONObject(i);
+            if (field == null) continue;
+            String type = field.optString("type", "");
+            if ("group".equals(type)) {
+                copyInto(out, defaultsForFields(field.optJSONArray("items")));
+                continue;
+            }
+            String key = field.optString("key", "").trim();
+            if (key.isEmpty()) continue;
+            try {
+                if (field.has("default")) {
+                    out.put(key, field.opt("default"));
+                } else if ("switch".equals(type) || "checkbox".equals(type)) {
+                    out.put(key, false);
+                } else if ("number".equals(type)) {
+                    out.put(key, field.optBoolean("integer", false) ? 0 : 0.0d);
+                } else if ("text".equals(type)) {
+                    out.put(key, "");
+                } else if ("select".equals(type)) {
+                    JSONArray options = field.optJSONArray("options");
+                    JSONObject first = options == null ? null : options.optJSONObject(0);
+                    out.put(key, first == null ? "" : first.opt("value"));
+                } else if ("radio".equals(type)) {
+                    out.put(key, field.has("value") ? field.opt("value") : false);
+                } else if ("tags".equals(type) || "list".equals(type)) {
+                    out.put(key, new JSONArray());
+                } else if ("custom".equals(type)) {
+                    out.put(key, new JSONObject());
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return out;
+    }
+
+    private static void mergeKnownValues(JSONObject target, JSONObject savedValues, JSONArray fields) {
+        if (savedValues == null || fields == null) return;
+        for (int i = 0; i < fields.length(); i++) {
+            JSONObject field = fields.optJSONObject(i);
+            if (field == null) continue;
+            if ("group".equals(field.optString("type", ""))) {
+                mergeKnownValues(target, savedValues, field.optJSONArray("items"));
+                continue;
+            }
+            String key = field.optString("key", "").trim();
+            if (!key.isEmpty() && savedValues.has(key)) {
+                try { target.put(key, savedValues.opt(key)); } catch (Throwable ignored) {}
+            }
+        }
+    }
+
+    private static void copyInto(JSONObject target, JSONObject source) {
+        if (target == null || source == null) return;
+        java.util.Iterator<String> keys = source.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            try { target.put(key, source.opt(key)); } catch (Throwable ignored) {}
+        }
+    }
+
     private List<ScriptDescriptor> parseScriptIndex(String json) {
         ArrayList<ScriptDescriptor> result = new ArrayList<>();
         try {
@@ -153,7 +238,10 @@ public class HookEntry extends XposedModule {
                         remoteName,
                         obj.optString("path", obj.optString("scriptPath", "")),
                         parseFiles(obj.optJSONArray("files"), obj.optString("path", obj.optString("scriptPath", "")), remoteName),
-                        parseFileHashes(obj.optJSONArray("files"), obj.optString("path", obj.optString("scriptPath", "")), obj.optString("sha256", ""))
+                        parseFileHashes(obj.optJSONArray("files"), obj.optString("path", obj.optString("scriptPath", "")), obj.optString("sha256", "")),
+                        obj.optBoolean("hasSettings", false),
+                        obj.optString("settingsPath", ""),
+                        obj.optJSONObject("settingsSchema")
                 ));
             }
         } catch (Throwable t) {
@@ -238,6 +326,9 @@ public class HookEntry extends XposedModule {
         final String path;
         final Map<String, String> files;
         final Map<String, String> fileHashes;
+        final boolean hasSettings;
+        final String settingsPath;
+        final JSONObject settingsSchema;
 
         ScriptDescriptor(
                 String id,
@@ -249,7 +340,10 @@ public class HookEntry extends XposedModule {
                 String remoteName,
                 String path,
                 Map<String, String> files,
-                Map<String, String> fileHashes
+                Map<String, String> fileHashes,
+                boolean hasSettings,
+                String settingsPath,
+                JSONObject settingsSchema
         ) {
             this.id = id;
             this.name = name;
@@ -261,6 +355,9 @@ public class HookEntry extends XposedModule {
             this.path = normalizeScriptPath(path);
             this.files = files == null ? new LinkedHashMap<>() : files;
             this.fileHashes = fileHashes == null ? new LinkedHashMap<>() : fileHashes;
+            this.hasSettings = hasSettings && settingsSchema != null;
+            this.settingsPath = normalizeScriptPath(settingsPath);
+            this.settingsSchema = settingsSchema;
             if (!this.path.isEmpty() && !this.remoteName.isEmpty()) {
                 this.files.put(this.path, this.remoteName);
             }

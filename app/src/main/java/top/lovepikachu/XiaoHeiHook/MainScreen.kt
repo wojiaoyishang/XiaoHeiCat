@@ -3,10 +3,9 @@ package top.lovepikachu.XiaoHeiHook
 import android.app.Activity
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -18,7 +17,10 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -71,17 +73,36 @@ fun MainScreen() {
         }
     }
 
+    val bottomNavVisible = !isAppsDetailVisible.value
+    val bottomNavHeight by animateDpAsState(
+        targetValue = if (bottomNavVisible) 80.dp else 0.dp,
+        animationSpec = tween(durationMillis = 180, easing = navEasing),
+        label = "BottomNavHeight"
+    )
+    val bottomNavAlpha by animateFloatAsState(
+        targetValue = if (bottomNavVisible) 1f else 0f,
+        animationSpec = tween(durationMillis = 140, easing = navEasing),
+        label = "BottomNavAlpha"
+    )
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
-            AnimatedVisibility(
-                visible = !isAppsDetailVisible.value,
-                enter = slideInVertically(initialOffsetY = { it }),
-                exit = slideOutVertically(targetOffsetY = { it })
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(bottomNavHeight)
+                    .clipToBounds()
             ) {
                 NavigationBar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .graphicsLayer {
+                            alpha = bottomNavAlpha
+                            translationY = (1f - bottomNavAlpha) * 28f
+                        },
                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f),
                     tonalElevation = 0.dp
                 ) {

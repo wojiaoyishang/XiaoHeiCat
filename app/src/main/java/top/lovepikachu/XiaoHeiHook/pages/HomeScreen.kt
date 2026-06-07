@@ -108,28 +108,33 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Spacer(modifier = Modifier.size(8.dp))
-                    FullWidthTextButton(
-                        text = "打开",
-                        onClick = {
-                            Thread {
-                                try {
-                                    val command =
-                                        "am broadcast -a android.telephony.action.SECRET_CODE -d android_secret_code://5776733 android"
-                                    Runtime.getRuntime().exec(arrayOf("su", "-c", command)).waitFor()
-                                    Handler(Looper.getMainLooper()).post {
-                                        Toast.makeText(context, "成功唤起 LSPosed 管理器", Toast.LENGTH_SHORT).show()
+                    Spacer(modifier = Modifier.size(12.dp))
+                    Box(
+                        modifier = Modifier.weight(0.34f),
+                        contentAlignment = Alignment.CenterEnd
+                    ) {
+                        FullWidthTextButton(
+                            text = "打开",
+                            onClick = {
+                                Thread {
+                                    try {
+                                        val command =
+                                            "am broadcast -a android.telephony.action.SECRET_CODE -d android_secret_code://5776733 android"
+                                        Runtime.getRuntime().exec(arrayOf("su", "-c", command)).waitFor()
+                                        Handler(Looper.getMainLooper()).post {
+                                            Toast.makeText(context, "成功唤起 LSPosed 管理器", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                        Handler(Looper.getMainLooper()).post {
+                                            Toast.makeText(context, "无法唤起 LSPosed 管理器，请授予 Root 权限", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
-                                    Handler(Looper.getMainLooper()).post {
-                                        Toast.makeText(context, "无法唤起 LSPosed 管理器，请授予 Root 权限", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            }.start()
-                        },
-                        modifier = Modifier.weight(0.48f)
-                    )
+                                }.start()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
         }

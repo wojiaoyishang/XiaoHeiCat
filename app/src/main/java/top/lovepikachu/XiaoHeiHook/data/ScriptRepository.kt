@@ -297,20 +297,47 @@ xposed.onPackageLoaded(function (param) {
         val relativePath = relativeScriptPath(file)
         val kind = if (relativePath.endsWith("/index.js", ignoreCase = true)) "directory" else "file"
         val rootPath = if (kind == "directory") relativePath.substringBeforeLast("/index.js") else ""
+        val settingsSchema = readSettingsSchema(file, kind, rootPath, source)
         val metadata = parseMetadata(text, file.nameWithoutExtension).copy(
             path = relativePath,
             kind = kind,
             entryPath = relativePath,
-            rootPath = rootPath
+            rootPath = rootPath,
+            hasSettings = settingsSchema != null,
+            settingsPath = if (settingsSchema != null && rootPath.isNotBlank()) "$rootPath/settings.json" else "",
+            settingsSchema = settingsSchema?.toString() ?: ""
         )
         val matchInfo = debugPackageName?.let { packageName ->
             ", supports($packageName)=${metadata.supportsPackage(packageName)}"
         }.orEmpty()
         Log.d(
             TAG,
-            "readPublicScripts($source): parsed file=${file.name}, path=${metadata.path}, id=${metadata.id}, name=${metadata.name}, targets=${metadata.targets}, processes=${metadata.processes}, url=${metadata.url}, urlRefresh=${metadata.urlRefreshOnApply}$matchInfo"
+            "readPublicScripts($source): parsed file=${file.name}, path=${metadata.path}, id=${metadata.id}, name=${metadata.name}, targets=${metadata.targets}, processes=${metadata.processes}, url=${metadata.url}, urlRefresh=${metadata.urlRefreshOnApply}, hasSettings=${metadata.hasSettings}, settingsPath=${metadata.settingsPath}$matchInfo"
         )
         return ScriptSource(metadata, file, text, source)
+    }
+
+    private fun readSettingsSchema(entryFile: File, kind: String, rootPath: String, source: String): JSONObject? {
+        if (kind != "directory" || rootPath.isBlank()) return null
+        val settingsFile = File(entryFile.parentFile, "settings.json")
+        val normalText = runCatching {
+            if (settingsFile.isFile) settingsFile.readText(StandardCharsets.UTF_8) else ""
+        }.getOrDefault("")
+        val raw = if (normalText.isNotBlank()) {
+            normalText
+        } else if (source == "root") {
+            val path = File(publicScriptsDir, "$rootPath/settings.json").absolutePath
+            val cat = runRootCommand("cat ${shellQuote(path)}", timeoutSeconds = 5)
+            if (!cat.timedOut && cat.exitCode == 0) cat.stdout else ""
+        } else {
+            ""
+        }
+        if (raw.isBlank()) return null
+        val normalized = ScriptSettings.normalizeSchema(raw)
+        if (normalized == null) {
+            Log.w(TAG, "readSettingsSchema: invalid settings.json root=$rootPath")
+        }
+        return normalized
     }
 
     fun syncPublicScriptsToRemote(
@@ -481,6 +508,10 @@ xposed.onPackageLoaded(function (param) {
                 put("sourceMode", script.sourceMode)
                 put("url", script.url)
                 put("urlRefreshOnApply", script.urlRefreshOnApply)
+                put("hasSettings", script.hasSettings)
+                put("settingsPath", script.settingsPath)
+                put("settingsSchema", if (script.settingsSchema.isNotBlank()) JSONObject(script.settingsSchema) else JSONObject.NULL)
+                put("settingsDefaults", if (script.settingsSchema.isNotBlank()) ScriptSettings.defaults(JSONObject(script.settingsSchema)) else JSONObject())
                 put("files", JSONArray().apply {
                     script.files.forEach { asset ->
                         put(JSONObject().apply {
@@ -521,6 +552,9 @@ xposed.onPackageLoaded(function (param) {
                             sourceMode = obj.optString("sourceMode", if (obj.optString("url").isNotBlank()) "url-meta" else "local"),
                             url = obj.optString("url", ""),
                             urlRefreshOnApply = obj.optBoolean("urlRefreshOnApply", false),
+                            hasSettings = obj.optBoolean("hasSettings", false),
+                            settingsPath = obj.optString("settingsPath", ""),
+                            settingsSchema = obj.optJSONObject("settingsSchema")?.toString() ?: obj.optString("settingsSchema", ""),
                             files = obj.optJSONArray("files").toScriptFileAssets()
                         )
                     )
@@ -603,13 +637,23 @@ xposed.onPackageLoaded(function (param) {
                 }
         }
 
-        if (source.source == "root" || result.size <= 1) {
-            val findCommand = "find ${shellQuote(rootDir.absolutePath)} -type f -name '*.js' 2>/dev/null"
+        val settingsFile = File(rootDir, "settings.json")
+        if (settingsFile.isFile) {
+            val settingsText = runCatching { settingsFile.readText(StandardCharsets.UTF_8) }
+                .onFailure { Log.e(TAG, "collectScriptUnitFiles(File): read failed ${settingsFile.absolutePath}", it) }
+                .getOrNull()
+            if (settingsText != null) {
+                result["${metadata.rootPath}/settings.json"] = ScriptUnitFile("${metadata.rootPath}/settings.json", settingsFile, settingsText, "file")
+            }
+        }
+
+        if (source.source == "root" || result.size <= 1 || (metadata.hasSettings && !result.containsKey("${metadata.rootPath}/settings.json"))) {
+            val findCommand = "find ${shellQuote(rootDir.absolutePath)} -type f \\( -name '*.js' -o -name 'settings.json' \\) 2>/dev/null"
             val findResult = runRootCommand(findCommand, timeoutSeconds = 10)
             if (!findResult.timedOut && findResult.exitCode == 0) {
                 findResult.stdout.lineSequence()
                     .map { it.trim() }
-                    .filter { it.isNotEmpty() && it.endsWith(".js", ignoreCase = true) }
+                    .filter { it.isNotEmpty() && (it.endsWith(".js", ignoreCase = true) || it.endsWith("/settings.json", ignoreCase = true)) }
                     .forEach { path ->
                         val file = File(path)
                         val rel = relativeScriptPath(file)

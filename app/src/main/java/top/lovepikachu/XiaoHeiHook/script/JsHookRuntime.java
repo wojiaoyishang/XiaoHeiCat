@@ -47,6 +47,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.LinkedHashMap;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -90,6 +92,8 @@ public final class JsHookRuntime {
     private final boolean rawEnabled;
     private final Map<String, String> scriptFiles;
     private final Map<String, String> scriptFileHashes;
+    private final String settingsJson;
+    private SettingsFacade settingsFacade;
     private final Map<String, Object> commonJsModuleCache = new ConcurrentHashMap<>();
     private final Object jsLock = new Object();
     private final ThreadLocal<Integer> debugFrameDepth = new ThreadLocal<>();
@@ -135,6 +139,7 @@ public final class JsHookRuntime {
         this.rawEnabled = rawEnabled;
         this.scriptFiles = new LinkedHashMap<>();
         this.scriptFileHashes = new LinkedHashMap<>();
+        this.settingsJson = "{}";
     }
 
     public JsHookRuntime(
@@ -161,6 +166,21 @@ public final class JsHookRuntime {
             @Nullable Map<String, String> scriptFiles,
             @Nullable Map<String, String> scriptFileHashes
     ) {
+        this(module, packageName, processName, appClassLoader, currentEvent, currentRawParam, rawEnabled, scriptFiles, scriptFileHashes, null);
+    }
+
+    public JsHookRuntime(
+            @NonNull HookEntry module,
+            @NonNull String packageName,
+            @NonNull String processName,
+            @NonNull ClassLoader appClassLoader,
+            @NonNull String currentEvent,
+            @Nullable Object currentRawParam,
+            boolean rawEnabled,
+            @Nullable Map<String, String> scriptFiles,
+            @Nullable Map<String, String> scriptFileHashes,
+            @Nullable String settingsJson
+    ) {
         this.module = module;
         this.packageName = packageName;
         this.processName = processName;
@@ -170,6 +190,7 @@ public final class JsHookRuntime {
         this.rawEnabled = rawEnabled;
         this.scriptFiles = normalizeScriptFileMap(scriptFiles);
         this.scriptFileHashes = normalizeScriptFileMap(scriptFileHashes);
+        this.settingsJson = settingsJson == null || settingsJson.trim().isEmpty() ? "{}" : settingsJson;
     }
 
     public void evaluate(@NonNull String scriptName, @NonNull String source) {
@@ -215,7 +236,9 @@ public final class JsHookRuntime {
                 }
 
                 scope = cx.initStandardObjects();
+                settingsFacade = new SettingsFacade();
 
+                ScriptableObject.putProperty(scope, "settings", Context.javaToJS(settingsFacade, scope));
                 ScriptableObject.putProperty(scope, "env", Context.javaToJS(new Env(scriptName, canonicalSourceName), scope));
                 ScriptableObject.putProperty(scope, "console", Context.javaToJS(new Console(), scope));
                 ScriptableObject.putProperty(scope, "Java", Context.javaToJS(new JavaBridge(), scope));
@@ -585,6 +608,73 @@ public final class JsHookRuntime {
         return Context.jsToJava(unwrapped, Object.class);
     }
 
+
+    public final class SettingsFacade {
+        public final String raw = settingsJson;
+        private final Map<String, Object> values;
+
+        SettingsFacade() {
+            this.values = parseSettingsValues(settingsJson);
+        }
+
+        public Object get(String key) {
+            return get(key, null);
+        }
+
+        public Object get(String key, Object defaultValue) {
+            if (key == null) return defaultValue;
+            String clean = String.valueOf(key);
+            if (!values.containsKey(clean)) return unwrap(defaultValue);
+            Object value = values.get(clean);
+            return value == null ? null : value;
+        }
+
+        public boolean has(String key) {
+            return key != null && values.containsKey(String.valueOf(key));
+        }
+
+        public Map<String, Object> all() {
+            return new LinkedHashMap<>(values);
+        }
+    }
+
+    private Map<String, Object> parseSettingsValues(@NonNull String raw) {
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        try {
+            JSONObject obj = new JSONObject(raw == null || raw.trim().isEmpty() ? "{}" : raw);
+            java.util.Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (key == null || key.trim().isEmpty()) continue;
+                result.put(key, jsonToJava(obj.opt(key)));
+            }
+        } catch (Throwable t) {
+            log(Log.WARN, "解析脚本 settings 失败，使用空配置", t);
+        }
+        return result;
+    }
+
+    private Object jsonToJava(Object value) {
+        if (value == null || value == JSONObject.NULL) return null;
+        if (value instanceof JSONArray) {
+            JSONArray arr = (JSONArray) value;
+            ArrayList<Object> list = new ArrayList<>();
+            for (int i = 0; i < arr.length(); i++) list.add(jsonToJava(arr.opt(i)));
+            return list;
+        }
+        if (value instanceof JSONObject) {
+            JSONObject obj = (JSONObject) value;
+            LinkedHashMap<String, Object> map = new LinkedHashMap<>();
+            java.util.Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                map.put(key, jsonToJava(obj.opt(key)));
+            }
+            return map;
+        }
+        return value;
+    }
+
     public final class Env {
         public final String scriptName;
         public final String scriptPath;
@@ -593,6 +683,7 @@ public final class JsHookRuntime {
         public final String processName = JsHookRuntime.this.processName;
         public final ClassLoader classLoader = JsHookRuntime.this.appClassLoader;
         public final Object raw = rawEnabled ? currentRawParam : null;
+        public final SettingsFacade settings = JsHookRuntime.this.settingsFacade;
 
         Env(String scriptName, String sourceName) {
             this.scriptName = scriptName;

@@ -16,6 +16,7 @@ import top.lovepikachu.XiaoHeiHook.data.InstalledAppInfo
 import top.lovepikachu.XiaoHeiHook.data.ScriptMetadata
 import top.lovepikachu.XiaoHeiHook.data.ScriptPrefs
 import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
+import top.lovepikachu.XiaoHeiHook.data.ScriptSettings
 import top.lovepikachu.XiaoHeiHook.debug.DebugEventRepository
 import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol
 import java.io.File
@@ -73,6 +74,10 @@ class WebIdeApi(private val context: Context) {
                 "/api/hook-settings/app-enabled" -> setAppEnabled(request)
                 "/api/hook-settings/script-enabled" -> setScriptEnabled(request)
                 "/api/hook-settings/sync" -> syncHookSettings(request)
+
+                "/api/script-settings" -> scriptSettings(request)
+                "/api/script-settings/save" -> saveScriptSettings(request)
+                "/api/script-settings/reset" -> resetScriptSettings(request)
 
                 else -> json(404, error("Unsupported API: ${request.path}"))
             }
@@ -488,8 +493,79 @@ class WebIdeApi(private val context: Context) {
         return json(obj)
     }
 
-    private fun restartApp(request: HttpRequest): HttpResponse {
+
+    private fun scriptSettings(request: HttpRequest): HttpResponse {
+        val packageName = request.param("packageName").orEmpty().trim()
+        val scriptId = request.param("scriptId").orEmpty().trim()
+        val scriptPath = request.param("scriptPath").orEmpty().trim()
+        require(packageName.isNotBlank()) { "packageName 不能为空" }
+        val entry = findSettingsScript(scriptId, scriptPath)
+        val schema = settingsSchemaOf(entry)
+        val key = ScriptPrefs.scriptSettingsKey(packageName, entry.metadata.id)
+        val savedRaw = bridge.getString(key, "{}")
+        val merged = ScriptSettings.merge(schema, savedRaw)
+        val saved = runCatching { JSONObject(savedRaw) }.getOrElse { JSONObject() }
+        val savedValues = saved.optJSONObject("values") ?: JSONObject()
+        return json(
+            JSONObject()
+                .put("ok", true)
+                .put("packageName", packageName)
+                .put("scriptId", entry.metadata.id)
+                .put("scriptPath", entry.path)
+                .put("storageKey", key)
+                .put("schema", schema)
+                .put("values", savedValues)
+                .put("mergedValues", merged)
+        )
+    }
+
+    private fun saveScriptSettings(request: HttpRequest): HttpResponse {
         val body = request.jsonBody()
+        val packageName = body.optString("packageName").trim()
+        val scriptId = body.optString("scriptId").trim()
+        val scriptPath = body.optString("scriptPath").trim()
+        val values = body.optJSONObject("values") ?: JSONObject()
+        require(packageName.isNotBlank()) { "packageName 不能为空" }
+        val entry = findSettingsScript(scriptId, scriptPath)
+        val schema = settingsSchemaOf(entry)
+        val cleanValues = ScriptSettings.normalizeValues(schema, values, strict = true)
+        val doc = ScriptSettings.savedDocument(packageName, entry.metadata.id, entry.path, schema, cleanValues)
+        val key = ScriptPrefs.scriptSettingsKey(packageName, entry.metadata.id)
+        bridge.putString(key, doc.toString())
+        return json(
+            JSONObject()
+                .put("ok", true)
+                .put("packageName", packageName)
+                .put("scriptId", entry.metadata.id)
+                .put("scriptPath", entry.path)
+                .put("storageKey", key)
+                .put("values", cleanValues)
+                .put("mergedValues", ScriptSettings.merge(schema, doc.toString()))
+        )
+    }
+
+    private fun resetScriptSettings(request: HttpRequest): HttpResponse {
+        val body = request.jsonBody(required = false)
+        val packageName = body.optString("packageName").ifBlank { request.param("packageName").orEmpty() }.trim()
+        val scriptId = body.optString("scriptId").ifBlank { request.param("scriptId").orEmpty() }.trim()
+        val scriptPath = body.optString("scriptPath").ifBlank { request.param("scriptPath").orEmpty() }.trim()
+        require(packageName.isNotBlank()) { "packageName 不能为空" }
+        val entry = findSettingsScript(scriptId, scriptPath)
+        val schema = settingsSchemaOf(entry)
+        val key = ScriptPrefs.scriptSettingsKey(packageName, entry.metadata.id)
+        bridge.remove(key)
+        return json(
+            JSONObject()
+                .put("ok", true)
+                .put("packageName", packageName)
+                .put("scriptId", entry.metadata.id)
+                .put("scriptPath", entry.path)
+                .put("storageKey", key)
+                .put("mergedValues", ScriptSettings.defaults(schema))
+        )
+    }
+
+    private fun restartApp(request: HttpRequest): HttpResponse {        val body = request.jsonBody()
         val packageName = body.optString("packageName").trim()
         val launch = body.optBoolean("launch", true)
         require(packageName.isNotBlank()) { "packageName 不能为空" }
@@ -539,7 +615,13 @@ class WebIdeApi(private val context: Context) {
             val path = relativePath(file)
             val text = runCatching { file.readText(StandardCharsets.UTF_8) }.getOrDefault("")
             val metadata = if (file.name.equals("index.js", ignoreCase = true)) {
-                ScriptRepository.parseMetadata(text, file.nameWithoutExtension).withWebIdePath(path)
+                val rootPath = path.substringBeforeLast("/index.js", "")
+                val schema = loadSettingsSchema(rootPath)
+                ScriptRepository.parseMetadata(text, file.nameWithoutExtension).withWebIdePath(path).copy(
+                    hasSettings = schema != null,
+                    settingsPath = if (schema != null && rootPath.isNotBlank()) "$rootPath/settings.json" else "",
+                    settingsSchema = schema?.toString() ?: ""
+                )
             } else {
                 null
             }
@@ -592,7 +674,14 @@ class WebIdeApi(private val context: Context) {
         val file = resolveScriptFile(request.param("path"), mustExist = true)
         val content = file.readText(StandardCharsets.UTF_8)
         val path = relativePath(file)
-        val metadata = ScriptRepository.parseMetadata(content, file.nameWithoutExtension).withWebIdePath(path)
+        val kind = if (path.endsWith("/index.js", ignoreCase = true)) "directory" else "file"
+        val rootPath = if (kind == "directory") path.substringBeforeLast("/index.js") else ""
+        val schema = loadSettingsSchema(rootPath)
+        val metadata = ScriptRepository.parseMetadata(content, file.nameWithoutExtension).withWebIdePath(path).copy(
+            hasSettings = schema != null,
+            settingsPath = if (schema != null && rootPath.isNotBlank()) "$rootPath/settings.json" else "",
+            settingsSchema = schema?.toString() ?: ""
+        )
         return json(
             JSONObject()
                 .put("ok", true)
@@ -609,7 +698,14 @@ class WebIdeApi(private val context: Context) {
         file.parentFile?.mkdirs()
         file.writeText(content, StandardCharsets.UTF_8)
         val path = relativePath(file)
-        val metadata = ScriptRepository.parseMetadata(content, file.nameWithoutExtension).withWebIdePath(path)
+        val kind = if (path.endsWith("/index.js", ignoreCase = true)) "directory" else "file"
+        val rootPath = if (kind == "directory") path.substringBeforeLast("/index.js") else ""
+        val schema = loadSettingsSchema(rootPath)
+        val metadata = ScriptRepository.parseMetadata(content, file.nameWithoutExtension).withWebIdePath(path).copy(
+            hasSettings = schema != null,
+            settingsPath = if (schema != null && rootPath.isNotBlank()) "$rootPath/settings.json" else "",
+            settingsSchema = schema?.toString() ?: ""
+        )
         return json(
             JSONObject()
                 .put("ok", true)
@@ -763,6 +859,31 @@ class WebIdeApi(private val context: Context) {
         return clean
     }
 
+
+    private fun findSettingsScript(scriptId: String, scriptPath: String): ScriptEntry {
+        val entries = loadScriptEntries(null)
+        val entry = when {
+            scriptId.isNotBlank() -> entries.firstOrNull { it.metadata.id == scriptId }
+            scriptPath.isNotBlank() -> entries.firstOrNull { it.path == scriptPath }
+            else -> null
+        } ?: throw IllegalArgumentException("找不到脚本设置项：${scriptId.ifBlank { scriptPath }}")
+        require(entry.metadata.hasSettings) { "该脚本没有 settings.json：${entry.path}" }
+        return entry
+    }
+
+    private fun settingsSchemaOf(entry: ScriptEntry): JSONObject {
+        return ScriptSettings.normalizeSchema(entry.metadata.settingsSchema)
+            ?: throw IllegalArgumentException("settings.json 无效或未声明 fields：${entry.path}")
+    }
+
+    private fun loadSettingsSchema(rootPath: String): JSONObject? {
+        if (rootPath.isBlank()) return null
+        val file = File(ScriptRepository.publicScriptsDir, "$rootPath/settings.json")
+        val raw = runCatching { if (file.isFile) file.readText(StandardCharsets.UTF_8) else "" }.getOrDefault("")
+        if (raw.isBlank()) return null
+        return ScriptSettings.normalizeSchema(raw)
+    }
+
     private data class ScriptEntry(
         val path: String,
         val file: File,
@@ -784,11 +905,15 @@ class WebIdeApi(private val context: Context) {
             val path = file.relativeTo(dir).path.replace(File.separatorChar, '/')
             val kind = if (path.endsWith("/index.js", ignoreCase = true)) "directory" else "file"
             val rootPath = if (kind == "directory") path.substringBeforeLast("/index.js") else ""
+            val settingsSchema = loadSettingsSchema(rootPath)
             val metadata = ScriptRepository.parseMetadata(text, file.nameWithoutExtension).copy(
                 path = path,
                 kind = kind,
                 entryPath = path,
-                rootPath = rootPath
+                rootPath = rootPath,
+                hasSettings = settingsSchema != null,
+                settingsPath = if (settingsSchema != null && rootPath.isNotBlank()) "$rootPath/settings.json" else "",
+                settingsSchema = settingsSchema?.toString() ?: ""
             )
             if (!packageName.isNullOrBlank() && !metadata.supportsPackage(packageName)) return@forEach
             result += ScriptEntry(path, file, metadata)
@@ -824,6 +949,9 @@ class WebIdeApi(private val context: Context) {
             .put("sourceMode", metadata.sourceMode)
             .put("url", metadata.url)
             .put("urlRefreshOnApply", metadata.urlRefreshOnApply)
+            .put("hasSettings", metadata.hasSettings)
+            .put("settingsPath", metadata.settingsPath)
+            .put("settingsSchema", if (metadata.settingsSchema.isNotBlank()) JSONObject(metadata.settingsSchema) else JSONObject.NULL)
     }
 
 

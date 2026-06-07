@@ -34,6 +34,9 @@ class WebIdeBridgeProvider : ContentProvider() {
                 METHOD_STATUS -> status()
                 METHOD_GET_BOOLEAN -> getBoolean(extras)
                 METHOD_GET_LONG -> getLong(extras)
+                METHOD_GET_STRING -> getString(extras)
+                METHOD_PUT_STRING -> putString(extras)
+                METHOD_REMOVE -> remove(extras)
                 METHOD_PUT_BOOLEAN -> putBoolean(extras)
                 METHOD_SET_APP_ENABLED -> setAppEnabled(extras)
                 METHOD_SET_SCRIPT_ENABLED -> setScriptEnabled(extras)
@@ -78,6 +81,34 @@ class WebIdeBridgeProvider : ContentProvider() {
         return okBundle()
             .putLongValue("value", value)
             .putBool("remotePreferencesReady", prefs != null)
+    }
+
+    private fun getString(extras: Bundle?): Bundle {
+        val key = extras?.getString(ARG_KEY).orEmpty()
+        val defValue = extras?.getString(ARG_DEFAULT_STRING).orEmpty()
+        if (key.isBlank()) return errorBundle("key 不能为空")
+        val prefs = awaitRemotePreferences(1200)
+        val value = prefs?.getString(key, defValue) ?: defValue
+        return okBundle()
+            .putStringValue("value", value)
+            .putBool("remotePreferencesReady", prefs != null)
+    }
+
+    private fun putString(extras: Bundle?): Bundle {
+        val key = extras?.getString(ARG_KEY).orEmpty()
+        val value = extras?.getString(ARG_VALUE).orEmpty()
+        if (key.isBlank()) return errorBundle("key 不能为空")
+        val prefs = awaitRemotePreferences(2000) ?: return errorBundle("LSPosed Remote Preferences 未连接")
+        prefs.edit().putString(key, value).commit()
+        return okBundle().putStringValue("value", value)
+    }
+
+    private fun remove(extras: Bundle?): Bundle {
+        val key = extras?.getString(ARG_KEY).orEmpty()
+        if (key.isBlank()) return errorBundle("key 不能为空")
+        val prefs = awaitRemotePreferences(2000) ?: return errorBundle("LSPosed Remote Preferences 未连接")
+        prefs.edit().remove(key).commit()
+        return okBundle().putStringValue("key", key)
     }
 
     private fun putBoolean(extras: Bundle?): Bundle {
@@ -327,6 +358,9 @@ class WebIdeBridgeProvider : ContentProvider() {
         const val METHOD_STATUS = "status"
         const val METHOD_GET_BOOLEAN = "getBoolean"
         const val METHOD_GET_LONG = "getLong"
+        const val METHOD_GET_STRING = "getString"
+        const val METHOD_PUT_STRING = "putString"
+        const val METHOD_REMOVE = "remove"
         const val METHOD_PUT_BOOLEAN = "putBoolean"
         const val METHOD_SET_APP_ENABLED = "setAppEnabled"
         const val METHOD_SET_SCRIPT_ENABLED = "setScriptEnabled"
@@ -339,6 +373,7 @@ class WebIdeBridgeProvider : ContentProvider() {
         const val ARG_KEY = "key"
         const val ARG_DEFAULT = "default"
         const val ARG_DEFAULT_LONG = "defaultLong"
+        const val ARG_DEFAULT_STRING = "defaultString"
         const val ARG_VALUE = "value"
         const val ARG_PACKAGE = "packageName"
         const val ARG_SCRIPT_ID = "scriptId"

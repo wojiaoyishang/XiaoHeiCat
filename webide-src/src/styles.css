@@ -1692,3 +1692,243 @@ body,
   background: #9b1c1c;
   color: #fff;
 }
+
+.settings-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.34);
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+}
+
+.settings-dialog {
+  width: min(760px, 96vw);
+  height: 100vh;
+  background: #f8f8f8;
+  border-left: 1px solid #8b8b8b;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+}
+
+.settings-dialog header,
+.settings-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #c8c8c8;
+  background: #eeeeee;
+}
+
+.settings-dialog footer {
+  border-top: 1px solid #c8c8c8;
+  border-bottom: 0;
+  justify-content: flex-end;
+}
+
+.settings-dialog h2 {
+  font-size: 16px;
+  margin: 0 0 2px;
+}
+
+.settings-dialog p {
+  margin: 0;
+}
+
+.settings-dialog button,
+.settings-dialog input,
+.settings-dialog select,
+.settings-dialog textarea {
+  font: inherit;
+}
+
+.settings-dialog button,
+.small-icon-button {
+  cursor: pointer;
+}
+
+.settings-body {
+  overflow: auto;
+  padding: 12px;
+}
+
+.settings-description {
+  color: #555;
+  font-size: 12px;
+}
+
+.settings-description.top {
+  padding: 8px 12px;
+  border-bottom: 1px solid #d3d3d3;
+  background: #fff;
+}
+
+.settings-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #333;
+  font-weight: 700;
+  margin: 16px 0 8px;
+  text-transform: uppercase;
+}
+
+.settings-heading::before,
+.settings-heading::after {
+  content: "";
+  height: 1px;
+  background: #c3c3c3;
+  flex: 1;
+}
+
+.settings-info {
+  border: 1px solid #cfcfcf;
+  padding: 9px 10px;
+  margin: 8px 0;
+  background: #fff;
+}
+.settings-info.warning { background: #fff7dd; border-color: #d5b763; }
+.settings-info.success { background: #eaf8e8; border-color: #78a46b; }
+.settings-info.error { background: #fff0f0; border-color: #bb7373; }
+.settings-info.info { background: #eef5ff; border-color: #86a7cf; }
+
+.settings-group {
+  border: 1px solid #c9c9c9;
+  margin: 10px 0;
+  padding: 10px;
+  background: #fff;
+}
+
+.settings-group legend {
+  font-weight: 700;
+  padding: 0 5px;
+}
+
+.settings-row {
+  display: flex;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #e4e4e4;
+  align-items: center;
+}
+
+.settings-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-row > span:first-child {
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-row em {
+  color: #666;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.block-row {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.block-row > span:first-child {
+  min-width: 0;
+}
+
+.switch-row {
+  justify-content: space-between;
+}
+
+.settings-row input[type="text"],
+.settings-row input[type="password"],
+.settings-row input[type="number"],
+.settings-row select,
+.settings-row textarea {
+  border: 1px solid #aaa;
+  background: #fff;
+  padding: 5px 7px;
+  min-height: 27px;
+}
+
+.settings-row textarea {
+  min-height: 88px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.settings-number-line {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 120px;
+  gap: 10px;
+  align-items: center;
+}
+
+.settings-tags,
+.custom-list,
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  border: 1px solid #aaa;
+  background: #fff;
+  padding: 3px 6px;
+}
+
+.custom-item {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+}
+
+.settings-list-item {
+  border: 1px solid #d0d0d0;
+  background: #fafafa;
+}
+
+.settings-list-item summary {
+  cursor: pointer;
+  padding: 6px 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.settings-list-item summary span {
+  flex: 1;
+}
+
+.settings-list-fields {
+  padding: 8px 10px;
+  border-top: 1px solid #ddd;
+}
+
+.hook-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.small-icon-button {
+  border: 1px solid #aaa;
+  background: #f4f4f4;
+  color: #222;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 4px;
+}

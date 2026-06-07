@@ -2,4 +2,6 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Expose only Documents/XiaoHeiHook to external editors through our FileProvider. -->
     <external-path name="xiaohei_scripts" path="Documents/XiaoHeiHook/" />
+    <!-- Expose app-private logs for ACTION_VIEW through system chooser. -->
+    <files-path name="xiaohei_logs" path="logs/" />
 </paths>

@@ -44,8 +44,39 @@ class WebIdeBridgeClient(private val context: Context) {
         return b.getBoolean("value", defaultValue)
     }
 
-    fun setAppEnabled(packageName: String, enabled: Boolean): JSONObject {
+
+    fun getString(key: String, defaultValue: String = ""): String {
+        XiaoHeiApplication.remotePreferences?.let { return it.getString(key, defaultValue) ?: defaultValue }
+        val b = call(
+            WebIdeBridgeProvider.METHOD_GET_STRING,
+            Bundle().apply {
+                putString(WebIdeBridgeProvider.ARG_KEY, key)
+                putString(WebIdeBridgeProvider.ARG_DEFAULT_STRING, defaultValue)
+            }
+        )
+        return b.getString("value") ?: defaultValue
+    }
+
+    fun putString(key: String, value: String): JSONObject {
         val b = callChecked(
+            WebIdeBridgeProvider.METHOD_PUT_STRING,
+            Bundle().apply {
+                putString(WebIdeBridgeProvider.ARG_KEY, key)
+                putString(WebIdeBridgeProvider.ARG_VALUE, value)
+            }
+        )
+        return JSONObject().put("ok", true).put("value", b.getString("value") ?: value)
+    }
+
+    fun remove(key: String): JSONObject {
+        callChecked(
+            WebIdeBridgeProvider.METHOD_REMOVE,
+            Bundle().apply { putString(WebIdeBridgeProvider.ARG_KEY, key) }
+        )
+        return JSONObject().put("ok", true).put("key", key)
+    }
+
+    fun setAppEnabled(packageName: String, enabled: Boolean): JSONObject {        val b = callChecked(
             WebIdeBridgeProvider.METHOD_SET_APP_ENABLED,
             Bundle().apply {
                 putString(WebIdeBridgeProvider.ARG_PACKAGE, packageName)

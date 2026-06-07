@@ -25,6 +25,81 @@ export interface AppInfo {
   scriptCount?: number
 }
 
+export type SettingType =
+  | 'list'
+  | 'group'
+  | 'heading'
+  | 'info'
+  | 'switch'
+  | 'number'
+  | 'text'
+  | 'checkbox'
+  | 'radio'
+  | 'select'
+  | 'custom'
+  | 'tags'
+
+export interface SettingOption {
+  label: string
+  value: unknown
+}
+
+export interface SettingField {
+  type: SettingType | string
+  key?: string
+  label?: string
+  title?: string
+  description?: string
+  message?: string
+  placeholder?: string
+  tone?: 'info' | 'warning' | 'success' | 'error' | string
+  default?: unknown
+  value?: unknown
+  options?: SettingOption[]
+  items?: SettingField[]
+  min?: number
+  max?: number
+  step?: number
+  integer?: boolean
+  masked?: boolean
+  multiline?: boolean
+  maxLength?: number
+  maxItems?: number
+  uniqueKey?: string
+  keyPlaceholder?: string
+  valuePlaceholder?: string
+  collapsible?: boolean
+  defaultCollapsed?: boolean
+}
+
+export interface ScriptSettingsSchema {
+  version: number
+  title?: string
+  description?: string
+  fields: SettingField[]
+}
+
+export interface ScriptSettingsResponse {
+  ok: boolean
+  packageName: string
+  scriptId: string
+  scriptPath: string
+  storageKey: string
+  schema: ScriptSettingsSchema
+  values: Record<string, unknown>
+  mergedValues: Record<string, unknown>
+}
+
+export interface ScriptSettingsSaveResponse {
+  ok: boolean
+  packageName: string
+  scriptId: string
+  scriptPath: string
+  storageKey: string
+  values?: Record<string, unknown>
+  mergedValues: Record<string, unknown>
+}
+
 export interface ScriptMeta {
   id?: string
   name?: string
@@ -40,6 +115,9 @@ export interface ScriptMeta {
   rootPath?: string
   url?: string
   urlRefreshOnApply?: boolean
+  hasSettings?: boolean
+  settingsPath?: string
+  settingsSchema?: ScriptSettingsSchema | null
 }
 
 export interface ScriptInfo {
@@ -51,6 +129,8 @@ export interface ScriptInfo {
   kind?: 'file' | 'directory' | string
   entryPath?: string
   rootPath?: string
+  hasSettings?: boolean
+  settingsPath?: string
 }
 
 export interface HookScriptInfo {
@@ -58,6 +138,8 @@ export interface HookScriptInfo {
   name?: string
   path: string
   enabled: boolean
+  hasSettings?: boolean
+  settingsPath?: string
 }
 
 export interface HookSettings {

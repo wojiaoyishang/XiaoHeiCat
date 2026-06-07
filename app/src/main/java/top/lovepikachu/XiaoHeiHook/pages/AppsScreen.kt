@@ -23,7 +23,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
@@ -50,6 +52,10 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -70,6 +76,10 @@ import top.lovepikachu.XiaoHeiHook.data.InstalledAppInfo
 import top.lovepikachu.XiaoHeiHook.data.ScopeController
 import top.lovepikachu.XiaoHeiHook.data.ScriptMetadata
 import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
+import top.lovepikachu.XiaoHeiHook.data.ScriptPrefs
+import top.lovepikachu.XiaoHeiHook.data.ScriptSettings
+import org.json.JSONArray
+import org.json.JSONObject
 import top.lovepikachu.XiaoHeiHook.ui.material.AppActionCard
 import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
 import top.lovepikachu.XiaoHeiHook.ui.material.AppDialog
@@ -126,8 +136,10 @@ fun AppsScreen(
     BackHandler(enabled = selectedApp != null || logApp != null) {
         if (logApp != null) {
             logApp = null
+            if (selectedApp == null) onDetailVisibleChange(false)
         } else {
             selectedApp = null
+            onDetailVisibleChange(false)
         }
     }
 
@@ -424,7 +436,7 @@ fun AppsScreen(
             ) + fadeIn(animationSpec = tween(durationMillis = 160))
             val exit = slideOutHorizontally(
                 animationSpec = tween(durationMillis = 220, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-                targetOffsetX = { width -> if (forward) -width / 3 else width }
+                targetOffsetX = { width -> if (forward) -width else width }
             ) + fadeOut(animationSpec = tween(durationMillis = 120))
             enter.togetherWith(exit)
         },
@@ -437,7 +449,10 @@ fun AppsScreen(
                     if (app != null) {
                         AppLogScreen(
                             app = app,
-                            onBack = { logApp = null },
+                            onBack = {
+                                logApp = null
+                                if (selectedApp == null) onDetailVisibleChange(false)
+                            },
                             modifier = modifier
                         )
                     }
@@ -456,7 +471,10 @@ fun AppsScreen(
                             initialAutoScan = !detailAutoScannedPackages.contains(app.packageName),
                             onInitialAutoScanConsumed = { detailAutoScannedPackages.add(app.packageName) },
                             onInitialRescanScripts = { rescanScriptsForApp(app, syncToRemote = false, showToast = false) },
-                            onBack = { selectedApp = null },
+                            onBack = {
+                                selectedApp = null
+                                onDetailVisibleChange(false)
+                            },
                             onRescanScripts = { rescanScriptsForApp(app, syncToRemote = false, showToast = true) },
                             onSyncScripts = { syncScriptsForApp(app, restartAfterSync = false) },
                             onSyncAndRestart = { syncScriptsForApp(app, restartAfterSync = true) },
@@ -467,7 +485,10 @@ fun AppsScreen(
                                     Toast.makeText(context, it.message ?: "无法打开系统设置", Toast.LENGTH_LONG).show()
                                 }
                             },
-                            onOpenTerminal = { logApp = app },
+                            onOpenTerminal = {
+                                onDetailVisibleChange(true)
+                                logApp = app
+                            },
                             modifier = modifier
                         )
                     }
@@ -518,7 +539,10 @@ fun AppsScreen(
                                         AppRow(
                                             app = app,
                                             moduleActive = moduleState.isActivated,
-                                            onOpen = { selectedApp = app },
+                                            onOpen = {
+                                                onDetailVisibleChange(true)
+                                                selectedApp = app
+                                            },
                                             onEnabledChanged = { enabledAppsRevision++ }
                                         )
                                     }
@@ -758,7 +782,7 @@ private fun OptionActionButton(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalAnimationApi::class)
 @Composable
 private fun ScriptEnableScreen(
     app: InstalledAppInfo,
@@ -784,6 +808,7 @@ private fun ScriptEnableScreen(
     }
     var menuExpanded by remember { mutableStateOf(false) }
     var showScriptHelpDialog by remember { mutableStateOf(false) }
+    var settingsScript by remember { mutableStateOf<ScriptMetadata?>(null) }
 
     LaunchedEffect(app.packageName, initialAutoScan) {
         if (initialAutoScan) {
@@ -794,6 +819,32 @@ private fun ScriptEnableScreen(
             Log.d(TAG, "ScriptEnableScreen: entered package=${app.packageName}, skip auto rescan; use menu to scan manually")
         }
     }
+
+    AnimatedContent(
+        targetState = settingsScript,
+        label = "ScriptSettingsPaneTransition",
+        transitionSpec = {
+            val openingSettings = targetState != null
+            val enter = slideInHorizontally(
+                animationSpec = tween(durationMillis = 240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                initialOffsetX = { width -> if (openingSettings) width else -width }
+            ) + fadeIn(animationSpec = tween(durationMillis = 140))
+            val exit = slideOutHorizontally(
+                animationSpec = tween(durationMillis = 240, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                targetOffsetX = { width -> if (openingSettings) -width else width }
+            ) + fadeOut(animationSpec = tween(durationMillis = 120))
+            enter.togetherWith(exit)
+        },
+        modifier = modifier.fillMaxSize()
+    ) { scriptForSettings ->
+        if (scriptForSettings != null) {
+            ScriptSettingsVisualScreen(
+                packageName = app.packageName,
+                script = scriptForSettings,
+                onBack = { settingsScript = null },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
 
     if (showScriptHelpDialog) {
         AlertDialog(
@@ -812,7 +863,7 @@ private fun ScriptEnableScreen(
         modifier = modifier
             .fillMaxSize()
             .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -982,14 +1033,17 @@ private fun ScriptEnableScreen(
                         script = script,
                         packageName = app.packageName,
                         enabled = moduleActive && appEnabled,
-                        onOpenLocation = { openScriptLocation(context, it) }
+                        onOpenLocation = { openScriptLocation(context, it) },
+                        onOpenSettings = { settingsScript = it }
                     )
                 }
             }
         }
+        }
     }
 }
 
+}
 
 @Composable
 private fun DetailActionCard(
@@ -1019,6 +1073,9 @@ private fun AppLogScreen(
     val context = LocalContext.current
     var logText by remember(app.packageName) { mutableStateOf("") }
     var loading by remember(app.packageName) { mutableStateOf(false) }
+    var logFontSize by remember(app.packageName) { mutableStateOf(12f) }
+    val verticalScroll = rememberScrollState()
+    val horizontalScroll = rememberScrollState()
 
     fun reloadLog() {
         scope.launch {
@@ -1051,77 +1108,156 @@ private fun AppLogScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(horizontal = 12.dp)
+            .padding(top = 4.dp, bottom = 8.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            AppIconButton(
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            CompactLogIconButton(
                 icon = Icons.Filled.ArrowBack,
                 contentDescription = "返回",
-                onClick = onBack,
-                modifier = Modifier.size(42.dp)
+                onClick = onBack
             )
-            Icon(Icons.Filled.Terminal, contentDescription = null, modifier = Modifier.size(28.dp))
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text("终端日志", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
-                ScrollableSingleLineText(
-                    text = app.label,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                    modifier = Modifier.fillMaxWidth()
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(Icons.Filled.Terminal, contentDescription = null, modifier = Modifier.size(21.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+                Text(
+                    text = "终端日志",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                CopyablePackageNameText(
-                    packageName = app.packageName,
+                Text(
+                    text = "${app.label} · ${app.packageName}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp,
-                    modifier = Modifier.fillMaxWidth()
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                AppIconButton(
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                CompactLogTextButton(text = "A-", contentDescription = "缩小字体") {
+                    logFontSize = (logFontSize - 1f).coerceAtLeast(8f)
+                }
+                CompactLogTextButton(text = "A+", contentDescription = "放大字体") {
+                    logFontSize = (logFontSize + 1f).coerceAtMost(28f)
+                }
+                CompactLogIconButton(
+                    icon = Icons.Filled.OpenInNew,
+                    contentDescription = "用其他应用打开日志",
+                    onClick = { openLogFileWithExternalEditor(context, app.packageName) }
+                )
+                CompactLogIconButton(
                     icon = Icons.Filled.Refresh,
                     contentDescription = "刷新日志",
-                    onClick = { reloadLog() },
-                    modifier = Modifier.size(42.dp)
+                    onClick = { reloadLog() }
                 )
-                AppIconButton(
+                CompactLogIconButton(
                     icon = Icons.Filled.Delete,
                     contentDescription = "清空日志",
-                    onClick = { clearLog() },
-                    modifier = Modifier.size(42.dp)
+                    onClick = { clearLog() }
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(3.dp))
 
         AppCard(
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
         ) {
             if (loading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(14.dp)
-                ) {
-                    item {
-                        SelectionContainer {
+                val lines = remember(logText) { logText.ifBlank { "暂无日志" }.lines() }
+                SelectionContainer {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(app.packageName) {
+                                detectTransformGestures { _, _, zoom, _ ->
+                                    logFontSize = (logFontSize * zoom).coerceIn(8f, 28f)
+                                }
+                            }
+                            .horizontalScroll(horizontalScroll)
+                            .verticalScroll(verticalScroll)
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        lines.forEach { line ->
                             Text(
-                                text = logText.ifBlank { "暂无日志" },
+                                text = line,
                                 fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp,
-                                lineHeight = 17.sp,
-                                color = MaterialTheme.colorScheme.onSurface
+                                fontSize = logFontSize.sp,
+                                lineHeight = (logFontSize + 5f).sp,
+                                color = colorForLogLine(line),
+                                softWrap = false,
+                                maxLines = 1,
+                                overflow = TextOverflow.Visible
                             )
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CompactLogIconButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .size(32.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(9.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+@Composable
+private fun CompactLogTextButton(
+    text: String,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .width(34.dp)
+            .height(32.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(9.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            Text(text = text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun colorForLogLine(line: String): Color {
+    val upper = line.uppercase()
+    return when {
+        " E/" in line || "ERROR" in upper || "错误" in line || "Exception" in line || "Throwable" in line -> MaterialTheme.colorScheme.error
+        " W/" in line || "WARN" in upper || "警告" in line -> MaterialTheme.colorScheme.tertiary
+        " I/" in line || "INFO" in upper || "信息" in line -> MaterialTheme.colorScheme.primary
+        " D/" in line || "DEBUG" in upper -> MaterialTheme.colorScheme.onSurfaceVariant
+        " V/" in line || "VERBOSE" in upper -> MaterialTheme.colorScheme.outline
+        else -> MaterialTheme.colorScheme.onSurface
     }
 }
 
@@ -1215,8 +1351,11 @@ private const val SCRIPT_FILE_PROVIDER_AUTHORITY = "top.lovepikachu.XiaoHeiHook.
 
 private fun openScriptLocation(context: Context, script: ScriptMetadata) {
     val targetRelativePath = when {
-        script.kind == "directory" && script.rootPath.isNotBlank() -> script.rootPath
+        // 多文件脚本也直接打开入口文件，不再打开目录。
+        // v15+ 目录脚本的入口应是 folder/index.js。
+        script.entryPath.isNotBlank() -> script.entryPath
         script.path.isNotBlank() -> script.path
+        script.kind == "directory" && script.rootPath.isNotBlank() -> "${script.rootPath.trim('/')}/index.js"
         script.remoteName.startsWith("scripts/") -> script.remoteName.removePrefix("scripts/")
         else -> ""
     }.trim('/').replace('\\', '/')
@@ -1226,13 +1365,7 @@ private fun openScriptLocation(context: Context, script: ScriptMetadata) {
         return
     }
 
-    val isDirectory = script.kind == "directory" || (script.rootPath.isNotBlank() && targetRelativePath == script.rootPath)
-
-    if (isDirectory) {
-        openScriptDirectory(context, targetRelativePath)
-    } else {
-        openScriptFile(context, targetRelativePath)
-    }
+    openScriptFile(context, targetRelativePath)
 }
 
 private fun openScriptFile(context: Context, relativePath: String) {
@@ -1274,6 +1407,41 @@ private fun openScriptFile(context: Context, relativePath: String) {
     }.onFailure {
         // Fallback to system file picker near the script. This avoids showing a raw permission error.
         openScriptDirectory(context, relativePath.substringBeforeLast('/', ""))
+    }
+}
+
+private fun openLogFileWithExternalEditor(context: Context, packageName: String) {
+    val file = AppLogRepository.moduleLogFile(context, packageName)
+    runCatching {
+        file.parentFile?.mkdirs()
+        if (!file.exists()) file.writeText("")
+    }.onFailure { error ->
+        Toast.makeText(context, error.message ?: "无法准备日志文件", Toast.LENGTH_LONG).show()
+        return
+    }
+
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, SCRIPT_FILE_PROVIDER_AUTHORITY, file)
+    }.getOrElse { error ->
+        Toast.makeText(context, error.message ?: "无法生成日志文件 Uri", Toast.LENGTH_LONG).show()
+        return
+    }
+
+    val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "text/plain")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    grantScriptFileUri(context, uri, viewIntent)
+
+    runCatching {
+        context.startActivity(Intent.createChooser(viewIntent, "打开日志文件").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        })
+    }.onFailure { error ->
+        Toast.makeText(context, error.message ?: "没有可用的文件编辑器", Toast.LENGTH_LONG).show()
     }
 }
 
@@ -1332,7 +1500,13 @@ private fun grantScriptFileUri(context: Context, uri: Uri, intent: Intent) {
 }
 
 @Composable
-private fun ScriptRow(script: ScriptMetadata, packageName: String, enabled: Boolean, onOpenLocation: (ScriptMetadata) -> Unit) {
+private fun ScriptRow(
+    script: ScriptMetadata,
+    packageName: String,
+    enabled: Boolean,
+    onOpenLocation: (ScriptMetadata) -> Unit,
+    onOpenSettings: (ScriptMetadata) -> Unit
+) {
     var checked by remember(packageName, script.id, XiaoHeiApplication.remotePreferences) {
         mutableStateOf(ScopeController.isScriptEnabled(packageName, script.id))
     }
@@ -1383,6 +1557,15 @@ private fun ScriptRow(script: ScriptMetadata, packageName: String, enabled: Bool
                     )
                 }
             }
+            if (script.hasSettings) {
+                IconButton(
+                    onClick = { onOpenSettings(script) },
+                    enabled = enabled,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(Icons.Filled.Settings, contentDescription = "脚本设置")
+                }
+            }
             Switch(
                 checked = checked,
                 enabled = enabled,
@@ -1393,6 +1576,804 @@ private fun ScriptRow(script: ScriptMetadata, packageName: String, enabled: Bool
             )
         }
     }
+}
+
+
+
+@Composable
+private fun ScriptSettingsVisualScreen(
+    packageName: String,
+    script: ScriptMetadata,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val schema = remember(script.settingsSchema) { ScriptSettings.normalizeSchema(script.settingsSchema) }
+    val key = remember(packageName, script.id) { ScriptPrefs.scriptSettingsKey(packageName, script.id) }
+    val initialValues = remember(packageName, script.id, script.settingsSchema, XiaoHeiApplication.remotePreferences) {
+        val raw = XiaoHeiApplication.remotePreferences?.getString(key, "{}") ?: "{}"
+        ScriptSettings.merge(schema, raw)
+    }
+    var values by remember(packageName, script.id) { mutableStateOf(initialValues.deepCopyObject()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var showResetConfirm by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
+
+    BackHandler(onBack = onBack)
+
+    fun save() {
+        runCatching {
+            val clean = ScriptSettings.normalizeValues(schema, values, strict = true)
+            val doc = ScriptSettings.savedDocument(packageName, script.id, script.path, schema, clean)
+            val prefs = XiaoHeiApplication.remotePreferences ?: throw IllegalStateException("LSPosed Remote Preferences 未连接")
+            prefs.edit().putString(key, doc.toString()).commit()
+            Toast.makeText(context, "已保存脚本设置", Toast.LENGTH_SHORT).show()
+            onBack()
+        }.onFailure { e ->
+            error = e.message ?: e.javaClass.simpleName
+        }
+    }
+
+    fun resetToDefault() {
+        XiaoHeiApplication.remotePreferences?.edit()?.remove(key)?.commit()
+        values = ScriptSettings.defaults(schema).deepCopyObject()
+        error = null
+        Toast.makeText(context, "已恢复默认", Toast.LENGTH_SHORT).show()
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = schema?.optString("title", "脚本设置") ?: "脚本设置",
+                    fontSize = 21.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${script.name} · $packageName",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            TextButton(onClick = { showResetConfirm = true }) { Text("恢复默认") }
+            Button(onClick = { save() }) { Text("保存") }
+        }
+
+        if (showResetConfirm) {
+            AlertDialog(
+                onDismissRequest = { showResetConfirm = false },
+                title = { Text("恢复默认设置？") },
+                text = { Text("这会清除当前应用中该脚本已保存的设置，并恢复 settings.json 中声明的默认值。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showResetConfirm = false
+                        resetToDefault()
+                    }) { Text("恢复默认") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showResetConfirm = false }) { Text("取消") }
+                }
+            )
+        }
+
+        error?.let {
+            Text(
+                text = it,
+                color = MaterialTheme.colorScheme.error,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(vertical = 6.dp)
+            )
+        }
+
+        if (schema == null) {
+            AppInfoCard(title = "无法读取设置", text = "settings.json 为空或格式不正确。")
+        } else {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                val fields = schema.optJSONArray("fields") ?: JSONArray()
+                ScriptSettingsFields(
+                    fields = fields,
+                    values = values,
+                    onValuesChange = { values = it.deepCopyObject(); error = null }
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScriptSettingsFields(
+    fields: JSONArray,
+    values: JSONObject,
+    onValuesChange: (JSONObject) -> Unit,
+    modifier: Modifier = Modifier,
+    depth: Int = 0
+) {
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        for (i in 0 until fields.length()) {
+            val field = fields.optJSONObject(i) ?: continue
+            ScriptSettingsField(
+                field = field,
+                values = values,
+                onValuesChange = onValuesChange,
+                depth = depth
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScriptSettingsField(
+    field: JSONObject,
+    values: JSONObject,
+    onValuesChange: (JSONObject) -> Unit,
+    depth: Int = 0
+) {
+    when (field.optString("type")) {
+        "heading" -> SettingsHeading(field)
+        "info" -> SettingsInfo(field)
+        "group" -> SettingsGroup(field, values, onValuesChange, depth)
+        "switch" -> SettingsSwitch(field, values, onValuesChange)
+        "checkbox" -> SettingsCheckbox(field, values, onValuesChange)
+        "number" -> SettingsNumber(field, values, onValuesChange)
+        "text" -> SettingsText(field, values, onValuesChange)
+        "select" -> SettingsSelect(field, values, onValuesChange)
+        "radio" -> SettingsRadio(field, values, onValuesChange)
+        "tags" -> SettingsTags(field, values, onValuesChange)
+        "custom" -> SettingsCustom(field, values, onValuesChange)
+        "list" -> SettingsList(field, values, onValuesChange, depth)
+    }
+}
+
+@Composable
+private fun SettingsHeading(field: JSONObject) {
+    val label = field.optString("label", field.optString("title", "")).trim()
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (label.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = label.uppercase(),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                letterSpacing = 1.sp
+            )
+        }
+        Divider(modifier = Modifier.padding(top = if (label.isNotBlank()) 8.dp else 0.dp))
+    }
+}
+
+@Composable
+private fun SettingsInfo(field: JSONObject) {
+    val tone = field.optString("tone", "info")
+    val title = field.optString("title", field.optString("label", "")).trim()
+    val message = field.optString("message", "").trim()
+    if (message.isBlank()) return
+    val color = when (tone) {
+        "warning" -> MaterialTheme.colorScheme.tertiaryContainer
+        "success" -> MaterialTheme.colorScheme.primaryContainer
+        "error" -> MaterialTheme.colorScheme.errorContainer
+        else -> MaterialTheme.colorScheme.secondaryContainer
+    }
+    val contentColor = when (tone) {
+        "error" -> MaterialTheme.colorScheme.onErrorContainer
+        "warning" -> MaterialTheme.colorScheme.onTertiaryContainer
+        "success" -> MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.onSecondaryContainer
+    }
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(containerColor = color, contentColor = contentColor)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Icon(Icons.Filled.Info, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (title.isNotBlank()) Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(message, fontSize = 13.sp, lineHeight = 19.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroup(
+    field: JSONObject,
+    values: JSONObject,
+    onValuesChange: (JSONObject) -> Unit,
+    depth: Int
+) {
+    val label = field.optString("label", "分组")
+    val items = field.optJSONArray("items") ?: JSONArray()
+    var collapsed by remember(field.optString("key", label)) { mutableStateOf(field.optBoolean("defaultCollapsed", false)) }
+    val radioKeys = remember(items.toString()) {
+        val keys = linkedSetOf<String>()
+        for (i in 0 until items.length()) {
+            val item = items.optJSONObject(i) ?: continue
+            if (item.optString("type") == "radio") keys.add(item.optString("key"))
+        }
+        keys.filter { it.isNotBlank() }
+    }
+
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                }
+                if (field.optBoolean("collapsible", false)) {
+                    TextButton(onClick = { collapsed = !collapsed }) { Text(if (collapsed) "展开" else "折叠") }
+                }
+            }
+            if (!collapsed) {
+                radioKeys.forEach { radioKey ->
+                    SettingsRadioGroup(radioKey, items, values, onValuesChange)
+                }
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    if (item.optString("type") == "radio") continue
+                    ScriptSettingsField(item, values, onValuesChange, depth + 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsRadioGroup(
+    radioKey: String,
+    items: JSONArray,
+    values: JSONObject,
+    onValuesChange: (JSONObject) -> Unit
+) {
+    val radios = remember(items.toString(), radioKey) {
+        buildList {
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                if (item.optString("type") == "radio" && item.optString("key") == radioKey) add(item)
+            }
+        }
+    }
+    if (radios.isEmpty()) return
+    val current = values.opt(radioKey) ?: radios.first().opt("value")
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        radios.firstOrNull()?.optString("name", "")?.takeIf { it.isNotBlank() }?.let {
+            Text(it, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        }
+        radios.forEach { radio ->
+            val optionValue = radio.opt("value")
+            val selected = jsonString(current) == jsonString(optionValue)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        val next = values.deepCopyObject().putJson(radioKey, optionValue)
+                        onValuesChange(next)
+                    }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(
+                    selected = selected,
+                    onClick = {
+                        val next = values.deepCopyObject().putJson(radioKey, optionValue)
+                        onValuesChange(next)
+                    }
+                )
+                Column {
+                    Text(radio.optString("label", jsonString(optionValue)), fontSize = 14.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSwitch(field: JSONObject, values: JSONObject, onValuesChange: (JSONObject) -> Unit) {
+    val key = field.optString("key")
+    val checked = values.optBoolean(key, false)
+    AppCard(modifier = Modifier.fillMaxWidth(), selected = checked) {
+        Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            SettingsLabel(field, Modifier.weight(1f))
+            Switch(
+                checked = checked,
+                onCheckedChange = { onValuesChange(values.deepCopyObject().put(key, it)) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsCheckbox(field: JSONObject, values: JSONObject, onValuesChange: (JSONObject) -> Unit) {
+    val key = field.optString("key")
+    val checked = values.optBoolean(key, false)
+    AppCard(modifier = Modifier.fillMaxWidth(), selected = checked) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onValuesChange(values.deepCopyObject().put(key, !checked)) }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(checked = checked, onCheckedChange = { onValuesChange(values.deepCopyObject().put(key, it)) })
+            Spacer(Modifier.width(10.dp))
+            SettingsLabel(field, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun SettingsNumber(field: JSONObject, values: JSONObject, onValuesChange: (JSONObject) -> Unit) {
+    val key = field.optString("key")
+    val integer = field.optBoolean("integer", false)
+    val min = field.optNullableDouble("min")
+    val max = field.optNullableDouble("max")
+    val step = field.optDouble("step", if (integer) 1.0 else 0.1)
+    val current = values.optNullableDouble(key) ?: 0.0
+    var text by remember(key, jsonString(values.opt(key))) { mutableStateOf(if (integer) current.toInt().toString() else trimNumber(current)) }
+
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SettingsLabel(field)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { raw ->
+                        text = raw
+                        raw.toDoubleOrNull()?.let { parsed ->
+                            val normalized = normalizeNumberForUi(parsed, min, max, integer)
+                            onValuesChange(values.deepCopyObject().put(key, normalized))
+                        }
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                    label = { Text("数值") }
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedButton(onClick = {
+                        val normalized = normalizeNumberForUi(current - step, min, max, integer)
+                        onValuesChange(values.deepCopyObject().put(key, normalized))
+                    }) { Text("-") }
+                    OutlinedButton(onClick = {
+                        val normalized = normalizeNumberForUi(current + step, min, max, integer)
+                        onValuesChange(values.deepCopyObject().put(key, normalized))
+                    }) { Text("+") }
+                }
+            }
+            if (min != null && max != null && max > min) {
+                Slider(
+                    value = current.toFloat().coerceIn(min.toFloat(), max.toFloat()),
+                    onValueChange = { v ->
+                        val raw = v.toDouble()
+                        val snapped = if (step > 0) min + kotlin.math.round((raw - min) / step) * step else raw
+                        onValuesChange(values.deepCopyObject().put(key, normalizeNumberForUi(snapped, min, max, integer)))
+                    },
+                    valueRange = min.toFloat()..max.toFloat()
+                )
+                Text("范围：${trimNumber(min)} - ${trimNumber(max)}，步进：${trimNumber(step)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsText(field: JSONObject, values: JSONObject, onValuesChange: (JSONObject) -> Unit) {
+    val key = field.optString("key")
+    val multiline = field.optBoolean("multiline", false)
+    val masked = field.optBoolean("masked", false)
+    val maxLength = field.optInt("maxLength", 2000).coerceAtLeast(1)
+    val current = values.optString(key, "")
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SettingsLabel(field)
+            OutlinedTextField(
+                value = current,
+                onValueChange = { raw ->
+                    onValuesChange(values.deepCopyObject().put(key, raw.take(maxLength)))
+                },
+                singleLine = !multiline,
+                minLines = if (multiline) 4 else 1,
+                maxLines = if (multiline) 10 else 1,
+                visualTransformation = if (masked) PasswordVisualTransformation() else VisualTransformation.None,
+                placeholder = { field.optString("placeholder", "").takeIf { it.isNotBlank() }?.let { Text(it) } },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text("${current.length}/$maxLength", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun SettingsSelect(field: JSONObject, values: JSONObject, onValuesChange: (JSONObject) -> Unit) {
+    val key = field.optString("key")
+    val options = field.optJSONArray("options") ?: JSONArray()
+    val current = values.opt(key)
+    var expanded by remember(key) { mutableStateOf(false) }
+    val currentLabel = optionLabel(options, current)
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SettingsLabel(field)
+            Box {
+                OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text(currentLabel.ifBlank { "请选择" }, modifier = Modifier.weight(1f))
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    for (i in 0 until options.length()) {
+                        val option = options.optJSONObject(i) ?: continue
+                        DropdownMenuItem(
+                            text = { Text(option.optString("label", jsonString(option.opt("value")))) },
+                            onClick = {
+                                expanded = false
+                                onValuesChange(values.deepCopyObject().putJson(key, option.opt("value")))
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsRadio(field: JSONObject, values: JSONObject, onValuesChange: (JSONObject) -> Unit) {
+    val key = field.optString("key")
+    val optionValue = field.opt("value")
+    val selected = jsonString(values.opt(key)) == jsonString(optionValue)
+    AppCard(modifier = Modifier.fillMaxWidth(), selected = selected) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onValuesChange(values.deepCopyObject().putJson(key, optionValue)) }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RadioButton(selected = selected, onClick = { onValuesChange(values.deepCopyObject().putJson(key, optionValue)) })
+            Spacer(Modifier.width(10.dp))
+            SettingsLabel(field, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun SettingsTags(field: JSONObject, values: JSONObject, onValuesChange: (JSONObject) -> Unit) {
+    val key = field.optString("key")
+    val arr = values.optJSONArray(key) ?: JSONArray()
+    val maxItems = field.optInt("maxItems", 128).coerceAtLeast(0)
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SettingsLabel(field)
+            for (i in 0 until arr.length()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = arr.optString(i, ""),
+                        onValueChange = { raw ->
+                            val nextArr = arr.deepCopyArray()
+                            nextArr.put(i, raw)
+                            onValuesChange(values.deepCopyObject().put(key, nextArr))
+                        },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("标签 ${i + 1}") }
+                    )
+                    IconButton(onClick = {
+                        val nextArr = JSONArray()
+                        for (j in 0 until arr.length()) if (j != i) nextArr.put(arr.opt(j))
+                        onValuesChange(values.deepCopyObject().put(key, nextArr))
+                    }) { Icon(Icons.Filled.Delete, contentDescription = "删除") }
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    val nextArr = arr.deepCopyArray().put("")
+                    onValuesChange(values.deepCopyObject().put(key, nextArr))
+                },
+                enabled = arr.length() < maxItems
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("添加标签")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsCustom(field: JSONObject, values: JSONObject, onValuesChange: (JSONObject) -> Unit) {
+    val key = field.optString("key")
+    val obj = values.optJSONObject(key) ?: JSONObject()
+    val pairs = remember(obj.toString()) { obj.toPairs() }
+    val maxItems = field.optInt("maxItems", 128).coerceAtLeast(0)
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SettingsLabel(field)
+            pairs.forEachIndexed { index, pair ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = pair.first,
+                        onValueChange = { newKey ->
+                            val nextObj = JSONObject()
+                            pairs.forEachIndexed { j, p ->
+                                val k = if (j == index) newKey else p.first
+                                if (k.isNotBlank()) nextObj.put(k, p.second)
+                            }
+                            onValuesChange(values.deepCopyObject().put(key, nextObj))
+                        },
+                        modifier = Modifier.weight(0.42f),
+                        singleLine = true,
+                        label = { Text(field.optString("keyPlaceholder", "key")) }
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    OutlinedTextField(
+                        value = pair.second,
+                        onValueChange = { newValue ->
+                            val nextObj = JSONObject()
+                            pairs.forEachIndexed { j, p ->
+                                if (p.first.isNotBlank()) nextObj.put(p.first, if (j == index) newValue else p.second)
+                            }
+                            onValuesChange(values.deepCopyObject().put(key, nextObj))
+                        },
+                        modifier = Modifier.weight(0.58f),
+                        singleLine = true,
+                        label = { Text(field.optString("valuePlaceholder", "value")) }
+                    )
+                    IconButton(onClick = {
+                        val nextObj = JSONObject()
+                        pairs.forEachIndexed { j, p -> if (j != index && p.first.isNotBlank()) nextObj.put(p.first, p.second) }
+                        onValuesChange(values.deepCopyObject().put(key, nextObj))
+                    }) { Icon(Icons.Filled.Delete, contentDescription = "删除") }
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    val nextObj = obj.deepCopyObject()
+                    var n = pairs.size + 1
+                    var newKey = "key$n"
+                    while (nextObj.has(newKey)) {
+                        n++
+                        newKey = "key$n"
+                    }
+                    nextObj.put(newKey, "")
+                    onValuesChange(values.deepCopyObject().put(key, nextObj))
+                },
+                enabled = pairs.size < maxItems
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("添加键值对")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsList(field: JSONObject, values: JSONObject, onValuesChange: (JSONObject) -> Unit, depth: Int) {
+    val key = field.optString("key")
+    val arr = values.optJSONArray(key) ?: JSONArray()
+    val items = field.optJSONArray("items") ?: JSONArray()
+    val maxItems = field.optInt("maxItems", 64).coerceAtLeast(0)
+    val uniqueKey = field.optString("uniqueKey", "")
+    val expanded = remember(key) { mutableStateMapOf<Int, Boolean>() }
+
+    AppCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SettingsLabel(field, Modifier.weight(1f))
+                Text("${arr.length()}/$maxItems", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (uniqueKey.isNotBlank()) {
+                Text("唯一键：$uniqueKey", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: JSONObject()
+                val title = item.optString(uniqueKey, "").ifBlank { "第 ${i + 1} 项" }
+                AppCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(title, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            IconButton(
+                                onClick = {
+                                    val nextArr = JSONArray()
+                                    for (j in 0 until arr.length()) if (j != i) nextArr.put(arr.opt(j))
+                                    onValuesChange(values.deepCopyObject().put(key, nextArr))
+                                },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(Icons.Filled.Delete, contentDescription = "删除")
+                            }
+                            IconButton(
+                                onClick = { expanded[i] = !(expanded[i] ?: true) },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(if (expanded[i] == false) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess, contentDescription = "展开/折叠")
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedButton(onClick = {
+                                val nextArr = arr.deepCopyArray()
+                                if (i > 0) {
+                                    val prev = nextArr.opt(i - 1)
+                                    nextArr.put(i - 1, nextArr.opt(i))
+                                    nextArr.put(i, prev)
+                                    onValuesChange(values.deepCopyObject().put(key, nextArr))
+                                }
+                            }, enabled = i > 0) { Text("上移") }
+                            OutlinedButton(onClick = {
+                                val nextArr = arr.deepCopyArray()
+                                if (i < arr.length() - 1) {
+                                    val next = nextArr.opt(i + 1)
+                                    nextArr.put(i + 1, nextArr.opt(i))
+                                    nextArr.put(i, next)
+                                    onValuesChange(values.deepCopyObject().put(key, nextArr))
+                                }
+                            }, enabled = i < arr.length() - 1) { Text("下移") }
+                            OutlinedButton(onClick = {
+                                if (arr.length() < maxItems) {
+                                    val nextArr = JSONArray()
+                                    for (j in 0 until arr.length()) {
+                                        nextArr.put(arr.opt(j))
+                                        if (j == i) nextArr.put(item.deepCopyObject())
+                                    }
+                                    onValuesChange(values.deepCopyObject().put(key, nextArr))
+                                }
+                            }, enabled = arr.length() < maxItems) { Text("复制") }
+                        }
+                        if (expanded[i] != false) {
+                            ScriptSettingsFields(
+                                fields = items,
+                                values = item,
+                                onValuesChange = { newItem ->
+                                    val nextArr = arr.deepCopyArray()
+                                    nextArr.put(i, newItem)
+                                    onValuesChange(values.deepCopyObject().put(key, nextArr))
+                                },
+                                depth = depth + 1
+                            )
+                        }
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    val nextArr = arr.deepCopyArray()
+                    nextArr.put(defaultListItem(items))
+                    onValuesChange(values.deepCopyObject().put(key, nextArr))
+                },
+                enabled = arr.length() < maxItems
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("添加列表项")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsLabel(field: JSONObject, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        Text(
+            text = field.optString("label", field.optString("key", "设置项")),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+private fun defaultListItem(fields: JSONArray): JSONObject {
+    val out = JSONObject()
+    for (i in 0 until fields.length()) {
+        val field = fields.optJSONObject(i) ?: continue
+        if (field.optString("type") == "group") {
+            val nested = defaultListItem(field.optJSONArray("items") ?: JSONArray())
+            nested.keys().forEachRemainingCompat { key -> out.put(key, nested.opt(key)) }
+            continue
+        }
+        val key = field.optString("key", "")
+        if (key.isBlank() || out.has(key) && !field.has("default")) continue
+        out.putJson(key, defaultValueForVisualField(field))
+    }
+    return out
+}
+
+private fun defaultValueForVisualField(field: JSONObject): Any? {
+    if (field.has("default")) return field.opt("default").deepCopyJsonValue()
+    return when (field.optString("type")) {
+        "switch", "checkbox" -> false
+        "number" -> if (field.optBoolean("integer", false)) 0 else 0.0
+        "text" -> ""
+        "select" -> field.optJSONArray("options")?.optJSONObject(0)?.opt("value") ?: ""
+        "radio" -> field.opt("value") ?: false
+        "tags" -> JSONArray()
+        "custom" -> JSONObject()
+        "list" -> JSONArray()
+        else -> JSONObject.NULL
+    }
+}
+
+private fun JSONObject.deepCopyObject(): JSONObject = JSONObject(this.toString())
+private fun JSONArray.deepCopyArray(): JSONArray = JSONArray(this.toString())
+private fun Any?.deepCopyJsonValue(): Any? = when (this) {
+    is JSONObject -> this.deepCopyObject()
+    is JSONArray -> this.deepCopyArray()
+    else -> this
+}
+
+private fun JSONObject.putJson(key: String, value: Any?): JSONObject {
+    put(key, value.deepCopyJsonValue())
+    return this
+}
+
+private fun JSONObject.toPairs(): List<Pair<String, String>> {
+    val out = mutableListOf<Pair<String, String>>()
+    val keys = keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        out.add(key to jsonString(opt(key)))
+    }
+    return out
+}
+
+private fun Iterator<String>.forEachRemainingCompat(block: (String) -> Unit) {
+    while (hasNext()) block(next())
+}
+
+private fun jsonString(value: Any?): String = if (value == null || value == JSONObject.NULL) "" else value.toString()
+
+private fun JSONObject.optNullableDouble(key: String): Double? {
+    if (!has(key) || isNull(key)) return null
+    return when (val value = opt(key)) {
+        is Number -> value.toDouble()
+        is String -> value.toDoubleOrNull()
+        else -> null
+    }
+}
+
+private fun normalizeNumberForUi(value: Double, min: Double?, max: Double?, integer: Boolean): Any {
+    var out = value
+    if (min != null) out = out.coerceAtLeast(min)
+    if (max != null) out = out.coerceAtMost(max)
+    return if (integer) out.toInt() else out
+}
+
+private fun trimNumber(value: Double): String {
+    val asLong = value.toLong()
+    return if (value == asLong.toDouble()) asLong.toString() else value.toString()
+}
+
+private fun optionLabel(options: JSONArray, current: Any?): String {
+    val target = jsonString(current)
+    for (i in 0 until options.length()) {
+        val option = options.optJSONObject(i) ?: continue
+        if (jsonString(option.opt("value")) == target) return option.optString("label", target)
+    }
+    return target
 }
 
 @Composable

@@ -6,6 +6,7 @@ interface Props {
   onAppEnabledChange: (enabled: boolean) => void
   onScriptEnabledChange: (scriptId: string, enabled: boolean) => void
   onOpenScript: (path: string) => void
+  onOpenSettings?: (scriptId: string, scriptPath: string) => void
 }
 
 export function HookSettingsPanel(props: Props) {
@@ -39,14 +40,26 @@ export function HookSettingsPanel(props: Props) {
             ) : (
               settings.scripts.map((script) => (
                 <div className="hook-item clickable script-hover-open" key={script.id || script.path} title="在编辑器中打开" onClick={() => props.onOpenScript(script.path)}>
-                  <label onClick={(ev) => ev.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={!!script.enabled}
-                      onChange={(ev) => props.onScriptEnabledChange(script.id, ev.target.checked)}
-                    />
-                    <span className="title"> {script.name || script.id}</span>
-                  </label>
+                  <div className="hook-item-head">
+                    {script.hasSettings ? (
+                      <button
+                        className="small-icon-button"
+                        title="打开脚本设置"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          props.onOpenSettings?.(script.id, script.path);
+                        }}
+                      >⚙</button>
+                    ) : null}
+                    <label onClick={(ev) => ev.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={!!script.enabled}
+                        onChange={(ev) => props.onScriptEnabledChange(script.id, ev.target.checked)}
+                      />
+                      <span className="title"> {script.name || script.id}</span>
+                    </label>
+                  </div>
                   <div className="desc">{script.path}<br />{script.id}</div>
                 </div>
               ))
@@ -65,7 +78,9 @@ export function HookSettingsPanel(props: Props) {
               runAt: props.metadata.runAt,
               grant: props.metadata.grants || [],
               url: props.metadata.url || '',
-              urlRefreshOnApply: !!props.metadata.urlRefreshOnApply
+              urlRefreshOnApply: !!props.metadata.urlRefreshOnApply,
+              hasSettings: !!props.metadata.hasSettings,
+              settingsPath: props.metadata.settingsPath || ''
             }, null, 2) : '未打开脚本'}
           </pre>
         </>
