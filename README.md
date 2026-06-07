@@ -57,7 +57,7 @@ XiaoHeiHook 将固定模块与动态脚本拆开：模块负责接入 LSPosed、
 
 XiaoHeiHook 提供原生 WebIDE 集成环境，只需要浏览器即可编写脚本。
 
-![程序流程](./docs/source/WebIDE_static/界面演示.png)
+![程序流程](./docs/source/_static/WebIDE界面演示.png)
 
 WebIDE 中支持断点调试等功能，便于编写脚本。
 
