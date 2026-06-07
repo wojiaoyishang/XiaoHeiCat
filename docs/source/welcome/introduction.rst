@@ -71,3 +71,21 @@ WebIDE
 ~~~~~~~~~~~~~~~
 
 WebIDE 是手机端启动的本地网页 IDE。电脑通过浏览器访问后，可以管理应用、编辑脚本、修改 Hook 设置、查看控制台日志。
+
+参考文档与帮助
+-----------------
+
+如果你在使用过程中遇到问题，建议优先查阅项目文档：
+
+- 项目文档：https://lab.lovepikachu.top/document/xiaoheihook/
+- 开源仓库：https://github.com/wojiaoyishang/XiaoHeiCat/
+- 问题反馈：https://github.com/wojiaoyishang/XiaoHeiCat/issues
+- 功能建议：欢迎提交 Issue 或 Pull Request
+
+XiaoHeiHook 的设计与实现过程中参考了以下优秀项目，同时有助于您更好地开发脚本：
+
+- LSPosed（现代 Xposed 框架）：https://github.com/LSPosed/LSPosed
+- Modern Xposed API（libxposed）：https://github.com/libxposed
+- Rhino JavaScript Engine：https://github.com/mozilla/rhino
+- JsHook： https://github.com/Xposed-Modules-Repo/me.jsonet.jshook
+- SimpleHook：https://github.com/Xposed-Modules-Repo/com.github.kyuubiran.simplehook

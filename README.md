@@ -86,3 +86,28 @@ WebIDE 中支持断点调试等功能，便于编写脚本。
 
 脚本的开放说明请参考开放文档，文档中也说明了模块的实现思路，所有 JS 保留的接口均可在 [从 LSPosed 到 JS 脚本](https://lab.lovepikachu.top/document/xiaoheihook/scripts/bridge.html) 章节找到对应说明。
 
+## 参考文档与帮助
+
+如果你在使用过程中遇到问题，建议优先查阅项目文档：
+
+- 项目文档：<https://lab.lovepikachu.top/document/xiaoheihook/>
+- 开源仓库：<https://github.com/wojiaoyishang/XiaoHeiCat/>
+- 问题反馈：<https://github.com/wojiaoyishang/XiaoHeiCat/issues>
+- 功能建议：欢迎提交 Issue 或 Pull Request
+
+XiaoHeiHook 的设计与实现过程中参考了以下优秀项目，同时有助于您更好的开发脚本：
+
+- LSPosed（现代 Xposed 框架）
+    - <https://github.com/LSPosed/LSPosed>
+
+- Modern Xposed API（libxposed）
+    - <https://github.com/libxposed>
+
+- Rhino JavaScript Engine
+    - <https://github.com/mozilla/rhino>
+
+- JsHook
+    - <https://github.com/Xposed-Modules-Repo/me.jsonet.jshook>
+
+- SimpleHook
+    - <https://github.com/Xposed-Modules-Repo/com.github.kyuubiran.simplehook>

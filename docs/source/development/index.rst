@@ -5,6 +5,7 @@
 .. toctree::
    :maxdepth: 1
 
+   build
    modules
    sync
    logs
