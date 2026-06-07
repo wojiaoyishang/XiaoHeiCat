@@ -501,7 +501,7 @@ fun AppsScreen(
                             .padding(horizontal = 16.dp, vertical = 14.dp)
                     ) {
                         AppPageTitle(
-                            title = "适配应用",
+                            title = "应用配置",
                             trailing = {
                                 AppIconButton(
                                     icon = Icons.Filled.Menu,

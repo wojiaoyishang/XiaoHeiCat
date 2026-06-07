@@ -1,0 +1,3 @@
+sphinx>=5
+docutils<=0.21
+sphinx-rtd-theme

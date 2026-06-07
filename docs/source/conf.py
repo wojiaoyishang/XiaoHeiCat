@@ -1,0 +1,18 @@
+# Configuration file for the Sphinx documentation builder.
+
+project = 'XiaoHeiHook'
+copyright = '2026, XiaoHeiHook'
+author = 'XiaoHeiHook'
+release = 'v16'
+
+extensions = ['sphinx.ext.intersphinx']
+templates_path = ['_templates']
+exclude_patterns = []
+language = 'zh_CN'
+
+html_theme = 'sphinx_rtd_theme'
+html_static_path = ['_static']
+
+suppress_warnings = [
+    'misc.highlighting_failure'
+]
