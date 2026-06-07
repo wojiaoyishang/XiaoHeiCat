@@ -3,6 +3,9 @@
 
 本页放置常用脚本模板。更完整的接口说明请阅读 :doc:`js_api`。
 
+.. note::
+	示例脚本可以参考仓库：https://github.com/wojiaoyishang/XiaoHeiCat/tree/master/example 。
+
 Application.onCreate 日志
 -------------------------
 
