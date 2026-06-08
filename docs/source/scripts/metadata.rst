@@ -62,7 +62,81 @@
 
 
 .. note::
-	自 1.1 版本起，不再支持 URL 远程脚本同步。对于 grant 字段说明请查看 :ref:`权限边界` 章节。
+   自 1.1 版本起，不再支持 URL 远程脚本同步。对于 grant 字段说明请查看 :ref:`权限边界` 章节。
+
+.. note::
+   从 ``1.20 (102)`` 起，新增 MCP 远程调用相关 grant、内部调试日志 grant，以及 ``xhh`` 全局对象。旧脚本不声明这些 grant 时不会自动开启远程注册或内部调试日志。
+
+常用 grant
+----------------------------------------------------------
+
+``@grant`` 用于声明脚本需要的能力。XiaoHeiHook 会根据 grant 决定是否注入对应对象、是否开启额外能力、是否输出内部调试日志。
+
+.. list-table:: 常用 grant
+   :header-rows: 1
+   :widths: 30 70
+
+   * - grant
+     - 说明
+   * - ``java.full``
+     - 允许使用 Java 类访问和反射辅助能力。
+   * - ``xposed.full``
+     - 允许使用 Xposed / LSPosed Hook 能力。
+   * - ``xposed.raw``
+     - 允许访问底层 raw 对象。仅建议高级脚本使用。
+   * - ``rpc.register``
+     - 声明脚本会注册 MCP 远程可调用方法。通常与 ``xhh.rpc.register_method`` 配合使用。
+   * - ``mcp.debug``
+     - 输出 MCP bridge 内部调试日志。只影响日志，不授予远程调用能力。
+   * - ``xhh.debug``
+     - 输出 XiaoHeiHook 内部全局调试日志，包含 MCP 与 Dex 调试日志。
+   * - ``dex.dump``
+     - 开启 DumpDex / dex dump 能力。
+   * - ``dex.read``
+     - 开启 Dex 读取能力。
+   * - ``dex.search``
+     - 开启 Dex 搜索能力。
+   * - ``dex.full``
+     - 开启完整 Dex 能力。
+   * - ``dex.debug``
+     - 输出 Dex / DumpDex 内部调试日志。只影响日志，不授予 dump 权限。
+
+.. tip::
+   ``mcp.debug``、``dex.debug``、``xhh.debug`` 都是调试日志开关。它们不会替代 ``rpc.register`` 或 ``dex.dump`` 这类能力 grant。
+
+MCP 脚本头示例
+----------------------------------------------------------
+
+.. code-block:: javascript
+
+   // ==UserScript==
+   // @name         MCP Echo Test
+   // @target       cn.am7code.tools
+   // @process      cn.am7code.tools
+   // @run-at       package-loaded
+   // @grant        rpc.register
+   // ==/UserScript==
+
+需要排查 MCP 注册过程时，可以临时加入：
+
+.. code-block:: javascript
+
+   // @grant        mcp.debug
+
+DumpDex 调试脚本头示例
+----------------------------------------------------------
+
+.. code-block:: javascript
+
+   // ==UserScript==
+   // @name         DumpDex Debug
+   // @target       cn.example.app
+   // @grant        dex.dump
+   // @grant        dex.debug
+   // ==/UserScript==
+
+.. warning::
+   ``dex.debug`` 只会增加内部日志。真正允许 dump dex 的仍然是 ``dex.dump`` 或 ``dex.full``。
 
 run-at
 -----------------

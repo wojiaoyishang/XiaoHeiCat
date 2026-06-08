@@ -28,9 +28,336 @@ JS API 参考
      - 多文件脚本的 CommonJS 风格相对路径加载器。
    * - ``debuggerx``
      - WebIDE 软断点和调试事件接口。
+   * - ``xhh``
+     - XiaoHeiHook 运行时信息和扩展能力入口。从 ``1.20 (102)`` 起提供版本信息、grant 判断和远程调用注册。
+   * - ``dex``
+     - Dex / DumpDex 分析能力。只有脚本声明 ``dex.dump``、``dex.read``、``dex.search`` 或 ``dex.full`` 等 grant 时才会注入。
 
 .. important::
    这些对象只在脚本运行时存在，不是浏览器或 Node.js 的对象。脚本中没有 DOM，也不能使用 Node.js 内置模块。
+
+
+xhh 运行时信息接口
+----------------------------------------------------------
+
+``xhh`` 是 XiaoHeiHook 从 ``1.20 (102)`` 起新增的全局对象，用于暴露模块版本、JS API 版本、grant 判断和远程调用入口。
+
+.. note::
+
+   ``xhh`` 不是目标 App 的对象，也不是浏览器对象。它由 ``JsHookRuntime`` 在目标 App 进程内注入。
+
+源码位置：
+
+.. list-table:: xhh 对象源码位置
+   :header-rows: 1
+   :widths: 42 58
+
+   * - 文件
+     - 作用
+   * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/script/JsHookRuntime.java``
+     - 创建并注入 ``xhh``、``xhh.rpc``、``xhh.info``、``xhh.hasGrant``。
+   * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/XhhConstants.java``
+     - 定义 ``VERSION_NAME``、``VERSION_CODE``、``JS_API_VERSION``、``MCP_BRIDGE_VERSION``、``DEX_API_VERSION``。
+
+属性
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table:: xhh 属性
+   :header-rows: 1
+   :widths: 35 25 40
+
+   * - 属性
+     - 类型
+     - 说明
+   * - ``xhh.name``
+     - ``String``
+     - 固定为 ``XiaoHeiHook``。
+   * - ``xhh.version``
+     - ``String``
+     - XiaoHeiHook 版本名，例如 ``1.20``。
+   * - ``xhh.versionCode``
+     - ``Number``
+     - XiaoHeiHook 内部版本号，例如 ``102``。
+   * - ``xhh.versionLabel``
+     - ``String``
+     - 版本展示文本，例如 ``1.20 (102)``。
+   * - ``xhh.jsApiVersion``
+     - ``Number``
+     - JS API 版本。
+   * - ``xhh.mcpBridgeVersion``
+     - ``Number``
+     - MCP bridge 协议版本。
+   * - ``xhh.dexApiVersion``
+     - ``Number``
+     - Dex API 版本。
+   * - ``xhh.rpc``
+     - ``Object``
+     - 远程方法注册 API，见下文 ``xhh.rpc``。
+
+``xhh.info()``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+作用：返回当前脚本运行环境和 XiaoHeiHook 版本信息。
+
+参数：无。
+
+返回值：普通 JSON 对象。
+
+返回示例：
+
+.. code-block:: javascript
+
+   {
+     name: "XiaoHeiHook",
+     version: "1.20",
+     versionCode: 102,
+     versionLabel: "1.20 (102)",
+     jsApiVersion: 1,
+     mcpBridgeVersion: 1,
+     dexApiVersion: 1,
+     packageName: "cn.am7code.tools",
+     processName: "cn.am7code.tools",
+     event: "package-loaded",
+     scriptName: "mcp_tool_register",
+     scriptPath: "mcp_tool_register.js",
+     internalDebug: true,
+     mcpDebug: true,
+     dexDebug: false
+   }
+
+示例：
+
+.. code-block:: javascript
+
+   const info = xhh.info();
+   console.log('XiaoHeiHook=' + info.versionLabel + ', process=' + info.processName);
+
+``xhh.hasGrant(name)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+作用：判断当前脚本是否声明了某个 ``@grant``。
+
+参数：
+
+``name``
+   类型为 ``String``。要判断的 grant 名称，例如 ``rpc.register``、``mcp.debug``、``dex.dump``。
+
+返回值：
+
+``boolean``
+   已声明则返回 ``true``，否则返回 ``false``。
+
+示例：
+
+.. code-block:: javascript
+
+   if (xhh.hasGrant('mcp.debug')) {
+       console.log('MCP debug enabled');
+   }
+
+.. tip::
+
+   grant 名称会做大小写归一化。为了便于阅读，文档和示例统一使用小写形式。
+
+xhh.rpc 远程方法注册接口
+----------------------------------------------------------
+
+.. tip::
+	MCP 远程调用的相关流程、代码介绍可以查看 :ref:`MCP远程调用` 章节。
+
+``xhh.rpc`` 用于把目标 App 进程内的 JS 函数注册成 MCP 可调用方法。电脑端只能调用这些主动注册的方法，不能直接反射 Java 方法或执行任意 JS。
+
+.. important::
+
+   使用 ``xhh.rpc.register_method`` 的脚本应声明 ``// @grant rpc.register``。``mcp.debug`` 只打开调试日志，不代表授权远程注册能力。
+
+源码位置：
+
+.. list-table:: xhh.rpc 源码位置
+   :header-rows: 1
+   :widths: 42 58
+
+   * - 文件
+     - 作用
+   * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/script/JsHookRuntime.java``
+     - 定义 ``RpcFacade``、保存 handler、执行 JS 回调。
+   * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/mcp/McpMethodRegistry.kt``
+     - 保存远程方法注册信息，处理 ``list_methods`` 和 ``invoke_method`` 路由。
+   * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/mcp/McpBridgeTcpServer.kt``
+     - 接收目标 Runtime 的注册、注销、调用结果 frame。
+   * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/mcp/McpBridgeDiscoveryReceiver.kt``
+     - 响应目标 App 的 bridge 发现广播。
+
+``xhh.rpc.register_method(name, handler)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+作用：注册一个远程可调用方法。
+
+参数：
+
+``name``
+   类型为 ``String``。远程方法名，不能为空。
+
+``handler``
+   类型为 ``Function``。调用时执行的函数，形式为 ``function(params, ctx)``。
+
+返回值：
+
+``Object``
+   注册结果。成功、忽略、等待上下文、参数错误都会用结构化对象返回。
+
+示例：
+
+.. code-block:: javascript
+
+   xhh.rpc.register_method('echo', function (params, ctx) {
+       return {
+           ok: true,
+           requestId: ctx.requestId,
+           received: params
+       };
+   });
+
+``xhh.rpc.register_method(name, options, handler)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+作用：带选项注册一个远程可调用方法。
+
+``options`` 字段：
+
+.. list-table:: register_method options
+   :header-rows: 1
+   :widths: 25 20 20 35
+
+   * - 字段
+     - 类型
+     - 默认值
+     - 说明
+   * - ``description``
+     - ``String``
+     - 空字符串
+     - 方法说明，会显示在 ``list_methods`` 返回值里。
+   * - ``conflict``
+     - ``String``
+     - ``overwrite``
+     - 同名方法已存在时的处理方式：``overwrite``、``ignore``、``error``。
+   * - ``timeoutMs``
+     - ``Number``
+     - ``5000``
+     - 默认调用超时时间，单位毫秒。
+   * - ``concurrency``
+     - ``String``
+     - ``parallel``
+     - 执行策略：``parallel``、``main``、``serial``。
+   * - ``paramsSchema``
+     - ``Object``
+     - 空
+     - 参数 JSON Schema，帮助外部调用者理解参数格式。
+
+返回示例：
+
+.. code-block:: javascript
+
+   {
+     ok: true,
+     ignored: false,
+     methodName: "echo",
+     handlerId: "uuid",
+     conflict: "overwrite"
+   }
+
+MCP 未启用或 bridge 不可用时：
+
+.. code-block:: javascript
+
+   {
+     ok: true,
+     ignored: true,
+     reason: "mcp-bridge-unavailable",
+     methodName: "echo"
+   }
+
+``handler(params, ctx)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``params`` 是 MCP ``invoke_method`` 传入的参数。建议使用 JSON 可序列化类型。
+
+``ctx`` 提供以下字段：
+
+.. list-table:: handler ctx
+   :header-rows: 1
+   :widths: 35 25 40
+
+   * - 字段 / 方法
+     - 类型 / 返回值
+     - 说明
+   * - ``ctx.requestId``
+     - ``String``
+     - 本次请求 ID。
+   * - ``ctx.packageName``
+     - ``String``
+     - 当前目标包名。
+   * - ``ctx.processName``
+     - ``String``
+     - 当前目标进程名。
+   * - ``ctx.timeoutMs``
+     - ``Number``
+     - 本次调用超时时间。
+   * - ``ctx.cancelled``
+     - ``boolean``
+     - 是否已取消。当前主要作为预留能力。
+   * - ``ctx.isCancelled()``
+     - ``boolean``
+     - 返回是否已取消。
+   * - ``ctx.throwIfCancelled()``
+     - ``void``
+     - 已取消时抛出异常。
+   * - ``ctx.log(message)``
+     - ``void``
+     - 写入脚本日志。
+
+.. warning::
+
+   handler 返回值会被序列化为 JSON。不要返回 ``Context``、``View``、``Class``、``Method`` 等复杂 Java 对象。
+
+``xhh.rpc.unregister_method(name)``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+作用：注销一个远程方法。
+
+参数：
+
+``name``
+   类型为 ``String``。要注销的方法名。
+
+返回值示例：
+
+.. code-block:: javascript
+
+   {
+     ok: true,
+     methodName: "echo"
+   }
+
+``xhh.rpc.unregister_all_methods()``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+作用：注销当前 Runtime 中所有远程方法。
+
+参数：无。
+
+返回值示例：
+
+.. code-block:: javascript
+
+   {
+     ok: true
+   }
+
+实现简述
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+目标 App 第一次注册远程方法时，运行时会通过广播查询 XiaoHeiHook MCP bridge 当前的动态 TCP 地址。如果 MCP 未开启或没有响应，注册会被忽略；如果查询成功，则连接 ``127.0.0.1:<动态端口>`` 并发送注册 frame。目标 App 退出或进程被杀时，TCP 连接断开，XiaoHeiHook 会立即注销该进程注册的全部方法。
 
 xposed 生命周期接口
 ------------------------

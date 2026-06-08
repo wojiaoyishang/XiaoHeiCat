@@ -67,6 +67,21 @@ Grant 权限边界
 ``dex.read`` / ``dex.search`` / ``dex.full``
    可用于只读 Dex 分析或完整 Dex 能力。实际项目中建议优先使用更明确的 ``dex.dump``。
 
+``rpc.register``
+   允许脚本声明会通过 ``xhh.rpc.register_method`` 注册 MCP 远程方法。从 ``1.20 (102)`` 起用于 MCP 远程调用脚本。
+
+``mcp.debug``
+   开启 MCP bridge 内部调试日志。只影响日志输出，不授予远程调用能力。
+
+``dex.debug``
+   开启 Dex / DumpDex 内部调试日志。只影响日志输出，不授予 dex dump 能力。
+
+``xhh.debug``
+   开启 XiaoHeiHook 内部全局调试日志。通常只在排查问题时临时使用。
+
+.. tip::
+   grant 应按需声明。普通 Hook 脚本通常不需要 ``rpc.register``、``dex.dump``、``mcp.debug`` 或 ``dex.debug``。
+
 没有 Dex grant 时
 ~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -83,6 +98,23 @@ Grant 权限边界
 
 可用的全局对象
 --------------
+
+``xhh``
+   XiaoHeiHook 运行时信息和扩展入口。从 ``1.20 (102)`` 起提供版本信息、grant 判断和远程调用注册对象 ``xhh.rpc``。
+
+   常用能力：
+
+   - ``xhh.info()``
+   - ``xhh.hasGrant(name)``
+   - ``xhh.rpc.register_method(name, options, handler)``
+   - ``xhh.rpc.unregister_method(name)``
+   - ``xhh.rpc.unregister_all_methods()``
+
+   示例::
+
+      if (xhh.hasGrant("rpc.register")) {
+          console.log("rpc register grant declared");
+      }
 
 ``env``
    运行环境信息，例如包名、进程名、脚本名等。

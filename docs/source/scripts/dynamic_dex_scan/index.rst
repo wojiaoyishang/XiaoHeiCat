@@ -17,6 +17,10 @@
 
    动态扫描能力用于你有权调试、分析和修改的应用或测试环境。面对加固壳时，Java 层扫描不一定能取得真实业务 dex；此时需要运行时捕获或内存扫描辅助。
 
+.. note::
+
+   从 ``1.20 (102)`` 起，Dex / DumpDex 内部调试日志默认降噪。需要排查 dump、cookie、runtime capture 或内存扫描流程时，请在脚本头加入 ``// @grant dex.debug``。这个 grant 只开启日志，不授予 dump 权限。
+
 .. toctree::
    :maxdepth: 1
 

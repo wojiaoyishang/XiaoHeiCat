@@ -61,6 +61,15 @@ WebIDE 默认建议通过 adb 转发访问：
 
    adb forward tcp:8787 tcp:8787
 
+MCP 远程调用默认建议通过 adb 转发访问：
+
+.. code-block:: bash
+
+   adb forward tcp:18787 tcp:18787
+
+.. note::
+   MCP 外部入口是用户手动开启的本地 HTTP 服务；目标 App 与 XiaoHeiHook 之间的内部 bridge 使用广播发现和动态 TCP 端口，不需要用户手动配置内部端口。
+
 如果绑定局域网地址，需要明确提示用户存在安全风险。
 
 前台服务与后台运行权限
@@ -81,13 +90,13 @@ WebIDE 默认建议通过 adb 转发访问：
    * - ``POST_NOTIFICATIONS``
      - Android 13+ 显示 WebIDE 运行通知需要通知权限。通知中提供关闭 WebIDE 的入口。
    * - ``WAKE_LOCK``
-     - WebIDE 运行时保持 CPU 不被快速休眠，减少电脑端访问无响应。
+     - WebIDE / MCP 运行时保持 CPU 不被快速休眠，减少电脑端访问无响应。
    * - ``REQUEST_IGNORE_BATTERY_OPTIMIZATIONS``
      - 引导用户将 XiaoHeiHook 加入电池优化白名单，避免部分系统冻结 WebIDE 后台服务。
 
 .. important::
 
-   WebIDE 是用户主动开启的开发服务。关闭 WebIDE 时应停止前台服务、释放锁、移除通知，并退出 ``:webide`` 进程，避免无意义常驻。
+   WebIDE 和 MCP 都是用户主动开启的开发服务。关闭服务时应停止前台服务、释放锁、移除通知，并退出对应的 ``:webide`` 或 ``:mcp`` 进程，避免无意义常驻。
 
 FileProvider 与日志打开
 ----------------------------
