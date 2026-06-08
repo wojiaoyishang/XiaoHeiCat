@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import top.lovepikachu.XiaoHeiHook.R
 import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
 import top.lovepikachu.XiaoHeiHook.webide.BatteryOptimizationHelper
 import top.lovepikachu.XiaoHeiHook.webide.WebIdeDefaults
@@ -73,12 +75,14 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
     if (showDangerDialog) {
         AlertDialog(
             onDismissRequest = { showDangerDialog = false },
-            title = { Text("危险操作确认") },
+            title = { Text(stringResource(R.string.webide_danger_title)) },
             text = {
                 Text(
-                    text = "开启 WebIDE 会在手机上启动 HTTP 服务。任何能访问该地址的人都可能读取、修改、删除脚本，并触发脚本同步。\n\n" +
-                        "建议默认绑定 127.0.0.1，并通过 adb forward tcp:${portText.ifBlank { WebIdeDefaults.DEFAULT_PORT.toString() }} tcp:${portText.ifBlank { WebIdeDefaults.DEFAULT_PORT.toString() }} 在电脑访问。\n\n" +
-                        "请确认你理解风险后再开启。"
+                    text = stringResource(
+                        R.string.webide_danger_message,
+                        portText.ifBlank { WebIdeDefaults.DEFAULT_PORT.toString() },
+                        portText.ifBlank { WebIdeDefaults.DEFAULT_PORT.toString() }
+                    )
                 )
             },
             confirmButton = {
@@ -87,7 +91,7 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                         showDangerDialog = false
                         val port = portText.toIntOrNull()
                         if (port == null || port !in 1024..65535) {
-                            val message = "端口必须是 1024 到 65535"
+                            val message = context.getString(R.string.webide_port_invalid)
                             pendingError = message
                             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                         } else {
@@ -98,21 +102,21 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                                     portText = it.port.toString()
                                     pendingError = null
                                     batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
-                                    Toast.makeText(context, "WebIDE 已启动：${it.baseUrl}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, context.getString(R.string.webide_started, it.baseUrl), Toast.LENGTH_SHORT).show()
                                 }
                                 .onFailure { error ->
                                     pendingError = error.message ?: error.javaClass.simpleName
-                                    Toast.makeText(context, "WebIDE 启动失败：$pendingError", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, context.getString(R.string.webide_start_failed, pendingError), Toast.LENGTH_LONG).show()
                                 }
                         }
                     }
                 ) {
-                    Text("确认开启")
+                    Text(stringResource(R.string.webide_confirm_enable))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDangerDialog = false }) {
-                    Text("取消")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
@@ -122,9 +126,9 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
     if (showClearLogsDialog) {
         AlertDialog(
             onDismissRequest = { showClearLogsDialog = false },
-            title = { Text("清空所有日志") },
+            title = { Text(stringResource(R.string.webide_clear_logs_title)) },
             text = {
-                Text("当前日志大小：${WebIdeLogMaintenance.formatBytes(logSizeBytes)}。\n\n确定清空所有目标应用日志吗？此操作不会删除脚本。")
+                Text(stringResource(R.string.webide_clear_logs_message, WebIdeLogMaintenance.formatBytes(logSizeBytes)))
             },
             confirmButton = {
                 Button(
@@ -134,17 +138,17 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                         showClearLogsDialog = false
                         Toast.makeText(
                             context,
-                            "已清空 ${result.deletedFiles} 个日志文件，释放 ${WebIdeLogMaintenance.formatBytes(result.clearedBytes)}",
+                            context.getString(R.string.webide_logs_cleared, result.deletedFiles, WebIdeLogMaintenance.formatBytes(result.clearedBytes)),
                             Toast.LENGTH_SHORT
                         ).show()
                     }
                 ) {
-                    Text("确认清空")
+                    Text(stringResource(R.string.webide_clear_logs_confirm))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showClearLogsDialog = false }) {
-                    Text("取消")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
@@ -162,14 +166,14 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "WebIDE",
+                            text = stringResource(R.string.webide_title),
                             fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = if (status.running) "正在监听 ${status.baseUrl}" else "未启动。开启后可在电脑浏览器编辑脚本。",
+                            text = if (status.running) stringResource(R.string.webide_running_at, status.baseUrl) else stringResource(R.string.webide_not_running_hint),
                             fontSize = 13.sp,
                             lineHeight = 19.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -182,7 +186,7 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                                 showDangerDialog = true
                             } else {
                                 WebIdeManager.stop(context)
-                                Toast.makeText(context, "WebIDE 已关闭", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.webide_stopped), Toast.LENGTH_SHORT).show()
                             }
                         }
                     )
@@ -194,7 +198,7 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                         onValueChange = { hostText = it },
                         enabled = !status.running,
                         singleLine = true,
-                        label = { Text("绑定地址") },
+                        label = { Text(stringResource(R.string.webide_host_label)) },
                         placeholder = { Text(WebIdeDefaults.DEFAULT_HOST) },
                         modifier = Modifier.weight(1.35f)
                     )
@@ -203,7 +207,7 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                         onValueChange = { value -> portText = value.filter { it.isDigit() }.take(5) },
                         enabled = !status.running,
                         singleLine = true,
-                        label = { Text("端口") },
+                        label = { Text(stringResource(R.string.webide_port_label)) },
                         placeholder = { Text(WebIdeDefaults.DEFAULT_PORT.toString()) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(0.75f)
@@ -212,9 +216,9 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
 
                 Text(
                     text = if (status.running) {
-                        "电脑访问：adb forward tcp:${status.port} tcp:${status.port} 后打开 http://127.0.0.1:${status.port}/"
+                        stringResource(R.string.webide_adb_access_hint, status.port, status.port, status.port)
                     } else {
-                        "默认 127.0.0.1 只允许本机/ADB 转发访问；0.0.0.0 会暴露到网络，请谨慎。"
+                        stringResource(R.string.webide_bind_hint)
                     },
                     fontSize = 12.sp,
                     lineHeight = 18.sp,
@@ -224,7 +228,7 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                 if (!batteryIgnored) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "未忽略电池优化时，部分系统会在后台冻结 WebIDE。请先允许忽略电池优化，再切后台使用。",
+                            text = stringResource(R.string.webide_battery_warning),
                             fontSize = 12.sp,
                             lineHeight = 18.sp,
                             color = MaterialTheme.colorScheme.error
@@ -237,7 +241,7 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                                 }
                             }
                         ) {
-                            Text("忽略电池优化")
+                            Text(stringResource(R.string.webide_ignore_battery))
                         }
                     }
                 }
@@ -262,14 +266,14 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "日志维护",
+                            text = stringResource(R.string.webide_log_maintenance),
                             fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "统计目录：${WebIdeLogMaintenance.logDir(context).absolutePath}",
+                            text = stringResource(R.string.webide_log_dir, WebIdeLogMaintenance.logDir(context).absolutePath),
                             fontSize = 12.sp,
                             lineHeight = 18.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -278,7 +282,7 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                 }
 
                 Text(
-                    text = "日志大小：${WebIdeLogMaintenance.formatBytes(logSizeBytes)}，文件数：${WebIdeLogMaintenance.logFileCount(context)}",
+                    text = stringResource(R.string.webide_log_stats, WebIdeLogMaintenance.formatBytes(logSizeBytes), WebIdeLogMaintenance.logFileCount(context)),
                     fontSize = 13.sp,
                     lineHeight = 19.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -286,10 +290,10 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { logSizeBytes = WebIdeLogMaintenance.totalLogSize(context) }) {
-                        Text("刷新日志大小")
+                        Text(stringResource(R.string.webide_refresh_log_size))
                     }
                     Button(onClick = { showClearLogsDialog = true }) {
-                        Text("清空所有日志")
+                        Text(stringResource(R.string.webide_clear_all_logs))
                     }
                 }
             }

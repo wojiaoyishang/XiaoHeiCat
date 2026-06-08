@@ -1,8 +1,202 @@
 <resources>
+    <!-- Common -->
     <string name="app_name">XiaoHei Cat</string>
     <string name="module_description">Meow Meow Meow</string>
     <string name="module_not_active">模块未激活</string>
     <string name="module_active">模块已激活</string>
-    <string name="activation_status">%s %s (API %d)</string>
+    <string name="activation_status">%1$s %2$s (API %3$d)</string>
+    <string name="module_enable_in_lsposed">请在 LSPosed 中启用模块</string>
+    <string name="unknown">Unknown</string>
+    <string name="common_back">返回</string>
+    <string name="common_cancel">取消</string>
+    <string name="common_confirm">确认</string>
+    <string name="common_save">保存</string>
+    <string name="common_delete">删除</string>
+    <string name="common_expand">展开</string>
+    <string name="common_collapse">折叠</string>
+    <string name="common_more">更多</string>
+    <string name="common_error">错误</string>
+    <string name="common_warning">警告</string>
+    <string name="common_info">信息</string>
+    <string name="common_open">打开</string>
+    <string name="common_copy">复制</string>
+    <string name="common_got_it">知道了</string>
+    <string name="nav_home">首页</string>
+    <string name="nav_apps">应用</string>
+    <string name="nav_about">关于</string>
+    <string name="toast_press_back_again">再按一次退出</string>
+
+    <!-- Home -->
+    <string name="home_version">版本</string>
+    <string name="home_android_version">安卓版本</string>
+    <string name="home_system_arch">系统架构</string>
+    <string name="home_script_directory">脚本目录</string>
+    <string name="home_lsposed_action_description">打开 LSPosed 管理器，检查模块激活状态或作用域。</string>
+    <string name="home_lsposed_open_success">成功唤起 LSPosed 管理器</string>
+    <string name="home_lsposed_open_failed">无法唤起 LSPosed 管理器，请授予 Root 权限</string>
     <string name="fast_operation">快捷操作</string>
+
+    <!-- About -->
+    <string name="settings_title">设置</string>
+    <string name="about_module_title">关于本模块</string>
+    <string name="about_module_body">皮卡丘 ~ 罗小黑 ~ Niko ~ 
+
+在梦中，一切事都散漫着，
+都压着我，但这不过是一个梦呀。
+当我醒来时，
+我便将觉得这些事都已聚集在你那里，
+我也便将自由了。
+
+Pika Pika Meow Meow Meow ~</string>
+    <string name="about_website">My Website</string>
+    <string name="about_niko_caption">Niko 在干什么呢 ~</string>
+
+    <!-- WebIDE -->
+    <string name="webide_title">WebIDE</string>
+    <string name="webide_danger_title">危险操作确认</string>
+    <string name="webide_danger_message">开启 WebIDE 会在手机上启动 HTTP 服务。任何能访问该地址的人都可能读取、修改、删除脚本，并触发脚本同步。
+
+建议默认绑定 127.0.0.1，并通过 adb forward tcp:%1$s tcp:%2$s 在电脑访问。
+
+请确认你理解风险后再开启。</string>
+    <string name="webide_confirm_enable">确认开启</string>
+    <string name="webide_port_invalid">端口必须是 1024 到 65535</string>
+    <string name="webide_started">WebIDE 已启动：%1$s</string>
+    <string name="webide_start_failed">WebIDE 启动失败：%1$s</string>
+    <string name="webide_stopped">WebIDE 已关闭</string>
+    <string name="webide_running_at">正在监听 %1$s</string>
+    <string name="webide_not_running_hint">未启动。开启后可在电脑浏览器编辑脚本。</string>
+    <string name="webide_host_label">绑定地址</string>
+    <string name="webide_port_label">端口</string>
+    <string name="webide_adb_access_hint">电脑访问：adb forward tcp:%1$d tcp:%2$d 后打开 http://127.0.0.1:%3$d/</string>
+    <string name="webide_bind_hint">默认 127.0.0.1 只允许本机/ADB 转发访问；0.0.0.0 会暴露到网络，请谨慎。</string>
+    <string name="webide_battery_warning">未忽略电池优化时，部分系统会在后台冻结 WebIDE。请先允许忽略电池优化，再切后台使用。</string>
+    <string name="webide_ignore_battery">忽略电池优化</string>
+    <string name="webide_log_maintenance">日志维护</string>
+    <string name="webide_log_dir">统计目录：%1$s</string>
+    <string name="webide_log_stats">日志大小：%1$s，文件数：%2$d</string>
+    <string name="webide_refresh_log_size">刷新日志大小</string>
+    <string name="webide_clear_all_logs">清空所有日志</string>
+    <string name="webide_clear_logs_title">清空所有日志</string>
+    <string name="webide_clear_logs_message">当前日志大小：%1$s。
+
+确定清空所有目标应用日志吗？此操作不会删除脚本。</string>
+    <string name="webide_clear_logs_confirm">确认清空</string>
+    <string name="webide_logs_cleared">已清空 %1$d 个日志文件，释放 %2$s</string>
+
+    <!-- Notifications -->
+    <string name="notification_webide_title">XiaoHeiHook WebIDE</string>
+    <string name="notification_webide_stop_action">关闭 WebIDE</string>
+    <string name="notification_webide_channel_name">WebIDE 服务</string>
+    <string name="notification_webide_running">WebIDE 运行中，点击此处可关闭</string>
+
+    <!-- Apps -->
+    <string name="apps_permission_settings_failed">无法打开管理所有文件权限页面，请手动到系统设置中授权</string>
+    <string name="apps_rescan_done">已重新扫描：共 %1$d 个，匹配 %2$d 个</string>
+    <string name="app_launch_failed">启动失败</string>
+    <string name="app_force_stopped">已强制终止 %1$s</string>
+    <string name="app_force_stop_failed">强制终止失败</string>
+    <string name="app_open_settings_failed">无法打开系统设置</string>
+    <string name="apps_config_title">应用配置</string>
+    <string name="apps_actions">应用操作</string>
+    <string name="apps_search_placeholder">搜索应用</string>
+    <string name="apps_back_to_top">回到顶部</string>
+    <string name="apps_sort">排序</string>
+    <string name="apps_sort_name_asc">按名称 A-Z</string>
+    <string name="apps_sort_name_desc">按名称 Z-A</string>
+    <string name="apps_sort_package_asc">按包名 A-Z</string>
+    <string name="apps_enabled_first">已启用应用优先</string>
+    <string name="apps_enabled_first_on">已启用的应用会显示在列表顶部</string>
+    <string name="apps_enabled_first_off">按当前排序规则直接排列</string>
+    <string name="apps_filters">过滤器</string>
+    <string name="apps_show_system_apps">显示系统应用</string>
+    <string name="apps_show_system_on">列表包含系统应用</string>
+    <string name="apps_show_system_off">仅显示用户安装应用</string>
+    <string name="apps_script_sync">脚本同步</string>
+    <string name="apps_refresh">刷新应用</string>
+    <string name="apps_sync_enabled">同步已启用</string>
+    <string name="app_open">打开程序</string>
+    <string name="app_force_stop">强制终止程序</string>
+    <string name="app_system_settings">系统应用设置</string>
+    <string name="app_master_switch">应用总开关</string>
+    <string name="app_master_switch_on_desc">已申请作用域，允许加载该应用脚本</string>
+    <string name="app_master_switch_off_desc">关闭后会移除该应用 LSPosed 作用域</string>
+    <string name="app_enabled">已启用</string>
+    <string name="app_system">系统应用</string>
+    <string name="app_user">用户应用</string>
+
+    <!-- Sync -->
+    <string name="sync_enabled_restart_done">已同步已启用脚本并重启 %1$s</string>
+    <string name="sync_enabled_for_app_done">已同步已启用脚本 %1$d 个，列表保留匹配 %2$d 个</string>
+    <string name="sync_enabled_done">已同步已启用脚本 %1$d 个</string>
+    <string name="sync_failed">同步失败</string>
+
+    <!-- Scripts -->
+    <string name="script_location_title">脚本保存位置</string>
+    <string name="script_location_message">脚本保存在 /Documents/XiaoHeiHook 下。
+
+单文件脚本放在根目录，例如 qidian.js；多文件脚本放在文件夹中，并使用 index.js 作为入口。</string>
+    <string name="script_sync_restart">同步重启</string>
+    <string name="terminal_title">终端</string>
+    <string name="script_scanning">扫描中</string>
+    <string name="script_rescan">重新扫描脚本</string>
+    <string name="script_sync">同步脚本</string>
+    <string name="script_sync_and_restart">同步脚本并重启</string>
+    <string name="script_switch">脚本开关</string>
+    <string name="script_no_matching_title">没有匹配脚本</string>
+    <string name="script_no_matching_message">未找到匹配脚本。请确认脚本头部使用 @target %1$s 或 @target *；需要重新读取公共目录时，请从右上角“更多”菜单手动扫描。</string>
+    <string name="package_copied">已复制包名：%1$s</string>
+    <string name="script_location_unknown">无法确定脚本文件位置</string>
+    <string name="script_file_not_found">脚本文件不存在：%1$s</string>
+    <string name="script_file_uri_failed">无法生成脚本文件 Uri</string>
+    <string name="script_open_file_chooser">打开脚本文件</string>
+    <string name="script_directory_open_failed">无法打开脚本目录</string>
+    <string name="script_path_out_of_bounds">脚本路径越界</string>
+    <string name="script_settings">脚本设置</string>
+    <string name="script_settings_remote_prefs_disconnected">LSPosed Remote Preferences 未连接</string>
+    <string name="script_settings_saved">已保存脚本设置</string>
+    <string name="script_settings_restored_default">已恢复默认</string>
+    <string name="script_settings_restore_default">恢复默认</string>
+    <string name="script_settings_restore_default_title">恢复默认设置？</string>
+    <string name="script_settings_restore_default_message">这会清除当前应用中该脚本已保存的设置，并恢复 settings.json 中声明的默认值。</string>
+    <string name="script_settings_read_failed">无法读取设置</string>
+    <string name="script_settings_invalid">settings.json 为空或格式不正确。</string>
+
+    <!-- Logs -->
+    <string name="log_cleared">已清空日志</string>
+    <string name="log_clear_failed">清空日志失败</string>
+    <string name="log_terminal_title">终端日志</string>
+    <string name="log_decrease_font">缩小字体</string>
+    <string name="log_increase_font">放大字体</string>
+    <string name="log_open_external">用其他应用打开日志</string>
+    <string name="log_refresh">刷新日志</string>
+    <string name="log_clear">清空日志</string>
+    <string name="log_empty">暂无日志</string>
+    <string name="log_file_prepare_failed">无法准备日志文件</string>
+    <string name="log_file_uri_failed">无法生成日志文件 Uri</string>
+    <string name="log_open_file_chooser">打开日志文件</string>
+
+    <!-- Settings Forms -->
+    <string name="settings_group">分组</string>
+    <string name="settings_number_label">数值</string>
+    <string name="settings_number_range">范围：%1$s - %2$s，步进：%3$s</string>
+    <string name="settings_select_placeholder">请选择</string>
+    <string name="settings_tag_label">标签 %1$d</string>
+    <string name="settings_add_tag">添加标签</string>
+    <string name="settings_add_pair">添加键值对</string>
+    <string name="settings_unique_key">唯一键：%1$s</string>
+    <string name="settings_list_item_title">第 %1$d 项</string>
+    <string name="settings_expand_collapse">展开/折叠</string>
+    <string name="settings_move_up">上移</string>
+    <string name="settings_move_down">下移</string>
+    <string name="settings_add_list_item">添加列表项</string>
+    <string name="settings_item">设置项</string>
+
+    <!-- Permissions and Files -->
+    <string name="file_editor_missing">没有可用的文件编辑器</string>
+    <string name="all_files_access_title">需要管理所有文件权限</string>
+    <string name="all_files_access_message">为了扫描 %1$s 下的 JS 脚本，需要先在系统设置中打开“允许管理所有文件”。返回本应用后会自动重新扫描；如果暂不授权，将尝试使用 root 兜底读取。</string>
+    <string name="all_files_access_open_settings">去授权</string>
+    <string name="all_files_access_skip">暂不授权</string>
+
 </resources>

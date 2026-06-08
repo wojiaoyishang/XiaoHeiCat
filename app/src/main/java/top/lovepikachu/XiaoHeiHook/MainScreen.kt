@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -30,12 +31,12 @@ import top.lovepikachu.XiaoHeiHook.pages.AboutScreen
 import top.lovepikachu.XiaoHeiHook.pages.AppsScreen
 import top.lovepikachu.XiaoHeiHook.pages.HomeScreen
 
-sealed class BottomNavScreen(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
+sealed class BottomNavScreen(val titleRes: Int, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
     abstract val index: Int
 
-    data object Home : BottomNavScreen("首页", Icons.Filled.Home) { override val index: Int = 0 }
-    data object Apps : BottomNavScreen("应用", Icons.Filled.Apps) { override val index: Int = 1 }
-    data object About : BottomNavScreen("关于", Icons.Filled.Info) { override val index: Int = 2 }
+    data object Home : BottomNavScreen(R.string.nav_home, Icons.Filled.Home) { override val index: Int = 0 }
+    data object Apps : BottomNavScreen(R.string.nav_apps, Icons.Filled.Apps) { override val index: Int = 1 }
+    data object About : BottomNavScreen(R.string.nav_about, Icons.Filled.Info) { override val index: Int = 2 }
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -69,7 +70,7 @@ fun MainScreen() {
             (context as? Activity)?.finish()
         } else {
             lastBackPressedAt = now
-            Toast.makeText(context, "再按一次退出", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.toast_press_back_again), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -123,13 +124,13 @@ fun MainScreen() {
                             icon = {
                                 Icon(
                                     imageVector = screen.icon,
-                                    contentDescription = screen.title,
+                                    contentDescription = stringResource(screen.titleRes),
                                     modifier = Modifier.size(24.dp)
                                 )
                             },
                             label = {
                                 Text(
-                                    text = screen.title,
+                                    text = stringResource(screen.titleRes),
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Medium
                                 )

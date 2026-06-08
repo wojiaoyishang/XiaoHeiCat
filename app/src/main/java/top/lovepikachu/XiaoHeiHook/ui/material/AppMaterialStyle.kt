@@ -30,12 +30,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import top.lovepikachu.XiaoHeiHook.R
 
 object AppMaterialDimens {
     val PageHorizontal = 16.dp
@@ -266,8 +268,10 @@ fun AppSearchField(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
-    placeholder: String = "搜索应用"
+    placeholder: String? = null
 ) {
+    val effectivePlaceholder = placeholder ?: stringResource(R.string.apps_search_placeholder)
+
     Surface(
         modifier = modifier.height(50.dp),
         shape = RoundedCornerShape(25.dp),
@@ -291,7 +295,7 @@ fun AppSearchField(
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                 if (value.isBlank()) {
                     Text(
-                        text = placeholder,
+                        text = effectivePlaceholder,
                         fontSize = 15.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,7 +41,7 @@ fun AboutScreen(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
     ) {
-        item { AppPageTitle(title = "设置") }
+        item { AppPageTitle(title = stringResource(R.string.settings_title)) }
 
         item { WebIdeSettingsCard() }
 
@@ -48,17 +49,14 @@ fun AboutScreen(modifier: Modifier = Modifier) {
             AppCard(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "关于本模块",
+                        text = stringResource(R.string.about_module_title),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "皮卡丘 ~ 罗小黑 ~ Niko ~ \n\n" +
-                            "在梦中，一切事都散漫着，\n都压着我，但这不过是一个梦呀。\n" +
-                            "当我醒来时，\n我便将觉得这些事都已聚集在你那里，\n我也便将自由了。\n\n" +
-                            "Pika Pika Meow Meow Meow ~",
+                        text = stringResource(R.string.about_module_body),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 20.sp
@@ -66,7 +64,7 @@ fun AboutScreen(modifier: Modifier = Modifier) {
                     Spacer(modifier = Modifier.height(14.dp))
 
                     FullWidthTextButton(
-                        text = "My Website",
+                        text = stringResource(R.string.about_website),
                         onClick = { uriHandler.openUri("https://lovepikachu.top") },
                         modifier = Modifier.fillMaxWidth(),
                         leadingIcon = {
@@ -93,7 +91,7 @@ fun AboutScreen(modifier: Modifier = Modifier) {
             Spacer(modifier = Modifier.height(8.dp))
             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(
-                    text = "Niko 在干什么呢 ~",
+                    text = stringResource(R.string.about_niko_caption),
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

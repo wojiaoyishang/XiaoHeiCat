@@ -38,6 +38,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -48,6 +50,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -68,6 +71,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import top.lovepikachu.XiaoHeiHook.R
 import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 import top.lovepikachu.XiaoHeiHook.data.AppControl
 import top.lovepikachu.XiaoHeiHook.data.AppLogRepository
@@ -170,7 +174,7 @@ fun AppsScreen(
                     context.startActivity(fallbackIntent)
                 }.onFailure { fallbackError ->
                     Log.e(TAG, "launchAllFilesAccessSettings: fallback settings failed", fallbackError)
-                    Toast.makeText(context, "无法打开管理所有文件权限页面，请手动到系统设置中授权", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, context.getString(R.string.apps_permission_settings_failed), Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -219,7 +223,7 @@ fun AppsScreen(
             val matchedCount = loadedScripts.count { it.supportsPackage(app.packageName) }
             Log.d(TAG, "rescanScriptsForApp: package=${app.packageName}, total=${loadedScripts.size}, matched=$matchedCount")
             if (showToast) {
-                Toast.makeText(context, "已重新扫描：共 ${loadedScripts.size} 个，匹配 ${matchedCount} 个", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(R.string.apps_rescan_done, loadedScripts.size, matchedCount), Toast.LENGTH_SHORT).show()
             }
             scanningScripts = false
         }
@@ -248,15 +252,15 @@ fun AppsScreen(
                 if (restartAfterSync) {
                     delay(500)
                     AppControl.launchPackage(context, app.packageName).onFailure { error ->
-                        Toast.makeText(context, error.message ?: "启动失败", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, error.message ?: context.getString(R.string.app_launch_failed), Toast.LENGTH_LONG).show()
                     }
-                    Toast.makeText(context, "已同步已启用脚本并重启 ${app.label}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.sync_enabled_restart_done, app.label), Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(context, "已同步已启用脚本 ${synced.size} 个，列表保留匹配 ${matchedCount} 个", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.sync_enabled_for_app_done, synced.size, matchedCount), Toast.LENGTH_SHORT).show()
                 }
             }.onFailure {
                 Log.e(TAG, "syncScriptsForApp: failed package=${app.packageName}", it)
-                Toast.makeText(context, it.message ?: "同步失败", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, it.message ?: context.getString(R.string.sync_failed), Toast.LENGTH_LONG).show()
             }
             scanningScripts = false
         }
@@ -265,13 +269,13 @@ fun AppsScreen(
     fun forceStopApp(app: InstalledAppInfo) {
         scope.launch {
             val result = withContext(Dispatchers.IO) { AppControl.forceStop(app.packageName) }
-            Toast.makeText(context, result.fold({ "已强制终止 ${app.label}" }, { it.message ?: "强制终止失败" }), Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, result.fold({ context.getString(R.string.app_force_stopped, app.label) }, { it.message ?: context.getString(R.string.app_force_stop_failed) }), Toast.LENGTH_SHORT).show()
         }
     }
 
     fun launchApp(app: InstalledAppInfo) {
         AppControl.launchPackage(context, app.packageName).onFailure {
-            Toast.makeText(context, it.message ?: "启动失败", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, it.message ?: context.getString(R.string.app_launch_failed), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -401,9 +405,9 @@ fun AppsScreen(
                             )
                         }
                         result.onSuccess { synced ->
-                            Toast.makeText(context, "已同步已启用脚本 ${synced.size} 个", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.sync_enabled_done, synced.size), Toast.LENGTH_SHORT).show()
                         }.onFailure {
-                            Toast.makeText(context, it.message ?: "同步失败", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, it.message ?: context.getString(R.string.sync_failed), Toast.LENGTH_LONG).show()
                         }
                     }
                 }
@@ -477,7 +481,7 @@ fun AppsScreen(
                             onForceStop = { forceStopApp(app) },
                             onOpenSystemSettings = {
                                 AppControl.openSystemSettings(context, app.packageName).onFailure {
-                                    Toast.makeText(context, it.message ?: "无法打开系统设置", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, it.message ?: context.getString(R.string.app_open_settings_failed), Toast.LENGTH_LONG).show()
                                 }
                             },
                             onOpenTerminal = {
@@ -496,11 +500,11 @@ fun AppsScreen(
                             .padding(horizontal = 16.dp, vertical = 14.dp)
                     ) {
                         AppPageTitle(
-                            title = "应用配置",
+                            title = stringResource(R.string.apps_config_title),
                             trailing = {
                                 AppIconButton(
                                     icon = Icons.Filled.Menu,
-                                    contentDescription = "应用操作",
+                                    contentDescription = stringResource(R.string.apps_actions),
                                     onClick = { showListOptionsSheet = true },
                                     modifier = Modifier.size(40.dp)
                                 )
@@ -513,7 +517,7 @@ fun AppsScreen(
                             value = query,
                             onValueChange = { query = it },
                             modifier = Modifier.fillMaxWidth(),
-                            placeholder = "搜索应用"
+                            placeholder = stringResource(R.string.apps_search_placeholder)
                         )
 
                         Spacer(modifier = Modifier.height(12.dp))
@@ -553,7 +557,7 @@ fun AppsScreen(
                                             .padding(end = 8.dp, bottom = 12.dp)
                                             .size(48.dp)
                                     ) {
-                                        Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "回到顶部")
+                                        Icon(Icons.Filled.KeyboardArrowUp, contentDescription = stringResource(R.string.apps_back_to_top))
                                     }
                                 }
                             }
@@ -601,7 +605,7 @@ private fun AppListOptionsSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "排序",
+                text = stringResource(R.string.apps_sort),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -611,19 +615,19 @@ private fun AppListOptionsSheet(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OptionChipButton(
-                    text = "按名称 A-Z",
+                    text = stringResource(R.string.apps_sort_name_asc),
                     selected = sortMode == AppSortMode.NAME_ASC,
                     modifier = Modifier.weight(1f),
                     onClick = { onSortModeChange(AppSortMode.NAME_ASC) }
                 )
                 OptionChipButton(
-                    text = "按名称 Z-A",
+                    text = stringResource(R.string.apps_sort_name_desc),
                     selected = sortMode == AppSortMode.NAME_DESC,
                     modifier = Modifier.weight(1f),
                     onClick = { onSortModeChange(AppSortMode.NAME_DESC) }
                 )
                 OptionChipButton(
-                    text = "按包名 A-Z",
+                    text = stringResource(R.string.apps_sort_package_asc),
                     selected = sortMode == AppSortMode.PACKAGE_ASC,
                     modifier = Modifier.weight(1f),
                     onClick = { onSortModeChange(AppSortMode.PACKAGE_ASC) }
@@ -638,10 +642,10 @@ private fun AppListOptionsSheet(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("已启用应用优先", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.apps_enabled_first), fontSize = 16.sp, fontWeight = FontWeight.Medium)
                         Spacer(modifier = Modifier.height(3.dp))
                         Text(
-                            text = if (enabledAppsFirst) "已启用的应用会显示在列表顶部" else "按当前排序规则直接排列",
+                            text = if (enabledAppsFirst) stringResource(R.string.apps_enabled_first_on) else stringResource(R.string.apps_enabled_first_off),
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -651,7 +655,7 @@ private fun AppListOptionsSheet(
             }
 
             Text(
-                text = "过滤器",
+                text = stringResource(R.string.apps_filters),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -665,10 +669,10 @@ private fun AppListOptionsSheet(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("显示系统应用", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.apps_show_system_apps), fontSize = 16.sp, fontWeight = FontWeight.Medium)
                         Spacer(modifier = Modifier.height(3.dp))
                         Text(
-                            text = if (showSystemApps) "列表包含系统应用" else "仅显示用户安装应用",
+                            text = if (showSystemApps) stringResource(R.string.apps_show_system_on) else stringResource(R.string.apps_show_system_off),
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -678,7 +682,7 @@ private fun AppListOptionsSheet(
             }
 
             Text(
-                text = "脚本同步",
+                text = stringResource(R.string.apps_script_sync),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -688,7 +692,7 @@ private fun AppListOptionsSheet(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OptionActionButton(
-                    text = "刷新应用",
+                    text = stringResource(R.string.apps_refresh),
                     icon = Icons.Filled.Refresh,
                     modifier = Modifier.weight(1f),
                     onClick = {
@@ -697,7 +701,7 @@ private fun AppListOptionsSheet(
                     }
                 )
                 OptionActionButton(
-                    text = "同步已启用",
+                    text = stringResource(R.string.apps_sync_enabled),
                     icon = Icons.Filled.Sync,
                     enabled = moduleActive,
                     modifier = Modifier.weight(1f),
@@ -844,11 +848,11 @@ private fun ScriptEnableScreen(
     if (showScriptHelpDialog) {
         AlertDialog(
             onDismissRequest = { showScriptHelpDialog = false },
-            title = { Text("脚本保存位置") },
-            text = { Text("脚本保存在 /Documents/XiaoHeiHook 下。\n\n单文件脚本放在根目录，例如 qidian.js；多文件脚本放在文件夹中，并使用 index.js 作为入口。") },
+            title = { Text(stringResource(R.string.script_location_title)) },
+            text = { Text(stringResource(R.string.script_location_message)) },
             confirmButton = {
                 TextButton(onClick = { showScriptHelpDialog = false }) {
-                    Text("知道了")
+                    Text(stringResource(R.string.common_got_it))
                 }
             }
         )
@@ -865,8 +869,8 @@ private fun ScriptEnableScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             AppIconButton(
-                icon = Icons.Filled.ArrowBack,
-                contentDescription = "返回",
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = stringResource(R.string.common_back),
                 onClick = onBack,
                 modifier = Modifier.size(42.dp)
             )
@@ -906,21 +910,21 @@ private fun ScriptEnableScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             DetailActionCard(
-                title = "同步重启",
+                title = stringResource(R.string.script_sync_restart),
                 icon = Icons.Filled.Refresh,
                 enabled = moduleActive && appEnabled && !scanningScripts,
                 modifier = Modifier.weight(1f),
                 onClick = onSyncAndRestart
             )
             DetailActionCard(
-                title = "终端",
+                title = stringResource(R.string.terminal_title),
                 icon = Icons.Filled.Terminal,
                 modifier = Modifier.weight(1f),
                 onClick = onOpenTerminal
             )
             Box(modifier = Modifier.weight(1f)) {
                 DetailActionCard(
-                    title = "更多",
+                    title = stringResource(R.string.common_more),
                     icon = Icons.Filled.MoreVert,
                     modifier = Modifier.fillMaxWidth(),
                     onClick = { menuExpanded = true }
@@ -930,36 +934,36 @@ private fun ScriptEnableScreen(
                     onDismissRequest = { menuExpanded = false }
                 ) {
                     DropdownMenuItem(
-                        text = { Text(if (scanningScripts) "扫描中" else "重新扫描脚本") },
+                        text = { Text(if (scanningScripts) stringResource(R.string.script_scanning) else stringResource(R.string.script_rescan)) },
                         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                         enabled = !scanningScripts,
                         onClick = { menuExpanded = false; onRescanScripts() }
                     )
                     DropdownMenuItem(
-                        text = { Text("同步脚本") },
+                        text = { Text(stringResource(R.string.script_sync)) },
                         leadingIcon = { Icon(Icons.Filled.Sync, contentDescription = null) },
                         enabled = moduleActive && appEnabled && !scanningScripts,
                         onClick = { menuExpanded = false; onSyncScripts() }
                     )
                     DropdownMenuItem(
-                        text = { Text("同步脚本并重启") },
+                        text = { Text(stringResource(R.string.script_sync_and_restart)) },
                         leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
                         enabled = moduleActive && appEnabled && !scanningScripts,
                         onClick = { menuExpanded = false; onSyncAndRestart() }
                     )
-                    Divider()
+                    HorizontalDivider()
                     DropdownMenuItem(
-                        text = { Text("打开程序") },
+                        text = { Text(stringResource(R.string.app_open)) },
                         leadingIcon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
                         onClick = { menuExpanded = false; onOpenApp() }
                     )
                     DropdownMenuItem(
-                        text = { Text("强制终止程序") },
+                        text = { Text(stringResource(R.string.app_force_stop)) },
                         leadingIcon = { Icon(Icons.Filled.Stop, contentDescription = null) },
                         onClick = { menuExpanded = false; onForceStop() }
                     )
                     DropdownMenuItem(
-                        text = { Text("系统应用设置") },
+                        text = { Text(stringResource(R.string.app_system_settings)) },
                         leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                         onClick = { menuExpanded = false; onOpenSystemSettings() }
                     )
@@ -970,8 +974,8 @@ private fun ScriptEnableScreen(
         Spacer(Modifier.height(14.dp))
 
         SettingSwitchCard(
-            title = "应用总开关",
-            subtitle = if (appEnabled) "已申请作用域，允许加载该应用脚本" else "关闭后会移除该应用 LSPosed 作用域",
+            title = stringResource(R.string.app_master_switch),
+            subtitle = if (appEnabled) stringResource(R.string.app_master_switch_on_desc) else stringResource(R.string.app_master_switch_off_desc),
             checked = appEnabled,
             enabled = moduleActive,
             onCheckedChange = { enabled ->
@@ -996,7 +1000,7 @@ private fun ScriptEnableScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "脚本开关",
+                text = stringResource(R.string.script_switch),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -1008,14 +1012,14 @@ private fun ScriptEnableScreen(
                 onClick = { showScriptHelpDialog = true },
                 modifier = Modifier.size(36.dp)
             ) {
-                Icon(Icons.Filled.Info, contentDescription = "脚本保存位置")
+                Icon(Icons.Filled.Info, contentDescription = stringResource(R.string.script_location_title))
             }
         }
 
         if (scripts.isEmpty()) {
             AssistCard(
-                title = "没有匹配脚本",
-                text = "未找到匹配脚本。请确认脚本头部使用 @target ${app.packageName} 或 @target *；需要重新读取公共目录时，请从右上角“更多”菜单手动扫描。"
+                title = stringResource(R.string.script_no_matching_title),
+                text = stringResource(R.string.script_no_matching_message, app.packageName)
             )
         } else {
             LazyColumn(
@@ -1088,10 +1092,10 @@ private fun AppLogScreen(
         scope.launch {
             val result = withContext(Dispatchers.IO) { AppLogRepository.clearLog(context, app.packageName) }
             result.onSuccess {
-                Toast.makeText(context, "已清空日志", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(R.string.log_cleared), Toast.LENGTH_SHORT).show()
                 reloadLog()
             }.onFailure {
-                Toast.makeText(context, it.message ?: "清空日志失败", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, it.message ?: context.getString(R.string.log_clear_failed), Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -1111,8 +1115,8 @@ private fun AppLogScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             CompactLogIconButton(
-                icon = Icons.Filled.ArrowBack,
-                contentDescription = "返回",
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = stringResource(R.string.common_back),
                 onClick = onBack
             )
             Spacer(modifier = Modifier.width(8.dp))
@@ -1120,7 +1124,7 @@ private fun AppLogScreen(
             Spacer(modifier = Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
                 Text(
-                    text = "终端日志",
+                    text = stringResource(R.string.log_terminal_title),
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 16.sp,
                     maxLines = 1,
@@ -1135,25 +1139,25 @@ private fun AppLogScreen(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                CompactLogTextButton(text = "A-", contentDescription = "缩小字体") {
+                CompactLogTextButton(text = "A-", contentDescription = stringResource(R.string.log_decrease_font)) {
                     logFontSize = (logFontSize - 1f).coerceAtLeast(8f)
                 }
-                CompactLogTextButton(text = "A+", contentDescription = "放大字体") {
+                CompactLogTextButton(text = "A+", contentDescription = stringResource(R.string.log_increase_font)) {
                     logFontSize = (logFontSize + 1f).coerceAtMost(28f)
                 }
                 CompactLogIconButton(
-                    icon = Icons.Filled.OpenInNew,
-                    contentDescription = "用其他应用打开日志",
+                    icon = Icons.AutoMirrored.Filled.OpenInNew,
+                    contentDescription = stringResource(R.string.log_open_external),
                     onClick = { openLogFileWithExternalEditor(context, app.packageName) }
                 )
                 CompactLogIconButton(
                     icon = Icons.Filled.Refresh,
-                    contentDescription = "刷新日志",
+                    contentDescription = stringResource(R.string.log_refresh),
                     onClick = { reloadLog() }
                 )
                 CompactLogIconButton(
                     icon = Icons.Filled.Delete,
-                    contentDescription = "清空日志",
+                    contentDescription = stringResource(R.string.log_clear),
                     onClick = { clearLog() }
                 )
             }
@@ -1171,7 +1175,8 @@ private fun AppLogScreen(
                     CircularProgressIndicator()
                 }
             } else {
-                val lines = remember(logText) { logText.ifBlank { "暂无日志" }.lines() }
+                val emptyLogText = stringResource(R.string.log_empty)
+                val lines = remember(logText, emptyLogText) { logText.ifBlank { emptyLogText }.lines() }
                 SelectionContainer {
                     Column(
                         modifier = Modifier
@@ -1305,13 +1310,13 @@ private fun AppRow(
                                 onTap = { onOpen() },
                                 onLongPress = {
                                     clipboard.setText(AnnotatedString(app.packageName))
-                                    Toast.makeText(context, "已复制包名：${app.packageName}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, context.getString(R.string.package_copied, app.packageName), Toast.LENGTH_SHORT).show()
                                 }
                             )
                         }
                 )
                 Text(
-                    text = if (enabled) "已启用" else if (app.isSystemApp) "系统应用" else "用户应用",
+                    text = if (enabled) stringResource(R.string.app_enabled) else if (app.isSystemApp) stringResource(R.string.app_system) else stringResource(R.string.app_user),
                     fontSize = 12.sp,
                     color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1356,7 +1361,7 @@ private fun openScriptLocation(context: Context, script: ScriptMetadata) {
     }.trim('/').replace('\\', '/')
 
     if (targetRelativePath.isBlank()) {
-        Toast.makeText(context, "无法确定脚本文件位置", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.script_location_unknown), Toast.LENGTH_SHORT).show()
         return
     }
 
@@ -1366,7 +1371,7 @@ private fun openScriptLocation(context: Context, script: ScriptMetadata) {
 private fun openScriptFile(context: Context, relativePath: String) {
     val file = resolveScriptFile(relativePath)
     if (!file.isFile) {
-        Toast.makeText(context, "脚本文件不存在：$relativePath", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.script_file_not_found, relativePath), Toast.LENGTH_SHORT).show()
         openScriptDirectory(context, relativePath.substringBeforeLast('/', ""))
         return
     }
@@ -1374,7 +1379,7 @@ private fun openScriptFile(context: Context, relativePath: String) {
     val uri = runCatching {
         FileProvider.getUriForFile(context, SCRIPT_FILE_PROVIDER_AUTHORITY, file)
     }.getOrElse { error ->
-        Toast.makeText(context, error.message ?: "无法生成脚本文件 Uri", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, error.message ?: context.getString(R.string.script_file_uri_failed), Toast.LENGTH_LONG).show()
         return
     }
 
@@ -1395,7 +1400,7 @@ private fun openScriptFile(context: Context, relativePath: String) {
     grantScriptFileUri(context, uri, viewIntent)
 
     runCatching {
-        context.startActivity(Intent.createChooser(viewIntent, "打开脚本文件").apply {
+        context.startActivity(Intent.createChooser(viewIntent, context.getString(R.string.script_open_file_chooser)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         })
@@ -1411,14 +1416,14 @@ private fun openLogFileWithExternalEditor(context: Context, packageName: String)
         file.parentFile?.mkdirs()
         if (!file.exists()) file.writeText("")
     }.onFailure { error ->
-        Toast.makeText(context, error.message ?: "无法准备日志文件", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, error.message ?: context.getString(R.string.log_file_prepare_failed), Toast.LENGTH_LONG).show()
         return
     }
 
     val uri = runCatching {
         FileProvider.getUriForFile(context, SCRIPT_FILE_PROVIDER_AUTHORITY, file)
     }.getOrElse { error ->
-        Toast.makeText(context, error.message ?: "无法生成日志文件 Uri", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, error.message ?: context.getString(R.string.log_file_uri_failed), Toast.LENGTH_LONG).show()
         return
     }
 
@@ -1431,12 +1436,12 @@ private fun openLogFileWithExternalEditor(context: Context, packageName: String)
     grantScriptFileUri(context, uri, viewIntent)
 
     runCatching {
-        context.startActivity(Intent.createChooser(viewIntent, "打开日志文件").apply {
+        context.startActivity(Intent.createChooser(viewIntent, context.getString(R.string.log_open_file_chooser)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         })
     }.onFailure { error ->
-        Toast.makeText(context, error.message ?: "没有可用的文件编辑器", Toast.LENGTH_LONG).show()
+        Toast.makeText(context, error.message ?: context.getString(R.string.file_editor_missing), Toast.LENGTH_LONG).show()
     }
 }
 
@@ -1464,7 +1469,7 @@ private fun openScriptDirectory(context: Context, relativePath: String) {
 
     runCatching { context.startActivity(intent) }
         .onFailure { error ->
-            Toast.makeText(context, error.message ?: "无法打开脚本目录", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, error.message ?: context.getString(R.string.script_directory_open_failed), Toast.LENGTH_LONG).show()
         }
 }
 
@@ -1548,7 +1553,7 @@ private fun ScriptRow(
                     enabled = enabled,
                     modifier = Modifier.size(40.dp)
                 ) {
-                    Icon(Icons.Filled.Settings, contentDescription = "脚本设置")
+                    Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.script_settings))
                 }
             }
             Switch(
@@ -1590,9 +1595,9 @@ private fun ScriptSettingsVisualScreen(
         runCatching {
             val clean = ScriptSettings.normalizeValues(schema, values, strict = true)
             val doc = ScriptSettings.savedDocument(packageName, script.id, script.path, schema, clean)
-            val prefs = XiaoHeiApplication.remotePreferences ?: throw IllegalStateException("LSPosed Remote Preferences 未连接")
+            val prefs = XiaoHeiApplication.remotePreferences ?: throw IllegalStateException(context.getString(R.string.script_settings_remote_prefs_disconnected))
             prefs.edit().putString(key, doc.toString()).commit()
-            Toast.makeText(context, "已保存脚本设置", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.script_settings_saved), Toast.LENGTH_SHORT).show()
             onBack()
         }.onFailure { e ->
             error = e.message ?: e.javaClass.simpleName
@@ -1603,7 +1608,7 @@ private fun ScriptSettingsVisualScreen(
         XiaoHeiApplication.remotePreferences?.edit()?.remove(key)?.commit()
         values = ScriptSettings.defaults(schema).deepCopyObject()
         error = null
-        Toast.makeText(context, "已恢复默认", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.script_settings_restored_default), Toast.LENGTH_SHORT).show()
     }
 
     Column(
@@ -1614,11 +1619,11 @@ private fun ScriptSettingsVisualScreen(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "返回")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.common_back))
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = schema?.optString("title", "脚本设置") ?: "脚本设置",
+                    text = schema?.optString("title", stringResource(R.string.script_settings)) ?: stringResource(R.string.script_settings),
                     fontSize = 21.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -1632,23 +1637,23 @@ private fun ScriptSettingsVisualScreen(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            TextButton(onClick = { showResetConfirm = true }) { Text("恢复默认") }
-            Button(onClick = { save() }) { Text("保存") }
+            TextButton(onClick = { showResetConfirm = true }) { Text(stringResource(R.string.script_settings_restore_default)) }
+            Button(onClick = { save() }) { Text(stringResource(R.string.common_save)) }
         }
 
         if (showResetConfirm) {
             AlertDialog(
                 onDismissRequest = { showResetConfirm = false },
-                title = { Text("恢复默认设置？") },
-                text = { Text("这会清除当前应用中该脚本已保存的设置，并恢复 settings.json 中声明的默认值。") },
+                title = { Text(stringResource(R.string.script_settings_restore_default_title)) },
+                text = { Text(stringResource(R.string.script_settings_restore_default_message)) },
                 confirmButton = {
                     TextButton(onClick = {
                         showResetConfirm = false
                         resetToDefault()
-                    }) { Text("恢复默认") }
+                    }) { Text(stringResource(R.string.script_settings_restore_default)) }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showResetConfirm = false }) { Text("取消") }
+                    TextButton(onClick = { showResetConfirm = false }) { Text(stringResource(R.string.common_cancel)) }
                 }
             )
         }
@@ -1663,7 +1668,7 @@ private fun ScriptSettingsVisualScreen(
         }
 
         if (schema == null) {
-            AppInfoCard(title = "无法读取设置", text = "settings.json 为空或格式不正确。")
+            AppInfoCard(title = stringResource(R.string.script_settings_read_failed), text = stringResource(R.string.script_settings_invalid))
         } else {
             Column(
                 modifier = Modifier
@@ -1742,7 +1747,7 @@ private fun SettingsHeading(field: JSONObject) {
                 letterSpacing = 1.sp
             )
         }
-        Divider(modifier = Modifier.padding(top = if (label.isNotBlank()) 8.dp else 0.dp))
+        HorizontalDivider(modifier = Modifier.padding(top = if (label.isNotBlank()) 8.dp else 0.dp))
     }
 }
 
@@ -1789,7 +1794,7 @@ private fun SettingsGroup(
     onValuesChange: (JSONObject) -> Unit,
     depth: Int
 ) {
-    val label = field.optString("label", "分组")
+    val label = field.optString("label", stringResource(R.string.settings_group))
     val items = field.optJSONArray("items") ?: JSONArray()
     var collapsed by remember(field.optString("key", label)) { mutableStateOf(field.optBoolean("defaultCollapsed", false)) }
     val radioKeys = remember(items.toString()) {
@@ -1808,7 +1813,7 @@ private fun SettingsGroup(
                     Text(label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 }
                 if (field.optBoolean("collapsible", false)) {
-                    TextButton(onClick = { collapsed = !collapsed }) { Text(if (collapsed) "展开" else "折叠") }
+                    TextButton(onClick = { collapsed = !collapsed }) { Text(if (collapsed) stringResource(R.string.common_expand) else stringResource(R.string.common_collapse)) }
                 }
             }
             if (!collapsed) {
@@ -1934,7 +1939,7 @@ private fun SettingsNumber(field: JSONObject, values: JSONObject, onValuesChange
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.weight(1f),
-                    label = { Text("数值") }
+                    label = { Text(stringResource(R.string.settings_number_label)) }
                 )
                 Spacer(Modifier.width(10.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1958,7 +1963,7 @@ private fun SettingsNumber(field: JSONObject, values: JSONObject, onValuesChange
                     },
                     valueRange = min.toFloat()..max.toFloat()
                 )
-                Text("范围：${trimNumber(min)} - ${trimNumber(max)}，步进：${trimNumber(step)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.settings_number_range, trimNumber(min), trimNumber(max), trimNumber(step)), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -1998,12 +2003,13 @@ private fun SettingsSelect(field: JSONObject, values: JSONObject, onValuesChange
     val current = values.opt(key)
     var expanded by remember(key) { mutableStateOf(false) }
     val currentLabel = optionLabel(options, current)
+    val selectPlaceholder = stringResource(R.string.settings_select_placeholder)
     AppCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SettingsLabel(field)
             Box {
                 OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text(currentLabel.ifBlank { "请选择" }, modifier = Modifier.weight(1f))
+                    Text(currentLabel.ifBlank { selectPlaceholder }, modifier = Modifier.weight(1f))
                     Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
                 }
                 DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -2062,13 +2068,13 @@ private fun SettingsTags(field: JSONObject, values: JSONObject, onValuesChange: 
                         },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
-                        label = { Text("标签 ${i + 1}") }
+                        label = { Text(stringResource(R.string.settings_tag_label, i + 1)) }
                     )
                     IconButton(onClick = {
                         val nextArr = JSONArray()
                         for (j in 0 until arr.length()) if (j != i) nextArr.put(arr.opt(j))
                         onValuesChange(values.deepCopyObject().put(key, nextArr))
-                    }) { Icon(Icons.Filled.Delete, contentDescription = "删除") }
+                    }) { Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.common_delete)) }
                 }
             }
             OutlinedButton(
@@ -2080,7 +2086,7 @@ private fun SettingsTags(field: JSONObject, values: JSONObject, onValuesChange: 
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text("添加标签")
+                Text(stringResource(R.string.settings_add_tag))
             }
         }
     }
@@ -2129,7 +2135,7 @@ private fun SettingsCustom(field: JSONObject, values: JSONObject, onValuesChange
                         val nextObj = JSONObject()
                         pairs.forEachIndexed { j, p -> if (j != index && p.first.isNotBlank()) nextObj.put(p.first, p.second) }
                         onValuesChange(values.deepCopyObject().put(key, nextObj))
-                    }) { Icon(Icons.Filled.Delete, contentDescription = "删除") }
+                    }) { Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.common_delete)) }
                 }
             }
             OutlinedButton(
@@ -2148,7 +2154,7 @@ private fun SettingsCustom(field: JSONObject, values: JSONObject, onValuesChange
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text("添加键值对")
+                Text(stringResource(R.string.settings_add_pair))
             }
         }
     }
@@ -2170,11 +2176,12 @@ private fun SettingsList(field: JSONObject, values: JSONObject, onValuesChange: 
                 Text("${arr.length()}/$maxItems", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (uniqueKey.isNotBlank()) {
-                Text("唯一键：$uniqueKey", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.settings_unique_key, uniqueKey), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             for (i in 0 until arr.length()) {
                 val item = arr.optJSONObject(i) ?: JSONObject()
-                val title = item.optString(uniqueKey, "").ifBlank { "第 ${i + 1} 项" }
+                val defaultTitle = stringResource(R.string.settings_list_item_title, i + 1)
+                val title = item.optString(uniqueKey, "").ifBlank { defaultTitle }
                 AppCard(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2187,13 +2194,13 @@ private fun SettingsList(field: JSONObject, values: JSONObject, onValuesChange: 
                                 },
                                 modifier = Modifier.size(40.dp)
                             ) {
-                                Icon(Icons.Filled.Delete, contentDescription = "删除")
+                                Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.common_delete))
                             }
                             IconButton(
                                 onClick = { expanded[i] = !(expanded[i] ?: true) },
                                 modifier = Modifier.size(40.dp)
                             ) {
-                                Icon(if (expanded[i] == false) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess, contentDescription = "展开/折叠")
+                                Icon(if (expanded[i] == false) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess, contentDescription = stringResource(R.string.settings_expand_collapse))
                             }
                         }
                         Row(
@@ -2208,7 +2215,7 @@ private fun SettingsList(field: JSONObject, values: JSONObject, onValuesChange: 
                                     nextArr.put(i, prev)
                                     onValuesChange(values.deepCopyObject().put(key, nextArr))
                                 }
-                            }, enabled = i > 0) { Text("上移") }
+                            }, enabled = i > 0) { Text(stringResource(R.string.settings_move_up)) }
                             OutlinedButton(onClick = {
                                 val nextArr = arr.deepCopyArray()
                                 if (i < arr.length() - 1) {
@@ -2217,7 +2224,7 @@ private fun SettingsList(field: JSONObject, values: JSONObject, onValuesChange: 
                                     nextArr.put(i, next)
                                     onValuesChange(values.deepCopyObject().put(key, nextArr))
                                 }
-                            }, enabled = i < arr.length() - 1) { Text("下移") }
+                            }, enabled = i < arr.length() - 1) { Text(stringResource(R.string.settings_move_down)) }
                             OutlinedButton(onClick = {
                                 if (arr.length() < maxItems) {
                                     val nextArr = JSONArray()
@@ -2227,7 +2234,7 @@ private fun SettingsList(field: JSONObject, values: JSONObject, onValuesChange: 
                                     }
                                     onValuesChange(values.deepCopyObject().put(key, nextArr))
                                 }
-                            }, enabled = arr.length() < maxItems) { Text("复制") }
+                            }, enabled = arr.length() < maxItems) { Text(stringResource(R.string.common_copy)) }
                         }
                         if (expanded[i] != false) {
                             ScriptSettingsFields(
@@ -2254,7 +2261,7 @@ private fun SettingsList(field: JSONObject, values: JSONObject, onValuesChange: 
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text("添加列表项")
+                Text(stringResource(R.string.settings_add_list_item))
             }
         }
     }
@@ -2264,7 +2271,7 @@ private fun SettingsList(field: JSONObject, values: JSONObject, onValuesChange: 
 private fun SettingsLabel(field: JSONObject, modifier: Modifier = Modifier) {
     Column(modifier = modifier) {
         Text(
-            text = field.optString("label", field.optString("key", "设置项")),
+            text = field.optString("label", field.optString("key", stringResource(R.string.settings_item))),
             fontSize = 15.sp,
             fontWeight = FontWeight.SemiBold
         )
@@ -2401,10 +2408,10 @@ private fun AllFilesAccessDialog(
     onDismiss: () -> Unit
 ) {
     AppDialog(
-        title = "需要管理所有文件权限",
-        text = "为了扫描 $path 下的 JS 脚本，需要先在系统设置中打开“允许管理所有文件”。返回本应用后会自动重新扫描；如果暂不授权，将尝试使用 root 兜底读取。",
-        confirmText = "去授权",
-        dismissText = "暂不授权",
+        title = stringResource(R.string.all_files_access_title),
+        text = stringResource(R.string.all_files_access_message, path),
+        confirmText = stringResource(R.string.all_files_access_open_settings),
+        dismissText = stringResource(R.string.all_files_access_skip),
         onConfirm = onOpenSettings,
         onDismissAction = onUseRootFallback,
         onDismiss = onDismiss
@@ -2424,7 +2431,7 @@ private fun CopyablePackageNameText(
     val clipboard = LocalClipboardManager.current
     fun copyPackageName() {
         clipboard.setText(AnnotatedString(packageName))
-        Toast.makeText(context, "已复制包名：$packageName", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.package_copied, packageName), Toast.LENGTH_SHORT).show()
     }
 
     if (scrollable) {

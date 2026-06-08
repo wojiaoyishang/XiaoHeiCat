@@ -45,6 +45,7 @@ import top.lovepikachu.XiaoHeiHook.ui.material.AppPageTitle
 @Composable
 fun HomeScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val unknownText = stringResource(R.string.unknown)
 
     LazyColumn(
         modifier = modifier,
@@ -65,22 +66,22 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                 ) {
                     HomeInfoItem(
                         icon = Icons.Filled.Schedule,
-                        title = "版本",
+                        title = stringResource(R.string.home_version),
                         value = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
                     )
                     HomeInfoItem(
                         icon = Icons.Filled.PhoneAndroid,
-                        title = "安卓版本",
+                        title = stringResource(R.string.home_android_version),
                         value = "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
                     )
                     HomeInfoItem(
                         icon = Icons.Filled.Code,
-                        title = "系统架构",
-                        value = Build.SUPPORTED_ABIS.firstOrNull().orEmpty().ifBlank { "Unknown" }
+                        title = stringResource(R.string.home_system_arch),
+                        value = Build.SUPPORTED_ABIS.firstOrNull().orEmpty().ifBlank { unknownText }
                     )
                     HomeInfoItem(
                         icon = Icons.Filled.Extension,
-                        title = "脚本目录",
+                        title = stringResource(R.string.home_script_directory),
                         value = ScriptRepository.publicScriptsDir.absolutePath
                     )
                 }
@@ -95,14 +96,14 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "快捷操作",
+                            text = stringResource(R.string.fast_operation),
                             fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "打开 LSPosed 管理器，检查模块激活状态或作用域。",
+                            text = stringResource(R.string.home_lsposed_action_description),
                             fontSize = 13.sp,
                             lineHeight = 19.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -114,7 +115,7 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                         contentAlignment = Alignment.CenterEnd
                     ) {
                         FullWidthTextButton(
-                            text = "打开",
+                            text = stringResource(R.string.common_open),
                             onClick = {
                                 Thread {
                                     try {
@@ -122,12 +123,12 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                                             "am broadcast -a android.telephony.action.SECRET_CODE -d android_secret_code://5776733 android"
                                         Runtime.getRuntime().exec(arrayOf("su", "-c", command)).waitFor()
                                         Handler(Looper.getMainLooper()).post {
-                                            Toast.makeText(context, "成功唤起 LSPosed 管理器", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, context.getString(R.string.home_lsposed_open_success), Toast.LENGTH_SHORT).show()
                                         }
                                     } catch (e: Exception) {
                                         e.printStackTrace()
                                         Handler(Looper.getMainLooper()).post {
-                                            Toast.makeText(context, "无法唤起 LSPosed 管理器，请授予 Root 权限", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, context.getString(R.string.home_lsposed_open_failed), Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 }.start()

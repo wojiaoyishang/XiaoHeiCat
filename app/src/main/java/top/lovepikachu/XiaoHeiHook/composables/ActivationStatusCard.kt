@@ -70,11 +70,11 @@ fun ActivationStatusCard() {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = if (isActive) {
-                            val framework = moduleState.frameworkName ?: "Unknown"
+                            val framework = moduleState.frameworkName ?: stringResource(R.string.unknown)
                             val version = moduleState.frameworkVersion ?: BuildConfig.VERSION_NAME
-                            "$framework $version (${moduleState.frameworkAPIVersion ?: 0})"
+                            stringResource(R.string.activation_status, framework, version, moduleState.frameworkAPIVersion ?: 0)
                         } else {
-                            "请在 LSPosed 中启用模块"
+                            stringResource(R.string.module_enable_in_lsposed)
                         },
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

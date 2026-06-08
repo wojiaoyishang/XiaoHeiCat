@@ -160,8 +160,13 @@ class WebIdeForegroundService : Service() {
         runCatching {
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             if (wifiLock?.isHeld != true) {
+                val wifiLockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    legacyWifiLockMode()
+                }
                 wifiLock = wifiManager.createWifiLock(
-                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    wifiLockMode,
                     "$packageName:WebIDEWifiLock"
                 ).apply {
                     setReferenceCounted(false)
@@ -173,6 +178,9 @@ class WebIdeForegroundService : Service() {
             Log.w(TAG, "acquire wifi lock failed", it)
         }
     }
+
+    @Suppress("DEPRECATION")
+    private fun legacyWifiLockMode(): Int = WifiManager.WIFI_MODE_FULL_HIGH_PERF
 
     private fun releaseKeepAliveLocks() {
         runCatching {
@@ -261,25 +269,31 @@ class WebIdeForegroundService : Service() {
             Notification.Builder(this)
         }
 
-        return builder
+        builder
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("XiaoHeiHook WebIDE")
-            .setContentText(NOTIFICATION_TEXT)
-            .setStyle(Notification.BigTextStyle().bigText(NOTIFICATION_TEXT))
+            .setContentTitle(getString(R.string.notification_webide_title))
+            .setContentText(getString(R.string.notification_webide_running))
+            .setStyle(Notification.BigTextStyle().bigText(getString(R.string.notification_webide_running)))
             .setContentIntent(stopIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .setPriority(Notification.PRIORITY_HIGH)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "关闭 WebIDE", stopIntent)
-            .apply {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
-                }
-            }
-            .build()
+
+        builder.addAction(
+            Notification.Action.Builder(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                getString(R.string.notification_webide_stop_action),
+                stopIntent
+            ).build()
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+
+        return builder.build()
     }
 
     private fun ensureNotificationChannel() {
@@ -287,10 +301,10 @@ class WebIdeForegroundService : Service() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "WebIDE 服务",
+            getString(R.string.notification_webide_channel_name),
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = NOTIFICATION_TEXT
+            description = getString(R.string.notification_webide_running)
             setShowBadge(false)
         }
         manager.createNotificationChannel(channel)
@@ -302,7 +316,6 @@ class WebIdeForegroundService : Service() {
         private const val TAG = "XiaoHeiHook-WebIDE-FGS"
         private const val CHANNEL_ID = "xiaoheihook_webide"
         private const val NOTIFICATION_ID = 8787
-        private const val NOTIFICATION_TEXT = "WebIDE运行中，点击此处可关闭"
         const val ACTION_START = "top.lovepikachu.XiaoHeiHook.webide.START"
         const val ACTION_STOP = "top.lovepikachu.XiaoHeiHook.webide.STOP"
         const val EXTRA_HOST = "host"
