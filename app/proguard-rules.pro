@@ -25,3 +25,7 @@
 -keep class org.mozilla.javascript.regexp.** { *; }
 -keep class org.mozilla.javascript.RegExpProxy { *; }
 -keepclassmembers class org.mozilla.javascript.ScriptRuntime { *; }
+# Rhino has optional JavaBeans-based converters that are not available on Android.
+# They are guarded/unused in the app runtime, so allow R8 to ignore these optional JRE classes.
+-dontwarn java.beans.**
+

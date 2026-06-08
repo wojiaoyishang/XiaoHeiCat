@@ -241,10 +241,10 @@ object McpMethodRegistry {
     fun completeResult(requestId: String, result: JSONObject) {
         if (requestId.isBlank()) return
         val normalized = normalizeResult(result)
-        val pendingCall = pending.remove(requestId)
-        val completed = pendingCall?.future?.complete(normalized) == true
+        val pendingCall = pending.remove(requestId) ?: return
+        val completed = pendingCall.future.complete(normalized)
         val ok = normalized.optBoolean("ok", false)
-        if (completed && pendingCall != null && isDebugLoggingEnabled(pendingCall.sessionId)) {
+        if (completed && isDebugLoggingEnabled(pendingCall.sessionId)) {
             Log.i(TAG, "complete result request=$requestId completed=$completed ok=$ok")
         }
     }

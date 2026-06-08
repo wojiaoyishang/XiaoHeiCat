@@ -8,7 +8,7 @@ public final class XhhConstants {
     private XhhConstants() {}
 
     public static final String APP_NAME = "XiaoHeiHook";
-    public static final String VERSION_NAME = "1.20";
+    public static final String VERSION_NAME = "1.2";
     public static final int VERSION_CODE = 102;
     public static final String VERSION_LABEL = VERSION_NAME + " (" + VERSION_CODE + ")";
 
