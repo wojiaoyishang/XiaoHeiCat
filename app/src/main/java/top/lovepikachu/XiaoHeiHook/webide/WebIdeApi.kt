@@ -93,7 +93,7 @@ class WebIdeApi(private val context: Context) {
         return json(
             JSONObject()
                 .put("ok", true)
-                .put("server", "xhh-webide-v15-debug-isolated-root-scripts")
+                .put("server", "xhh-webide-debug-isolated-root-scripts")
                 .put("running", status.running)
                 .put("host", status.host)
                 .put("port", status.port)
@@ -946,9 +946,6 @@ class WebIdeApi(private val context: Context) {
             .put("kind", metadata.kind)
             .put("entryPath", metadata.entryPath.ifBlank { metadata.path })
             .put("rootPath", metadata.rootPath)
-            .put("sourceMode", metadata.sourceMode)
-            .put("url", metadata.url)
-            .put("urlRefreshOnApply", metadata.urlRefreshOnApply)
             .put("hasSettings", metadata.hasSettings)
             .put("settingsPath", metadata.settingsPath)
             .put("settingsSchema", if (metadata.settingsSchema.isNotBlank()) JSONObject(metadata.settingsSchema) else JSONObject.NULL)

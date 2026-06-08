@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * WebIDE HTTP server.
  *
- * v12 keeps the v11 dedicated :webide foreground-service process and the direct
+ * The WebIDE server keeps the dedicated :webide foreground-service process and the direct
  * ServerSocket implementation, then expands the API/static layer for the formal
  * Monaco-based IDE page.
  */
@@ -66,7 +66,7 @@ class WebIdeServer(
             priority = Thread.MAX_PRIORITY
             start()
         }
-        Log.i(TAG, "WebIDE v13.0 soft-debug server started at http://$host:$port/ pid=${Process.myPid()} process=${ProcessUtil.currentProcessName(appContext)}")
+        Log.i(TAG, "WebIDE soft-debug server started at http://$host:$port/ pid=${Process.myPid()} process=${ProcessUtil.currentProcessName(appContext)}")
     }
 
     fun stopServer() {
@@ -76,7 +76,7 @@ class WebIdeServer(
         acceptThread = null
         workers.shutdownNow()
         runCatching { workers.awaitTermination(700, TimeUnit.MILLISECONDS) }
-        Log.i(TAG, "WebIDE v13.0 soft-debug server stopped")
+        Log.i(TAG, "WebIDE soft-debug server stopped")
     }
 
     fun touch(reason: String) {
@@ -154,7 +154,7 @@ class WebIdeServer(
             }
 
             // Vite/Monaco production build emits hashed files under /assets/*.
-            // The old v12 route only served /app.js and /app.css, which made
+            // The old route only served /app.js and /app.css, which made
             // /assets/vendor-xxxx.js return 404 even when the file existed in
             // app/src/main/assets/webide/assets/.
             path == "/" || path == "/index.html" || path == "/terminal" || path == "/terminal/" || path == "/logs" || path == "/logs/" -> serveWebIdeAsset("index.html")

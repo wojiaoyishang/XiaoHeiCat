@@ -176,24 +176,19 @@ fun AppsScreen(
         }
     }
 
-    suspend fun loadScripts(debugPackageName: String? = null, syncToRemote: Boolean = true): List<ScriptMetadata> = withContext(Dispatchers.IO) {
-        Log.d(TAG, "loadScripts: start, debugPackage=${debugPackageName.orEmpty()}, syncToRemote=$syncToRemote")
+    suspend fun loadScripts(debugPackageName: String? = null, forceRescan: Boolean = false): List<ScriptMetadata> = withContext(Dispatchers.IO) {
+        Log.d(TAG, "loadScripts: start, debugPackage=${debugPackageName.orEmpty()}, forceRescan=$forceRescan")
         ScriptRepository.ensurePublicFolderAndSample(allowRootFallback)
-        val publicScripts = ScriptRepository.readPublicScripts(debugPackageName, allowRootFallback).map { it.first }
-        Log.d(TAG, "loadScripts: public count=${publicScripts.size}, ids=${publicScripts.joinToString { it.id }}")
-        val loaded = if (syncToRemote && XiaoHeiApplication.xposedService != null && XiaoHeiApplication.remotePreferences != null) {
-            ScriptRepository.syncPublicScriptsToRemote(
-                XiaoHeiApplication.xposedService,
-                XiaoHeiApplication.remotePreferences,
-                debugPackageName,
-                allowRootFallback
-            ).getOrElse { error ->
-                Log.e(TAG, "loadScripts: sync failed, use public scripts", error)
-                publicScripts
+        val prefs = XiaoHeiApplication.remotePreferences
+        val loaded = if (forceRescan) {
+            ScriptRepository.refreshScriptMetadataCache(prefs, allowRootFallback).getOrElse { error ->
+                Log.e(TAG, "loadScripts: refresh cache failed, use existing cache", error)
+                ScriptRepository.readScriptMetadataCache(prefs)
             }
         } else {
-            publicScripts
+            ScriptRepository.loadScriptMetadataCacheOrScan(prefs, allowRootFallback)
         }
+        Log.d(TAG, "loadScripts: metadata count=${loaded.size}, ids=${loaded.joinToString { it.id }}")
         debugPackageName?.let { packageName ->
             val matched = loaded.filter { it.supportsPackage(packageName) }
             Log.d(TAG, "loadScripts: matched package=$packageName, count=${matched.size}, ids=${matched.joinToString { it.id }}")
@@ -218,8 +213,8 @@ fun AppsScreen(
         if (requestAllFilesAccessBeforeScan(app, showToastAfterPermission = showToast)) return
         scope.launch {
             scanningScripts = true
-            Log.d(TAG, "rescanScriptsForApp: package=${app.packageName}, syncToRemote=$syncToRemote")
-            val loadedScripts = loadScripts(app.packageName, syncToRemote)
+            Log.d(TAG, "rescanScriptsForApp: package=${app.packageName}, forceRescan=true")
+            val loadedScripts = loadScripts(app.packageName, forceRescan = true)
             scripts = loadedScripts
             val matchedCount = loadedScripts.count { it.supportsPackage(app.packageName) }
             Log.d(TAG, "rescanScriptsForApp: package=${app.packageName}, total=${loadedScripts.size}, matched=$matchedCount")
@@ -235,7 +230,7 @@ fun AppsScreen(
         scope.launch {
             scanningScripts = true
             val result = withContext(Dispatchers.IO) {
-                ScriptRepository.syncPublicScriptsToRemote(
+                ScriptRepository.syncEnabledScriptsForPackageToRemote(
                     XiaoHeiApplication.xposedService,
                     XiaoHeiApplication.remotePreferences,
                     app.packageName,
@@ -248,17 +243,16 @@ fun AppsScreen(
                 }
             }
             result.onSuccess { synced ->
-                scripts = synced
-                val matchedCount = synced.count { it.supportsPackage(app.packageName) }
-                Log.d(TAG, "syncScriptsForApp: package=${app.packageName}, synced=${synced.size}, matched=$matchedCount, restart=$restartAfterSync")
+                val matchedCount = scripts.count { it.supportsPackage(app.packageName) }
+                Log.d(TAG, "syncScriptsForApp: package=${app.packageName}, syncedEnabled=${synced.size}, displayMatched=$matchedCount, displayTotal=${scripts.size}, restart=$restartAfterSync")
                 if (restartAfterSync) {
                     delay(500)
                     AppControl.launchPackage(context, app.packageName).onFailure { error ->
                         Toast.makeText(context, error.message ?: "启动失败", Toast.LENGTH_LONG).show()
                     }
-                    Toast.makeText(context, "已同步并重启 ${app.label}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "已同步已启用脚本并重启 ${app.label}", Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(context, "已同步 ${synced.size} 个脚本，匹配 ${matchedCount} 个", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "已同步已启用脚本 ${synced.size} 个，列表保留匹配 ${matchedCount} 个", Toast.LENGTH_SHORT).show()
                 }
             }.onFailure {
                 Log.e(TAG, "syncScriptsForApp: failed package=${app.packageName}", it)
@@ -407,8 +401,7 @@ fun AppsScreen(
                             )
                         }
                         result.onSuccess { synced ->
-                            scripts = synced
-                            Toast.makeText(context, "已同步 ${synced.size} 个脚本", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "已同步已启用脚本 ${synced.size} 个", Toast.LENGTH_SHORT).show()
                         }.onFailure {
                             Toast.makeText(context, it.message ?: "同步失败", Toast.LENGTH_LONG).show()
                         }
@@ -468,9 +461,11 @@ fun AppsScreen(
                             scripts = matchedScripts,
                             scanningScripts = scanningScripts,
                             moduleActive = moduleState.isActivated,
-                            initialAutoScan = !detailAutoScannedPackages.contains(app.packageName),
+                            // Script metadata is now cached globally. Entering detail should not rescan
+                            // Documents/XiaoHeiHook; only the explicit “重新扫描脚本” action refreshes cache.
+                            initialAutoScan = false,
                             onInitialAutoScanConsumed = { detailAutoScannedPackages.add(app.packageName) },
-                            onInitialRescanScripts = { rescanScriptsForApp(app, syncToRemote = false, showToast = false) },
+                            onInitialRescanScripts = {},
                             onBack = {
                                 selectedApp = null
                                 onDetailVisibleChange(false)
@@ -702,7 +697,7 @@ private fun AppListOptionsSheet(
                     }
                 )
                 OptionActionButton(
-                    text = "同步脚本",
+                    text = "同步已启用",
                     icon = Icons.Filled.Sync,
                     enabled = moduleActive,
                     modifier = Modifier.weight(1f),
@@ -1352,7 +1347,7 @@ private const val SCRIPT_FILE_PROVIDER_AUTHORITY = "top.lovepikachu.XiaoHeiHook.
 private fun openScriptLocation(context: Context, script: ScriptMetadata) {
     val targetRelativePath = when {
         // 多文件脚本也直接打开入口文件，不再打开目录。
-        // v15+ 目录脚本的入口应是 folder/index.js。
+        // 目录脚本的入口应是 folder/index.js。
         script.entryPath.isNotBlank() -> script.entryPath
         script.path.isNotBlank() -> script.path
         script.kind == "directory" && script.rootPath.isNotBlank() -> "${script.rootPath.trim('/')}/index.js"
@@ -1535,16 +1530,6 @@ private fun ScriptRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (script.url.isNotBlank()) {
-                    Text(
-                        text = "URL：${script.url} · ${if (script.urlRefreshOnApply) "应用时拉取" else "使用本地正文"}",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
                 if (script.description.isNotBlank()) {
                     Text(
                         text = script.description,

@@ -188,11 +188,23 @@ class WebIdeBridgeProvider : ContentProvider() {
         val packageName = extras?.getString(ARG_PACKAGE)?.trim()?.ifBlank { null }
         val prefs = awaitRemotePreferences(2000) ?: return errorBundle("LSPosed Remote Preferences 未连接")
         val service = awaitXposedService(2000) ?: return errorBundle("LSPosed 服务未连接")
-        val result = ScriptRepository.syncPublicScriptsToRemote(
-            service = service,
-            prefs = prefs,
-            debugPackageName = packageName
-        )
+
+        // WebIDE 的“同步脚本”只同步已经启用的脚本：
+        // - 指定 packageName：只同步该应用下已启用的脚本。
+        // - 未指定 packageName：同步所有已启用应用中已启用的脚本。
+        val result = if (packageName.isNullOrBlank()) {
+            ScriptRepository.syncEnabledAppsScriptsToRemote(
+                service = service,
+                prefs = prefs
+            )
+        } else {
+            ScriptRepository.syncEnabledScriptsForPackageToRemote(
+                service = service,
+                prefs = prefs,
+                packageName = packageName
+            )
+        }
+
         return result.fold(
             onSuccess = { scripts ->
                 val obj = JSONObject()
@@ -200,6 +212,7 @@ class WebIdeBridgeProvider : ContentProvider() {
                     .put("packageName", packageName ?: JSONObject.NULL)
                     .put("count", scripts.size)
                     .put("scripts", JSONArray(scripts.map { it.id }))
+                    .put("enabledOnly", true)
                 okBundle().putStringValue("json", obj.toString())
             },
             onFailure = { error -> errorBundle(error.message ?: error.javaClass.simpleName) }

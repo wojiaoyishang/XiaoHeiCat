@@ -19,6 +19,8 @@ import java.nio.charset.StandardCharsets;
 
 import io.github.libxposed.api.XposedModule;
 import top.lovepikachu.XiaoHeiHook.script.JsHookRuntime;
+import top.lovepikachu.XiaoHeiHook.dex.DexRuntimeRegistry;
+import top.lovepikachu.XiaoHeiHook.dex.DexClassLoadDumper;
 
 public class HookEntry extends XposedModule {
     private static final String TAG = "XiaoHeiHook-Entry";
@@ -38,6 +40,7 @@ public class HookEntry extends XposedModule {
     @Override
     @RequiresApi(Build.VERSION_CODES.Q)
     public void onPackageLoaded(@NonNull PackageLoadedParam param) {
+        installDexRuntimeCaptureEarly(param.getPackageName(), param.getDefaultClassLoader(), "package-loaded");
         dispatchScripts(
                 param.getPackageName(),
                 param.getDefaultClassLoader(),
@@ -55,12 +58,33 @@ public class HookEntry extends XposedModule {
         } catch (Throwable ignored) {
             loader = param.getDefaultClassLoader();
         }
+        installDexRuntimeCaptureEarly(param.getPackageName(), loader, "package-ready");
         dispatchScripts(
                 param.getPackageName(),
                 loader,
                 JsHookRuntime.EVENT_PACKAGE_READY,
                 param
         );
+    }
+
+
+    private void installDexRuntimeCaptureEarly(@NonNull String packageName, @NonNull ClassLoader classLoader, @NonNull String stage) {
+        if (!hasEnabledDexDumpGrant(packageName)) {
+            log(Log.DEBUG, TAG, "Dex dump/runtime capture not enabled: no enabled script declares @grant dex.dump/dumpdex/dex.full for " + packageName + " @" + stage);
+            return;
+        }
+        try {
+            DexRuntimeRegistry.install(this, packageName, processName, classLoader);
+            log(Log.INFO, TAG, "Dex runtime capture early install ok: " + packageName + " @" + stage);
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "Dex runtime capture early install failed: " + packageName + " @" + stage, t);
+        }
+        try {
+            DexClassLoadDumper.install(this, packageName, processName, classLoader);
+            log(Log.INFO, TAG, "Dex class-load dumper early install ok: " + packageName + " @" + stage);
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "Dex class-load dumper early install failed: " + packageName + " @" + stage, t);
+        }
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
@@ -99,13 +123,30 @@ public class HookEntry extends XposedModule {
                         script.rawEnabled(),
                         script.files,
                         script.fileHashes,
-                        mergedSettingsJson(packageName, script)
+                        mergedSettingsJson(packageName, script),
+                        script.grants
                 );
                 runtime.evaluate(script.displayName(), script.sourceName(), source);
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "加载脚本失败: " + script.id + " -> " + packageName + " @" + runAt, t);
             }
         }
+    }
+
+    private boolean hasEnabledDexDumpGrant(@NonNull String packageName) {
+        try {
+            if (prefs == null || !prefs.getBoolean(appEnabledKey(packageName), false)) return false;
+            List<ScriptDescriptor> scripts = parseScriptIndex(prefs.getString(SCRIPT_INDEX_JSON, "[]"));
+            for (ScriptDescriptor script : scripts) {
+                if (!script.supportsPackage(packageName)) continue;
+                if (!script.supportsProcess(processName)) continue;
+                if (!prefs.getBoolean(scriptEnabledKey(packageName, script.id), false)) continue;
+                if (script.dexDumpEnabled()) return true;
+            }
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "检查 dex.dump grant 失败: " + packageName, t);
+        }
+        return false;
     }
 
     private void verifyRemoteText(String path, String remoteName, String source, String expectedSha256) {
@@ -381,7 +422,28 @@ public class HookEntry extends XposedModule {
         }
 
         boolean rawEnabled() {
-            return grants.contains("xposed.raw") || grants.contains("xposed.full") || grants.contains("raw");
+            return hasGrant("xposed.raw") || hasGrant("xposed.full") || hasGrant("raw");
+        }
+
+        boolean dexApiEnabled() {
+            return hasGrant("dex.full")
+                    || hasGrant("dex.dump")
+                    || hasGrant("dumpdex")
+                    || hasGrant("dex.search")
+                    || hasGrant("dex.read");
+        }
+
+        boolean dexDumpEnabled() {
+            return hasGrant("dex.full") || hasGrant("dex.dump") || hasGrant("dumpdex");
+        }
+
+        private boolean hasGrant(String grant) {
+            if (grant == null) return false;
+            String target = grant.trim().toLowerCase(java.util.Locale.ROOT);
+            for (String item : grants) {
+                if (item != null && target.equals(item.trim().toLowerCase(java.util.Locale.ROOT))) return true;
+            }
+            return false;
         }
     }
 }

@@ -6,8 +6,6 @@ import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import io.github.libxposed.service.XposedService
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -93,16 +91,6 @@ xposed.onPackageLoaded(function (param) {
         val timedOut: Boolean = false
     )
 
-    private val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .callTimeout(15, TimeUnit.SECONDS)
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(12, TimeUnit.SECONDS)
-            .build()
-    }
-
     fun hasAllFilesAccess(): Boolean {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
     }
@@ -151,9 +139,65 @@ xposed.onPackageLoaded(function (param) {
         return readPublicScriptSources(debugPackageName, allowRootFallback).map { it.metadata to it.file }
     }
 
+    fun readScriptMetadataCache(prefs: SharedPreferences?): List<ScriptMetadata> {
+        val raw = prefs?.getString(ScriptPrefs.SCRIPT_METADATA_CACHE_JSON, null)
+        if (raw == null) {
+            Log.d(TAG, "readScriptMetadataCache: no cache")
+            return emptyList()
+        }
+        val scripts = parseIndex(raw)
+        Log.d(TAG, "readScriptMetadataCache: count=${scripts.size}, updatedAt=${prefs.getLong(ScriptPrefs.SCRIPT_METADATA_CACHE_UPDATED_AT, 0L)}")
+        return scripts
+    }
+
+    fun hasScriptMetadataCache(prefs: SharedPreferences?): Boolean {
+        return prefs?.contains(ScriptPrefs.SCRIPT_METADATA_CACHE_JSON) == true
+    }
+
+    fun loadScriptMetadataCacheOrScan(
+        prefs: SharedPreferences?,
+        allowRootFallback: Boolean = true
+    ): List<ScriptMetadata> {
+        if (hasScriptMetadataCache(prefs)) {
+            return readScriptMetadataCache(prefs)
+        }
+        Log.d(TAG, "loadScriptMetadataCacheOrScan: cache missing, perform first scan")
+        return refreshScriptMetadataCache(prefs, allowRootFallback).getOrElse { error ->
+            Log.e(TAG, "loadScriptMetadataCacheOrScan: first scan failed", error)
+            emptyList()
+        }
+    }
+
+    fun refreshScriptMetadataCache(
+        prefs: SharedPreferences?,
+        allowRootFallback: Boolean = true
+    ): Result<List<ScriptMetadata>> = runCatching {
+        Log.d(TAG, "refreshScriptMetadataCache: start, allowRootFallback=$allowRootFallback")
+        val scripts = readPublicScriptSources(
+            debugPackageName = null,
+            allowRootFallback = allowRootFallback,
+            forceRootMerge = allowRootFallback
+        ).map { it.metadata }
+        saveScriptMetadataCache(prefs, scripts)
+        Log.d(TAG, "refreshScriptMetadataCache: saved count=${scripts.size}, ids=${scripts.joinToString { it.id }}")
+        scripts
+    }
+
+    fun saveScriptMetadataCache(prefs: SharedPreferences?, scripts: List<ScriptMetadata>) {
+        if (prefs == null) {
+            Log.w(TAG, "saveScriptMetadataCache: prefs null, skip cache save, count=${scripts.size}")
+            return
+        }
+        prefs.edit()
+            .putString(ScriptPrefs.SCRIPT_METADATA_CACHE_JSON, scripts.toJson().toString())
+            .putLong(ScriptPrefs.SCRIPT_METADATA_CACHE_UPDATED_AT, System.currentTimeMillis())
+            .commit()
+    }
+
     private fun readPublicScriptSources(
         debugPackageName: String? = null,
-        allowRootFallback: Boolean = true
+        allowRootFallback: Boolean = true,
+        forceRootMerge: Boolean = false
     ): List<ScriptSource> {
         ensurePublicFolderAndSample(allowRootFallback).onFailure {
             Log.e(TAG, "readPublicScripts: ensure folder failed; normal scan may fail; root fallback depends on allowRootFallback", it)
@@ -168,11 +212,11 @@ xposed.onPackageLoaded(function (param) {
 
         // 进入某个应用的脚本页时 debugPackageName 不为空。这里即使 File API 扫到了样例脚本，
         // 也继续尝试 root 合并一次，避免 scoped storage 只暴露部分文件，导致 qidian_toolbox_log.js 不出现。
-        val shouldTryRoot = allowRootFallback && (normal.isEmpty() || debugPackageName != null)
+        val shouldTryRoot = allowRootFallback && (forceRootMerge || normal.isEmpty() || debugPackageName != null)
         val root = if (shouldTryRoot) {
             Log.w(
                 TAG,
-                "readPublicScripts: try root fallback/merge. normalCount=${normal.size}, debugPackage=${debugPackageName.orEmpty()}, dirExists=${publicScriptsDir.exists()}, canRead=${publicScriptsDir.canRead()}, listed=${safeListCount(publicScriptsDir)}"
+                "readPublicScripts: try root fallback/merge. normalCount=${normal.size}, debugPackage=${debugPackageName.orEmpty()}, forceRootMerge=$forceRootMerge, dirExists=${publicScriptsDir.exists()}, canRead=${publicScriptsDir.canRead()}, listed=${safeListCount(publicScriptsDir)}"
             )
             readPublicScriptSourcesByRoot(debugPackageName)
         } else {
@@ -312,7 +356,7 @@ xposed.onPackageLoaded(function (param) {
         }.orEmpty()
         Log.d(
             TAG,
-            "readPublicScripts($source): parsed file=${file.name}, path=${metadata.path}, id=${metadata.id}, name=${metadata.name}, targets=${metadata.targets}, processes=${metadata.processes}, url=${metadata.url}, urlRefresh=${metadata.urlRefreshOnApply}, hasSettings=${metadata.hasSettings}, settingsPath=${metadata.settingsPath}$matchInfo"
+            "readPublicScripts($source): parsed file=${file.name}, path=${metadata.path}, id=${metadata.id}, name=${metadata.name}, targets=${metadata.targets}, processes=${metadata.processes}, hasSettings=${metadata.hasSettings}, settingsPath=${metadata.settingsPath}$matchInfo"
         )
         return ScriptSource(metadata, file, text, source)
     }
@@ -439,6 +483,68 @@ xposed.onPackageLoaded(function (param) {
     }
 
 
+    fun syncEnabledScriptsForPackageToRemote(
+        service: XposedService?,
+        prefs: SharedPreferences?,
+        packageName: String,
+        allowRootFallback: Boolean = true
+    ): Result<List<ScriptMetadata>> = runCatching {
+        val targetPackage = packageName.trim()
+        Log.d(TAG, "syncEnabledScriptsForPackageToRemote: start, service=${service != null}, prefs=${prefs != null}, package=$targetPackage, allowRootFallback=$allowRootFallback")
+        if (service == null || prefs == null) {
+            throw IllegalStateException("LSPosed 服务未连接，无法同步 Remote Files")
+        }
+        if (targetPackage.isBlank()) {
+            throw IllegalArgumentException("packageName 不能为空")
+        }
+
+        val previousManifest = parseSyncManifest(prefs.getString(ScriptPrefs.SYNC_MANIFEST_JSON, "{}"))
+        val currentFiles = linkedMapOf<String, RemoteManifestFile>()
+
+        val appEnabled = prefs.getBoolean(ScriptPrefs.appEnabledKey(targetPackage), false)
+        if (!appEnabled) {
+            val cleanup = cleanupStaleRemoteFiles(service, previousManifest.keys)
+            prefs.edit()
+                .putString(ScriptPrefs.SCRIPT_INDEX_JSON, JSONArray().toString())
+                .putString(ScriptPrefs.SYNC_MANIFEST_JSON, buildSyncManifestJson(targetPackage, emptyList(), emptyList()).toString())
+                .commit()
+            Log.d(TAG, "syncEnabledScriptsForPackageToRemote: app disabled, clear remote index, package=$targetPackage, cleanup=$cleanup")
+            return@runCatching emptyList()
+        }
+
+        val sources = readPublicScriptSources(debugPackageName = targetPackage, allowRootFallback = allowRootFallback)
+        val selected = sources.filter { source ->
+            val supportsPackage = source.metadata.supportsPackage(targetPackage)
+            val scriptEnabled = prefs.getBoolean(ScriptPrefs.scriptEnabledKey(targetPackage, source.metadata.id), false)
+            Log.d(
+                TAG,
+                "syncEnabledScriptsForPackageToRemote: inspect id=${source.metadata.id}, supportsPackage=$supportsPackage, scriptEnabled=$scriptEnabled"
+            )
+            supportsPackage && scriptEnabled
+        }
+
+        val scripts = selected.map { source ->
+            syncScriptUnitToRemote(service, source, previousManifest, currentFiles)
+        }
+
+        val indexJson = scripts.toJson()
+        val manifestJson = buildSyncManifestJson(targetPackage, scripts, currentFiles.values.toList())
+        val staleRemoteNames = previousManifest.keys - currentFiles.keys
+        val cleanup = cleanupStaleRemoteFiles(service, staleRemoteNames)
+
+        prefs.edit()
+            .putString(ScriptPrefs.SCRIPT_INDEX_JSON, indexJson.toString())
+            .putString(ScriptPrefs.SYNC_MANIFEST_JSON, manifestJson.toString())
+            .commit()
+
+        Log.d(
+            TAG,
+            "syncEnabledScriptsForPackageToRemote: saved index count=${scripts.size}, files=${currentFiles.size}, stale=${staleRemoteNames.size}, cleanup=$cleanup, package=$targetPackage"
+        )
+        scripts
+    }
+
+
     fun parseMetadata(script: String, fallbackId: String): ScriptMetadata {
         val values = linkedMapOf<String, MutableList<String>>()
         var inHeader = false
@@ -463,12 +569,6 @@ xposed.onPackageLoaded(function (param) {
         }
 
         val id = values.first("id") ?: fallbackId
-        val url = values.first("url").orEmpty().trim()
-        val refreshOnApply = values.first("url-refresh")
-            ?: values.first("url-refresh-on-apply")
-            ?: values.first("refresh-url")
-            ?: values.first("remote-refresh")
-
         return ScriptMetadata(
             id = id,
             name = values.first("name") ?: id,
@@ -479,10 +579,7 @@ xposed.onPackageLoaded(function (param) {
             processes = values["process"].orEmpty().flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() },
             runAt = values.first("run-at") ?: "package-loaded",
             grants = values["grant"].orEmpty().flatMap { it.split(',', ' ') }.map { it.trim() }.filter { it.isNotEmpty() },
-            remoteName = remoteNameFor(id),
-            sourceMode = if (url.isNotBlank()) "url-meta" else "local",
-            url = url,
-            urlRefreshOnApply = parseBooleanLike(refreshOnApply)
+            remoteName = remoteNameFor(id)
         )
     }
 
@@ -505,9 +602,6 @@ xposed.onPackageLoaded(function (param) {
                 put("kind", script.kind)
                 put("entryPath", script.entryPath.ifBlank { script.path })
                 put("rootPath", script.rootPath)
-                put("sourceMode", script.sourceMode)
-                put("url", script.url)
-                put("urlRefreshOnApply", script.urlRefreshOnApply)
                 put("hasSettings", script.hasSettings)
                 put("settingsPath", script.settingsPath)
                 put("settingsSchema", if (script.settingsSchema.isNotBlank()) JSONObject(script.settingsSchema) else JSONObject.NULL)
@@ -549,9 +643,6 @@ xposed.onPackageLoaded(function (param) {
                             kind = obj.optString("kind", if (obj.optString("path", obj.optString("scriptPath", "")).endsWith("/index.js", ignoreCase = true)) "directory" else "file"),
                             entryPath = obj.optString("entryPath", obj.optString("path", obj.optString("scriptPath", ""))),
                             rootPath = obj.optString("rootPath", ""),
-                            sourceMode = obj.optString("sourceMode", if (obj.optString("url").isNotBlank()) "url-meta" else "local"),
-                            url = obj.optString("url", ""),
-                            urlRefreshOnApply = obj.optBoolean("urlRefreshOnApply", false),
                             hasSettings = obj.optBoolean("hasSettings", false),
                             settingsPath = obj.optString("settingsPath", ""),
                             settingsSchema = obj.optJSONObject("settingsSchema")?.toString() ?: obj.optString("settingsSchema", ""),
@@ -575,7 +666,7 @@ xposed.onPackageLoaded(function (param) {
     ): ScriptMetadata {
         val metadata = source.metadata
         val entryRemoteName = metadata.remoteName.ifBlank { remoteNameFor(metadata.id) }
-        val entryContent = resolveScriptContentForApply(source)
+        val entryContent = source.content
         val unitFiles = collectScriptUnitFiles(source, entryContent)
         val assets = mutableListOf<ScriptFileAsset>()
 
@@ -775,45 +866,6 @@ xposed.onPackageLoaded(function (param) {
     }
 
 
-    private fun resolveScriptContentForApply(source: ScriptSource): String {
-        val metadata = source.metadata
-        if (metadata.url.isBlank() || !metadata.urlRefreshOnApply) {
-            return source.content
-        }
-
-        Log.d(TAG, "resolveScriptContentForApply: refresh URL before apply, id=${metadata.id}, url=${metadata.url}")
-        return downloadUrlText(metadata.url).getOrElse { error ->
-            Log.e(TAG, "resolveScriptContentForApply: URL refresh failed, id=${metadata.id}, url=${metadata.url}", error)
-            throw IllegalStateException("URL 脚本拉取失败：${metadata.name} <${metadata.url}>", error)
-        }
-    }
-
-    private fun downloadUrlText(url: String): Result<String> = runCatching {
-        if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
-            throw IllegalArgumentException("仅支持 http/https URL：$url")
-        }
-        if (url.contains("127.0.0.1") || url.contains("localhost", ignoreCase = true)) {
-            Log.w(TAG, "downloadUrlText: 127.0.0.1/localhost 指向手机本机；电脑服务请使用 adb reverse 或电脑局域网 IP")
-        }
-
-        Log.d(TAG, "downloadUrlText: start url=$url")
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", "XiaoHeiHook/1.0")
-            .build()
-        httpClient.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            Log.d(TAG, "downloadUrlText: code=${response.code}, finalUrl=${response.request.url}, chars=${body.length}")
-            if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code}: $url")
-            }
-            if (body.isBlank()) {
-                throw IllegalStateException("远端脚本为空：$url")
-            }
-            body
-        }
-    }
-
     private fun JSONArray?.toScriptFileAssets(): List<ScriptFileAsset> {
         if (this == null) return emptyList()
         val list = mutableListOf<ScriptFileAsset>()
@@ -827,14 +879,6 @@ xposed.onPackageLoaded(function (param) {
             }
         }
         return list
-    }
-
-
-    private fun parseBooleanLike(value: String?): Boolean {
-        return when (value?.trim()?.lowercase()) {
-            "1", "true", "yes", "y", "on", "always", "apply", "sync" -> true
-            else -> false
-        }
     }
 
 

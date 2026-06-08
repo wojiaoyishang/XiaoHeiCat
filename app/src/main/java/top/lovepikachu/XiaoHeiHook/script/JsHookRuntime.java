@@ -10,18 +10,23 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
 
 import org.mozilla.javascript.BaseFunction;
 import org.mozilla.javascript.Context;
+import org.mozilla.javascript.ContextFactory;
 import org.mozilla.javascript.Function;
 import org.mozilla.javascript.NativeArray;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
+import org.mozilla.javascript.ScriptRuntime;
+import org.mozilla.javascript.RegExpProxy;
 import org.mozilla.javascript.Undefined;
 import org.mozilla.javascript.Wrapper;
 import org.mozilla.javascript.debug.DebugFrame;
 import org.mozilla.javascript.debug.DebuggableScript;
 import org.mozilla.javascript.debug.Debugger;
+import org.mozilla.javascript.regexp.RegExpImpl;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -56,6 +61,7 @@ import io.github.libxposed.api.XposedInterface;
 import top.lovepikachu.XiaoHeiHook.HookEntry;
 import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol;
 import top.lovepikachu.XiaoHeiHook.debug.JsDebugTrace;
+import top.lovepikachu.XiaoHeiHook.dex.DexApiFacade;
 
 /**
  * Rhino based JavaScript runtime for XiaoHeiHook.
@@ -77,6 +83,12 @@ public final class JsHookRuntime {
     private static final java.util.Set<String> CONSUMED_REMOTE_DEBUG_COMMANDS = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private static volatile boolean debugCommandReceiverRegistered = false;
 
+    private static final boolean RHINO_REGEXP_DIAGNOSTICS = true;
+    private static volatile boolean rhinoRegExpListenerInstalled = false;
+
+    static {
+        installGlobalRhinoRegExpListener();
+    }
 
     public static final String EVENT_MODULE_LOADED = "module-loaded";
     public static final String EVENT_PACKAGE_LOADED = "package-loaded";
@@ -90,6 +102,7 @@ public final class JsHookRuntime {
     private final String currentEvent;
     private final Object currentRawParam;
     private final boolean rawEnabled;
+    private final java.util.List<String> scriptGrants;
     private final Map<String, String> scriptFiles;
     private final Map<String, String> scriptFileHashes;
     private final String settingsJson;
@@ -137,6 +150,7 @@ public final class JsHookRuntime {
         this.currentEvent = currentEvent;
         this.currentRawParam = currentRawParam;
         this.rawEnabled = rawEnabled;
+        this.scriptGrants = new ArrayList<>();
         this.scriptFiles = new LinkedHashMap<>();
         this.scriptFileHashes = new LinkedHashMap<>();
         this.settingsJson = "{}";
@@ -181,6 +195,23 @@ public final class JsHookRuntime {
             @Nullable Map<String, String> scriptFileHashes,
             @Nullable String settingsJson
     ) {
+        this(module, packageName, processName, appClassLoader, currentEvent, currentRawParam,
+                rawEnabled, scriptFiles, scriptFileHashes, settingsJson, null);
+    }
+
+    public JsHookRuntime(
+            @NonNull HookEntry module,
+            @NonNull String packageName,
+            @NonNull String processName,
+            @NonNull ClassLoader appClassLoader,
+            @NonNull String currentEvent,
+            @Nullable Object currentRawParam,
+            boolean rawEnabled,
+            @Nullable Map<String, String> scriptFiles,
+            @Nullable Map<String, String> scriptFileHashes,
+            @Nullable String settingsJson,
+            @Nullable java.util.List<String> scriptGrants
+    ) {
         this.module = module;
         this.packageName = packageName;
         this.processName = processName;
@@ -188,6 +219,7 @@ public final class JsHookRuntime {
         this.currentEvent = currentEvent;
         this.currentRawParam = currentRawParam;
         this.rawEnabled = rawEnabled;
+        this.scriptGrants = normalizeGrantList(scriptGrants);
         this.scriptFiles = normalizeScriptFileMap(scriptFiles);
         this.scriptFileHashes = normalizeScriptFileMap(scriptFileHashes);
         this.settingsJson = settingsJson == null || settingsJson.trim().isEmpty() ? "{}" : settingsJson;
@@ -212,10 +244,14 @@ public final class JsHookRuntime {
                     + " sourceLength=" + (source == null ? 0 : source.length())
                     + " debugEnabled=" + isSoftDebuggerEnabled());
 
+            installGlobalRhinoRegExpListener();
             Context cx = Context.enter();
             try {
                 Thread.currentThread().setContextClassLoader(appClassLoader);
                 cx.setOptimizationLevel(-1);
+                logRhinoRegExpState("evaluate.enter.before-install", cx, null, null);
+                installRegExpProxy(cx);
+                logRhinoRegExpState("evaluate.after-install-before-init", cx, null, null);
                 boolean debugMode = isSoftDebuggerEnabled();
                 if (debugMode) {
                     cx.setGeneratingDebug(true);
@@ -236,20 +272,36 @@ public final class JsHookRuntime {
                 }
 
                 scope = cx.initStandardObjects();
+                ensureRegExpObjects(cx, scope);
+                logRhinoRegExpState("evaluate.after-init-standard-objects", cx, scope, null);
+                selfTestRegExp(cx, scope, canonicalSourceName);
+                logRhinoRegExpState("evaluate.after-regexp-self-test", cx, scope, null);
                 settingsFacade = new SettingsFacade();
 
                 ScriptableObject.putProperty(scope, "settings", Context.javaToJS(settingsFacade, scope));
                 ScriptableObject.putProperty(scope, "env", Context.javaToJS(new Env(scriptName, canonicalSourceName), scope));
                 ScriptableObject.putProperty(scope, "console", Context.javaToJS(new Console(), scope));
                 ScriptableObject.putProperty(scope, "Java", Context.javaToJS(new JavaBridge(), scope));
+                if (dexApiEnabled()) {
+                    ScriptableObject.putProperty(scope, "dex", Context.javaToJS(new DexApiFacade(module, appClassLoader, packageName, processName), scope));
+                }
                 ScriptableObject.putProperty(scope, "require", createRequireFunction(canonicalSourceName));
                 ScriptableObject.putProperty(scope, "xposed", Context.javaToJS(new XposedFacade(), scope));
                 ScriptableObject.putProperty(scope, "debuggerx", Context.javaToJS(new DebuggerFacade(canonicalSourceName, scriptName), scope));
 
-                cx.evaluateString(scope, source, canonicalSourceName, 1, null);
+                try {
+                    cx.evaluateString(scope, source, canonicalSourceName, 1, null);
+                } catch (Throwable evalError) {
+                    logRhinoRegExpState("evaluate.source-failed", cx, scope, evalError);
+                    throw evalError;
+                }
                 JsDebugTrace.i("evaluate finished sourceName=" + canonicalSourceName);
                 log(Log.INFO, "脚本已加载: " + scriptName + " [" + canonicalSourceName + "] -> " + packageName + " / " + processName + " @" + currentEvent);
             } catch (Throwable t) {
+                try {
+                    logRhinoRegExpState("evaluate.catch", cx, scope, t);
+                } catch (Throwable ignored) {
+                }
                 JsDebugTrace.e("evaluate failed sourceName=" + canonicalSourceName, t);
                 log(Log.ERROR, "脚本执行失败: " + scriptName + " [" + canonicalSourceName + "]", t);
             } finally {
@@ -257,6 +309,236 @@ public final class JsHookRuntime {
                 Context.exit();
             }
         }
+    }
+
+    /**
+     * Rhino regular expression support is Context-scoped.  Rhino 1.9.1 parses /.../ literals
+     * into bytecode that calls ScriptRuntime.checkRegExpProxy(cx) at runtime; if the current
+     * Context has no RegExpProxy, the user sees "正则表达式不可用".
+     *
+     * Do not share a single RegExpImpl globally: RegExpImpl stores match state.  Install a fresh
+     * proxy per Context when one is missing, and log enough state to identify which Context path
+     * is still broken on Android/LSPosed.
+     */
+    private static void installGlobalRhinoRegExpListener() {
+        if (rhinoRegExpListenerInstalled) return;
+        synchronized (JsHookRuntime.class) {
+            if (rhinoRegExpListenerInstalled) return;
+            try {
+                ContextFactory.getGlobal().addListener(new ContextFactory.Listener() {
+                    @Override
+                    public void contextCreated(Context cx) {
+                        try {
+                            installRegExpProxy(cx);
+                            Log.i(TAG, "RhinoRegExp contextCreated ok ctx=" + identity(cx)
+                                    + " proxy=" + safeRegExpProxyClass(cx)
+                                    + " factory=" + safeFactoryClass(cx));
+                        } catch (Throwable t) {
+                            Log.w(TAG, "RhinoRegExp contextCreated failed ctx=" + identity(cx), t);
+                        }
+                    }
+
+                    @Override
+                    public void contextReleased(Context cx) {
+                        if (RHINO_REGEXP_DIAGNOSTICS) {
+                            Log.d(TAG, "RhinoRegExp contextReleased ctx=" + identity(cx)
+                                    + " proxy=" + safeRegExpProxyClass(cx));
+                        }
+                    }
+                });
+                rhinoRegExpListenerInstalled = true;
+                Log.i(TAG, "RhinoRegExp global ContextFactory listener installed factory="
+                        + ContextFactory.getGlobal().getClass().getName());
+            } catch (Throwable t) {
+                rhinoRegExpListenerInstalled = true;
+                Log.w(TAG, "RhinoRegExp global ContextFactory listener install failed; explicit install will be used", t);
+            }
+        }
+    }
+
+    private static RegExpProxy newRegExpProxy() {
+        return new RegExpImpl();
+    }
+
+    private static void installRegExpProxy(@NonNull Context cx) {
+        try {
+            RegExpProxy current = ScriptRuntime.getRegExpProxy(cx);
+            if (current == null) {
+                ScriptRuntime.setRegExpProxy(cx, newRegExpProxy());
+                current = ScriptRuntime.getRegExpProxy(cx);
+            }
+            if (current == null) {
+                throw new IllegalStateException("ScriptRuntime.getRegExpProxy(cx) is still null after setRegExpProxy");
+            }
+            // checkRegExpProxy is the exact runtime guard that throws msg.no.regexp.
+            ScriptRuntime.checkRegExpProxy(cx);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Rhino 正则表达式初始化失败 ctx=" + identity(cx)
+                    + " factory=" + safeFactoryClass(cx)
+                    + " classLoader=" + safeClassLoader(), t);
+        }
+    }
+
+    private static void ensureRegExpObjects(@NonNull Context cx, @NonNull Scriptable scope) {
+        installRegExpProxy(cx);
+        if (scope instanceof ScriptableObject) {
+            try {
+                ScriptableObject scriptableObject = (ScriptableObject) scope;
+                if (!ScriptableObject.hasProperty(scriptableObject, "RegExp")) {
+                    ScriptRuntime.checkRegExpProxy(cx).register(scriptableObject, false);
+                }
+            } catch (Throwable t) {
+                throw new IllegalStateException("Rhino RegExp 全局对象初始化失败 ctx=" + identity(cx)
+                        + " proxy=" + safeRegExpProxyClass(cx), t);
+            }
+        }
+    }
+
+    private static void selfTestRegExp(@NonNull Context cx, @NonNull Scriptable scope, @NonNull String sourceName) {
+        try {
+            // Test constructor first: this verifies the global RegExp object is registered.
+            Object ctorValue = cx.evaluateString(scope,
+                    "var __xhh_re_ctor = new RegExp('x', 'g'); __xhh_re_ctor.test('x');",
+                    sourceName + ":regexp-constructor-self-test", 1, null);
+            if (!Boolean.TRUE.equals(ctorValue)) {
+                throw new IllegalStateException("constructor unexpected result=" + ctorValue);
+            }
+
+            // Test literal second: this verifies Rhino runtime checkRegExpProxy(cx) can see the
+            // proxy on the exact Context used by the script compiler/interpreter.
+            Object literalValue = cx.evaluateString(scope,
+                    "/x/g.test('x')",
+                    sourceName + ":regexp-literal-self-test", 1, null);
+            if (!Boolean.TRUE.equals(literalValue)) {
+                throw new IllegalStateException("literal unexpected result=" + literalValue);
+            }
+        } catch (Throwable t) {
+            throw new IllegalStateException("Rhino 正则表达式自检失败 ctx=" + identity(cx)
+                    + " proxy=" + safeRegExpProxyClass(cx)
+                    + " regExpGlobal=" + hasGlobalRegExp(scope), t);
+        }
+    }
+
+    private void logRhinoRegExpState(@NonNull String stage,
+                                     @Nullable Context cx,
+                                     @Nullable Scriptable currentScope,
+                                     @Nullable Throwable tr) {
+        if (!RHINO_REGEXP_DIAGNOSTICS) return;
+        String message = "RhinoRegExp stage=" + stage
+                + " package=" + packageName
+                + " process=" + processName
+                + " thread=" + Thread.currentThread().getName()
+                + " ctx=" + identity(cx)
+                + " currentCtx=" + identity(Context.getCurrentContext())
+                + " sameCtx=" + (cx != null && cx == Context.getCurrentContext())
+                + " proxy=" + safeRegExpProxyClass(cx)
+                + " factory=" + safeFactoryClass(cx)
+                + " lang=" + safeLanguageVersion(cx)
+                + " opt=" + safeOptimizationLevel(cx)
+                + " interpreted=" + safeInterpretedMode(cx)
+                + " sealed=" + safeSealed(cx)
+                + " scope=" + identity(currentScope)
+                + " hasRegExp=" + hasGlobalRegExp(currentScope)
+                + " tcl=" + safeThreadContextClassLoader()
+                + " jsRuntimeCl=" + safeClassName(JsHookRuntime.class.getClassLoader())
+                + " regexpImplCl=" + safeClassName(RegExpImpl.class.getClassLoader())
+                + (tr == null ? "" : " throwable=" + tr.getClass().getName() + ":" + tr.getMessage());
+        if (tr == null) {
+            log(Log.INFO, message);
+        } else {
+            log(Log.WARN, message, tr);
+        }
+    }
+
+    private static String safeRegExpProxyClass(@Nullable Context cx) {
+        if (cx == null) return "null-context";
+        try {
+            RegExpProxy proxy = ScriptRuntime.getRegExpProxy(cx);
+            return proxy == null ? "null" : proxy.getClass().getName() + "@" + Integer.toHexString(System.identityHashCode(proxy));
+        } catch (Throwable t) {
+            return "error:" + t.getClass().getName() + ":" + t.getMessage();
+        }
+    }
+
+    private static String safeFactoryClass(@Nullable Context cx) {
+        if (cx == null) return "null-context";
+        try {
+            ContextFactory factory = cx.getFactory();
+            return factory == null ? "null" : factory.getClass().getName() + "@" + Integer.toHexString(System.identityHashCode(factory));
+        } catch (Throwable t) {
+            return "error:" + t.getClass().getName() + ":" + t.getMessage();
+        }
+    }
+
+    private static String safeLanguageVersion(@Nullable Context cx) {
+        if (cx == null) return "null";
+        try {
+            return String.valueOf(cx.getLanguageVersion());
+        } catch (Throwable t) {
+            return "error";
+        }
+    }
+
+    private static String safeOptimizationLevel(@Nullable Context cx) {
+        if (cx == null) return "null";
+        try {
+            return String.valueOf(cx.getOptimizationLevel());
+        } catch (Throwable t) {
+            return "error";
+        }
+    }
+
+    private static String safeInterpretedMode(@Nullable Context cx) {
+        if (cx == null) return "null";
+        try {
+            return String.valueOf(cx.isInterpretedMode());
+        } catch (Throwable t) {
+            return "error";
+        }
+    }
+
+    private static String safeSealed(@Nullable Context cx) {
+        if (cx == null) return "null";
+        try {
+            return String.valueOf(cx.isSealed());
+        } catch (Throwable t) {
+            return "error";
+        }
+    }
+
+    private static String hasGlobalRegExp(@Nullable Scriptable currentScope) {
+        if (!(currentScope instanceof ScriptableObject)) return "no-scope";
+        try {
+            return String.valueOf(ScriptableObject.hasProperty((ScriptableObject) currentScope, "RegExp"));
+        } catch (Throwable t) {
+            return "error:" + t.getClass().getName();
+        }
+    }
+
+    private static String safeThreadContextClassLoader() {
+        try {
+            return safeClassName(Thread.currentThread().getContextClassLoader());
+        } catch (Throwable t) {
+            return "error:" + t.getClass().getName();
+        }
+    }
+
+    private static String safeClassLoader() {
+        try {
+            return safeClassName(JsHookRuntime.class.getClassLoader());
+        } catch (Throwable t) {
+            return "error:" + t.getClass().getName();
+        }
+    }
+
+    private static String safeClassName(@Nullable Object value) {
+        if (value == null) return "null";
+        return value.getClass().getName() + "@" + Integer.toHexString(System.identityHashCode(value));
+    }
+
+    private static String identity(@Nullable Object value) {
+        if (value == null) return "null";
+        return value.getClass().getName() + "@" + Integer.toHexString(System.identityHashCode(value));
     }
 
     private static String normalizeScriptSourceName(@Nullable String sourceName, @NonNull String fallbackName) {
@@ -276,6 +558,30 @@ public final class JsHookRuntime {
         return value.isEmpty() ? fallbackName : value;
     }
 
+
+    private static java.util.List<String> normalizeGrantList(@Nullable java.util.List<String> grants) {
+        ArrayList<String> out = new ArrayList<>();
+        if (grants == null) return out;
+        for (String grant : grants) {
+            if (grant == null) continue;
+            String g = grant.trim().toLowerCase(Locale.ROOT);
+            if (!g.isEmpty() && !out.contains(g)) out.add(g);
+        }
+        return out;
+    }
+
+    private boolean hasGrant(String grant) {
+        if (grant == null) return false;
+        return scriptGrants.contains(grant.trim().toLowerCase(Locale.ROOT));
+    }
+
+    private boolean dexApiEnabled() {
+        return hasGrant("dex.full")
+                || hasGrant("dex.dump")
+                || hasGrant("dumpdex")
+                || hasGrant("dex.search")
+                || hasGrant("dex.read");
+    }
     private static Map<String, String> normalizeScriptFileMap(@Nullable Map<String, String> input) {
         LinkedHashMap<String, String> result = new LinkedHashMap<>();
         if (input == null) return result;
@@ -455,6 +761,8 @@ public final class JsHookRuntime {
             try {
                 Thread.currentThread().setContextClassLoader(appClassLoader);
                 cx.setOptimizationLevel(-1);
+                installRegExpProxy(cx);
+                logRhinoRegExpState("callJs.after-install", cx, scope, null);
                 if (isSoftDebuggerEnabled()) {
                     cx.setGeneratingDebug(true);
                     cx.setGeneratingSource(true);
@@ -575,6 +883,8 @@ public final class JsHookRuntime {
             String wrappedSource = "(function(require,module,exports,__filename,__dirname){"
                     + source
                     + "\n})";
+            ensureRegExpObjects(cx, scope);
+            logRhinoRegExpState("require.before-evaluate " + resolvedPath, cx, scope, null);
             Object wrapperObj = cx.evaluateString(scope, wrappedSource, resolvedPath, 1, null);
             if (!(wrapperObj instanceof Function)) {
                 throw new IllegalStateException("CommonJS wrapper did not return a function: " + resolvedPath);
@@ -1876,6 +2186,8 @@ public final class JsHookRuntime {
                     result.put("ok", false);
                     result.put("error", "当前断点没有可用的 Rhino Context/Scope");
                 } else {
+                    ensureRegExpObjects(cx, targetScope);
+                    logRhinoRegExpState("debug-eval.before-evaluate", cx, targetScope, null);
                     Object value = cx.evaluateString(targetScope, expr, scriptName + ":debug-eval", 1, null);
                     result.put("ok", true);
                     result.put("result", toDebugJsonValue(value, 0));
@@ -2063,7 +2375,7 @@ public final class JsHookRuntime {
             if (Build.VERSION.SDK_INT >= 33) {
                 appContext.registerReceiver(receiver, filter, android.content.Context.RECEIVER_EXPORTED);
             } else {
-                appContext.registerReceiver(receiver, filter);
+                ContextCompat.registerReceiver(appContext, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
             }
             debugCommandReceiverRegistered = true;
             writeLog(Log.INFO, "XHH-Debug", "调试命令接收器已注册: " + packageName + " / " + processName, null);

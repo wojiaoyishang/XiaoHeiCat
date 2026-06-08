@@ -27,6 +27,16 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
+            }
+        }
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        }
     }
 
     signingConfigs {
@@ -53,6 +63,12 @@ android {
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
         }
     }
 
@@ -84,8 +100,8 @@ dependencies {
     // JS runtime
     implementation("org.mozilla:rhino:1.9.1")
 
-    // URL script download
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Dex bytecode analysis API exposed to scripts
+    implementation("org.smali:dexlib2:2.5.2")
 
     // WebIDE embedded HTTP server
     implementation("org.nanohttpd:nanohttpd:2.3.1")

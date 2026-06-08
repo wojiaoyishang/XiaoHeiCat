@@ -38,9 +38,6 @@ data class ScriptMetadata(
     val entryPath: String = "",
     /** Root folder for directory scripts, otherwise empty. */
     val rootPath: String = "",
-    val sourceMode: String = "local",
-    val url: String = "",
-    val urlRefreshOnApply: Boolean = false,
     /** Whether this directory script declares settings.json. Single-file scripts do not support settings. */
     val hasSettings: Boolean = false,
     /** Relative path of settings.json under Documents/XiaoHeiHook. */
@@ -63,6 +60,15 @@ object ScriptPrefs {
     const val GROUP = "XiaoHeiHookSetting"
     const val SCRIPT_INDEX_JSON = "script_index_json"
     const val SYNC_MANIFEST_JSON = "script_sync_manifest_json"
+    /**
+     * UI-only metadata cache for all discovered scripts.
+     *
+     * Do not use this key for runtime execution. SCRIPT_INDEX_JSON intentionally contains only
+     * scripts synchronized into LSPosed Remote Files, while this cache keeps every discovered
+     * script so mobile UI lists do not shrink after syncing only enabled scripts.
+     */
+    const val SCRIPT_METADATA_CACHE_JSON = "script_metadata_cache_json"
+    const val SCRIPT_METADATA_CACHE_UPDATED_AT = "script_metadata_cache_updated_at"
 
     fun appEnabledKey(packageName: String): String = "app_enabled_$packageName"
 

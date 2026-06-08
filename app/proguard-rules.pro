@@ -19,3 +19,9 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# Rhino RegExp support is installed explicitly from JsHookRuntime.
+# Keep the implementation in release builds so JavaScript /.../ literals,
+# RegExp, String.match/replace/search/split keep working after minification.
+-keep class org.mozilla.javascript.regexp.** { *; }
+-keep class org.mozilla.javascript.RegExpProxy { *; }
+-keepclassmembers class org.mozilla.javascript.ScriptRuntime { *; }

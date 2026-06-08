@@ -300,7 +300,7 @@ class WebIdeForegroundService : Service() {
 
     companion object {
         private const val TAG = "XiaoHeiHook-WebIDE-FGS"
-        private const val CHANNEL_ID = "xiaoheihook_webide_v11"
+        private const val CHANNEL_ID = "xiaoheihook_webide"
         private const val NOTIFICATION_ID = 8787
         private const val NOTIFICATION_TEXT = "WebIDE运行中，点击此处可关闭"
         const val ACTION_START = "top.lovepikachu.XiaoHeiHook.webide.START"

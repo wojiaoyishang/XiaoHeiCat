@@ -20,8 +20,6 @@
    // @grant        java.full
    // @grant        xposed.full
    // @grant        xposed.raw
-   // @url          https://example.com/okhttp_logger.js
-   // @url-refresh  false
    // ==/LSPosedScript==
 
 字段说明
@@ -61,12 +59,10 @@
    * - ``@grant``
      - 空
      - 声明脚本需要的能力，用于标记和管理。
-   * - ``@url``
-     - 空
-     - URL 脚本来源。
-   * - ``@url-refresh``
-     - ``false``
-     - 同步时是否刷新 URL 脚本。也兼容 ``@url-refresh-on-apply``、``@refresh-url``、``@remote-refresh``。
+
+
+.. note::
+	自 1.1 版本起，不再支持 URL 远程脚本同步。对于 grant 字段说明请查看 :ref:`权限边界` 章节。
 
 run-at
 -----------------

@@ -463,6 +463,7 @@ export function App() {
 // @run-at       package-loaded
 // @grant        java.full
 // @grant        xposed.full
+// @grant        dex.full
 // ==/LSPosedScript==
 
 const TAG = "${name}";
@@ -486,6 +487,7 @@ xposed.onPackageLoaded(function (param) {
 // @run-at       package-loaded
 // @grant        java.full
 // @grant        xposed.full
+// @grant        dex.full
 // ==/LSPosedScript==
 
 const config = require("./config.js");

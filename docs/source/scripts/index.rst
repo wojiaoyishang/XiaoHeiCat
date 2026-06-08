@@ -9,4 +9,6 @@
    structure
    metadata
    js_api
+   boundaries
+   dynamic_dex_scan/index
    examples
