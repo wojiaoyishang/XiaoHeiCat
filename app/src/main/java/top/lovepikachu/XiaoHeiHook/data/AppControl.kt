@@ -5,10 +5,24 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import android.util.Log
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 object AppControl {
     private const val TAG = "XiaoHeiHook-AppControl"
+
+    data class RestartResult(
+        val forceStopOk: Boolean,
+        val forceStopMessage: String?,
+        val launchRequested: Boolean,
+        val launchOk: Boolean?,
+        val launchMessage: String?
+    ) {
+        val needsManualRestart: Boolean
+            get() = !forceStopOk
+    }
 
     fun launchPackage(context: Context, packageName: String): Result<Unit> = runCatching {
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
@@ -31,9 +45,46 @@ object AppControl {
         val command = "am force-stop ${shellQuote(packageName)}"
         val result = runRootCommand(command, timeoutSeconds = 8)
         if (result.exitCode != 0 || result.timedOut) {
-            throw IllegalStateException("强制终止失败：exit=${result.exitCode}, timeout=${result.timedOut}, stderr=${result.stderr.trim()}")
+            throw IllegalStateException("强制终止失败：exit=${result.exitCode}, timeout=${result.timedOut}, stderr=${result.stderr.trim().ifBlank { result.stdout.trim() }}")
         }
         Log.d(TAG, "forceStop: $packageName")
+    }
+
+    fun restartPackage(context: Context, packageName: String, launch: Boolean = true, appendLog: Boolean = true): RestartResult {
+        val appContext = context.applicationContext
+        val stopResult = forceStop(packageName)
+        val stopOk = stopResult.isSuccess
+        val stopMessage = stopResult.exceptionOrNull()?.message
+        if (!stopOk) {
+            val message = stopMessage ?: "Root 终止失败"
+            Log.w(TAG, "restartPackage: force-stop failed package=$packageName message=$message")
+            if (appendLog) {
+                appendRestartLog(appContext, packageName, "Root 终止失败，请手动终止并重启应用。详情：$message")
+            }
+        }
+
+        val launchResult = if (launch) launchPackage(appContext, packageName) else Result.success(Unit)
+        val launchOk = if (launch) launchResult.isSuccess else null
+        val launchMessage = if (launch) launchResult.exceptionOrNull()?.message else null
+        if (launch && launchResult.isFailure && appendLog) {
+            appendRestartLog(appContext, packageName, "自动打开应用失败：${launchMessage ?: "未知错误"}")
+        }
+        return RestartResult(
+            forceStopOk = stopOk,
+            forceStopMessage = stopMessage,
+            launchRequested = launch,
+            launchOk = launchOk,
+            launchMessage = launchMessage
+        )
+    }
+
+    private fun appendRestartLog(context: Context, packageName: String, message: String) {
+        runCatching {
+            val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+            AppLogRepository.appendModuleLog(context, packageName, "$time W/XiaoHeiHook-AppControl $message\n")
+        }.onFailure { error ->
+            Log.w(TAG, "append restart log failed: $packageName", error)
+        }
     }
 
     private data class RootCommandResult(

@@ -41,12 +41,21 @@ public final class DexRuntimeRegistry {
     private static volatile boolean hooksInstalled = false;
     private static volatile String currentPackageName = "";
     private static volatile String currentProcessName = "";
+    private static volatile boolean debugLogging = false;
 
     private static final Map<Integer, LoaderRecord> LOADERS = new ConcurrentHashMap<>();
     private static final Map<String, DexApiFacade.DexSource> SOURCES = new ConcurrentHashMap<>();
     private static final CopyOnWriteArrayList<XposedInterface.HookHandle> HOOK_HANDLES = new CopyOnWriteArrayList<>();
 
     private DexRuntimeRegistry() {}
+
+    public static void setDebugLogging(boolean enabled) {
+        debugLogging = debugLogging || enabled;
+    }
+
+    public static boolean isDebugLoggingEnabled() {
+        return debugLogging;
+    }
 
     public static void install(@Nullable HookEntry module,
                                @Nullable String packageName,
@@ -152,7 +161,7 @@ public final class DexRuntimeRegistry {
         DexApiFacade.DexSource previous = SOURCES.putIfAbsent(key, source);
         if (record != null) record.sourceKeys.add(key);
         if (previous == null) {
-            Log.i(TAG, "registered runtime dex source loaderId=" + loaderId + " type=" + cleanType + " origin=" + origin + " path=" + cleanPath + (entry == null ? "" : "!" + entry));
+            if (debugLogging) Log.i(TAG, "registered runtime dex source loaderId=" + loaderId + " type=" + cleanType + " origin=" + origin + " path=" + cleanPath + (entry == null ? "" : "!" + entry));
             return true;
         }
         return false;
@@ -472,7 +481,7 @@ public final class DexRuntimeRegistry {
                 fos.write(bytes);
                 fos.flush();
             }
-            Log.i(TAG, "dumped InMemoryDexClassLoader buffer to " + out.getAbsolutePath() + " size=" + bytes.length);
+            if (debugLogging) Log.i(TAG, "dumped InMemoryDexClassLoader buffer to " + out.getAbsolutePath() + " size=" + bytes.length);
             return out.getAbsolutePath();
         } catch (Throwable t) {
             Log.w(TAG, "dump in-memory dex failed", t);
@@ -568,6 +577,7 @@ public final class DexRuntimeRegistry {
     }
 
     private static void log(@NonNull HookEntry module, int priority, @NonNull String message, @Nullable Throwable tr) {
+        if (!debugLogging && priority < Log.WARN) return;
         Log.println(priority, TAG, message + (tr == null ? "" : " : " + tr));
         try {
             if (tr == null) module.log(priority, TAG, message);

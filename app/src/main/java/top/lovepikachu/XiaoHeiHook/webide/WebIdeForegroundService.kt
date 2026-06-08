@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.graphics.drawable.Icon
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -85,8 +86,9 @@ class WebIdeForegroundService : Service() {
             }
         )
 
-        // 用户关闭时必须彻底停止；系统杀掉后也不自动粘性重启，避免残留多余服务。
-        return START_NOT_STICKY
+        // 用户显式开启后作为前台服务粘性运行。系统在后台回收服务进程后，会用 null intent 重建；
+        // 此时从持久化配置读取 enabled=true 并恢复 WebIDE。主应用进程真正重启时会先重置为关闭。
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -100,8 +102,11 @@ class WebIdeForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // WebIDE 由设置开关和通知点击关闭；移除最近任务不额外创建服务。
-        Log.i(TAG, "task removed")
+        // 用户切后台或移除最近任务时不停止 WebIDE；服务关闭只由设置开关或通知动作控制。
+        Log.i(TAG, "task removed, keep WebIDE foreground runtime running")
+        acquireKeepAliveLocks()
+        runCatching { updateNotification() }
+            .onFailure { Log.w(TAG, "refresh WebIDE notification after task removed failed", it) }
     }
 
     private fun startRuntime(host: String, port: Int) {
@@ -281,19 +286,31 @@ class WebIdeForegroundService : Service() {
             .setCategory(Notification.CATEGORY_SERVICE)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
 
-        builder.addAction(
-            Notification.Action.Builder(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                getString(R.string.notification_webide_stop_action),
-                stopIntent
-            ).build()
-        )
+        builder.addAction(buildStopAction(stopIntent))
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         }
 
         return builder.build()
+    }
+
+    private fun buildStopAction(stopIntent: PendingIntent): Notification.Action {
+        val title = getString(R.string.notification_webide_stop_action)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Notification.Action.Builder(
+                Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                title,
+                stopIntent
+            ).build()
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Action.Builder(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                title,
+                stopIntent
+            ).build()
+        }
     }
 
     private fun ensureNotificationChannel() {

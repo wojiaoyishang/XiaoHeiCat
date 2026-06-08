@@ -52,20 +52,16 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
     var showDangerDialog by remember { mutableStateOf(false) }
     var pendingError by remember { mutableStateOf<String?>(null) }
     var batteryIgnored by remember { mutableStateOf(BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)) }
-    var logSizeBytes by remember { mutableStateOf(WebIdeLogMaintenance.totalLogSize(context)) }
-    var showClearLogsDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         WebIdeManager.syncStatusWithSavedConfig(context)
         batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
-        logSizeBytes = WebIdeLogMaintenance.totalLogSize(context)
     }
 
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
-                logSizeBytes = WebIdeLogMaintenance.totalLogSize(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -122,37 +118,6 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
         )
     }
 
-
-    if (showClearLogsDialog) {
-        AlertDialog(
-            onDismissRequest = { showClearLogsDialog = false },
-            title = { Text(stringResource(R.string.webide_clear_logs_title)) },
-            text = {
-                Text(stringResource(R.string.webide_clear_logs_message, WebIdeLogMaintenance.formatBytes(logSizeBytes)))
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val result = WebIdeLogMaintenance.clearAllLogs(context)
-                        logSizeBytes = WebIdeLogMaintenance.totalLogSize(context)
-                        showClearLogsDialog = false
-                        Toast.makeText(
-                            context,
-                            context.getString(R.string.webide_logs_cleared, result.deletedFiles, WebIdeLogMaintenance.formatBytes(result.clearedBytes)),
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                ) {
-                    Text(stringResource(R.string.webide_clear_logs_confirm))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearLogsDialog = false }) {
-                    Text(stringResource(R.string.common_cancel))
-                }
-            }
-        )
-    }
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -257,44 +222,97 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                 }
             }
         }
+    }
+}
 
-        AppCard(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.webide_log_maintenance),
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = stringResource(R.string.webide_log_dir, WebIdeLogMaintenance.logDir(context).absolutePath),
-                            fontSize = 12.sp,
-                            lineHeight = 18.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+@Composable
+fun WebIdeLogMaintenanceCard(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var logSizeBytes by remember { mutableStateOf(WebIdeLogMaintenance.totalLogSize(context)) }
+    var showClearLogsDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        logSizeBytes = WebIdeLogMaintenance.totalLogSize(context)
+    }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                logSizeBytes = WebIdeLogMaintenance.totalLogSize(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    if (showClearLogsDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearLogsDialog = false },
+            title = { Text(stringResource(R.string.webide_clear_logs_title)) },
+            text = {
+                Text(stringResource(R.string.webide_clear_logs_message, WebIdeLogMaintenance.formatBytes(logSizeBytes)))
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val result = WebIdeLogMaintenance.clearAllLogs(context)
+                        logSizeBytes = WebIdeLogMaintenance.totalLogSize(context)
+                        showClearLogsDialog = false
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.webide_logs_cleared, result.deletedFiles, WebIdeLogMaintenance.formatBytes(result.clearedBytes)),
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
+                ) {
+                    Text(stringResource(R.string.webide_clear_logs_confirm))
                 }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearLogsDialog = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            }
+        )
+    }
 
-                Text(
-                    text = stringResource(R.string.webide_log_stats, WebIdeLogMaintenance.formatBytes(logSizeBytes), WebIdeLogMaintenance.logFileCount(context)),
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+    AppCard(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.webide_log_maintenance),
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.webide_log_dir, WebIdeLogMaintenance.logDir(context).absolutePath),
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { logSizeBytes = WebIdeLogMaintenance.totalLogSize(context) }) {
-                        Text(stringResource(R.string.webide_refresh_log_size))
-                    }
-                    Button(onClick = { showClearLogsDialog = true }) {
-                        Text(stringResource(R.string.webide_clear_all_logs))
-                    }
+            Text(
+                text = stringResource(R.string.webide_log_stats, WebIdeLogMaintenance.formatBytes(logSizeBytes), WebIdeLogMaintenance.logFileCount(context)),
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { logSizeBytes = WebIdeLogMaintenance.totalLogSize(context) }) {
+                    Text(stringResource(R.string.webide_refresh_log_size))
+                }
+                Button(onClick = { showClearLogsDialog = true }) {
+                    Text(stringResource(R.string.webide_clear_all_logs))
                 }
             }
         }

@@ -6,6 +6,8 @@ import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
+import java.io.EOFException
+import java.io.IOException
 import java.io.FileNotFoundException
 import java.net.BindException
 import java.net.InetAddress
@@ -126,7 +128,35 @@ class WebIdeServer(
                 val response = route(request)
                 writeResponse(socket, response.withCors())
                 Log.d(TAG, "#$requestId => ${request.method} ${request.rawTarget} ${System.currentTimeMillis() - begin}ms")
+            } catch (e: SocketException) {
+                if (isClientDisconnect(e)) {
+                    Log.i(TAG, "#$requestId client disconnected: ${e.message ?: e.javaClass.simpleName}")
+                } else {
+                    Log.w(TAG, "#$requestId socket error", e)
+                    runCatching {
+                        writeResponse(
+                            socket,
+                            HttpResponse.json(500, "{\"ok\":false,\"error\":${JsonUtil.quote(e.message ?: e.javaClass.simpleName)}}").withCors()
+                        )
+                    }
+                }
+            } catch (e: IOException) {
+                if (isClientDisconnect(e)) {
+                    Log.i(TAG, "#$requestId client disconnected: ${e.message ?: e.javaClass.simpleName}")
+                } else {
+                    Log.w(TAG, "#$requestId I/O error", e)
+                    runCatching {
+                        writeResponse(
+                            socket,
+                            HttpResponse.json(500, "{\"ok\":false,\"error\":${JsonUtil.quote(e.message ?: e.javaClass.simpleName)}}").withCors()
+                        )
+                    }
+                }
             } catch (e: Throwable) {
+                if (isClientDisconnect(e)) {
+                    Log.i(TAG, "#$requestId client disconnected: ${e.message ?: e.javaClass.simpleName}")
+                    return
+                }
                 Log.e(TAG, "#$requestId serve failed", e)
                 runCatching {
                     writeResponse(
@@ -136,6 +166,37 @@ class WebIdeServer(
                 }
             }
         }
+    }
+
+
+    private fun isClientDisconnect(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is EOFException) return true
+            val message = current.message.orEmpty().lowercase(Locale.US)
+            val className = current.javaClass.name.lowercase(Locale.US)
+            if (
+                current is SocketException ||
+                current is IOException ||
+                className.contains("connectionreset")
+            ) {
+                if (
+                    message.contains("broken pipe") ||
+                    message.contains("connection reset") ||
+                    message.contains("reset by peer") ||
+                    message.contains("socket closed") ||
+                    message.contains("socket is closed") ||
+                    message.contains("connection abort") ||
+                    message.contains("connection aborted") ||
+                    message.contains("unexpected end of stream") ||
+                    className.contains("connectionreset")
+                ) {
+                    return true
+                }
+            }
+            current = current.cause
+        }
+        return false
     }
 
     private fun route(request: HttpRequest): HttpResponse {

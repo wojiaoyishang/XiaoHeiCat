@@ -82,16 +82,23 @@ public final class DexApiFacade {
     @Nullable private final HookEntry module;
     private final String packageName;
     private final String processName;
+    private final boolean debugLogging;
 
     public DexApiFacade(@NonNull ClassLoader defaultLoader) {
-        this(null, defaultLoader, "", "");
+        this(null, defaultLoader, "", "", false);
     }
 
     public DexApiFacade(@Nullable HookEntry module, @NonNull ClassLoader defaultLoader, @Nullable String packageName, @Nullable String processName) {
+        this(module, defaultLoader, packageName, processName, false);
+    }
+
+    public DexApiFacade(@Nullable HookEntry module, @NonNull ClassLoader defaultLoader, @Nullable String packageName, @Nullable String processName, boolean debugLogging) {
         this.module = module;
         this.defaultLoader = defaultLoader;
         this.packageName = packageName == null ? "" : packageName;
         this.processName = processName == null ? "" : processName;
+        this.debugLogging = debugLogging;
+        DexRuntimeRegistry.setDebugLogging(debugLogging);
         DexRuntimeRegistry.install(module, this.packageName, this.processName, defaultLoader);
         DexRuntimeRegistry.registerLoader(defaultLoader, "default-loader", DexSourceResolver.fromLoader(defaultLoader));
     }
@@ -130,7 +137,7 @@ public final class DexApiFacade {
         List<String> expectedStrings = new ArrayList<>();
         List<String> expectedInvokeContains = new ArrayList<>();
         int smaliChars = 6000;
-        boolean verbose = true;
+        boolean verbose = debugLogging;
         if (obj instanceof String) {
             path = String.valueOf(obj);
         } else if (obj instanceof Scriptable) {
@@ -245,7 +252,7 @@ public final class DexApiFacade {
         if (smaliChars > 0 && smali.length() > smaliChars) smali = smali.substring(0, smaliChars);
         out.put("smaliHead", smali);
         out.put("elapsedMs", System.currentTimeMillis() - start);
-        Log.i(TAG, "inspectMethodInFile result path=" + path
+        if (verbose) Log.i(TAG, "inspectMethodInFile result path=" + path
                 + " target=" + className + "." + methodName + method.descriptor
                 + " found=true featuresOk=" + out.get("featuresOk")
                 + " strings=" + strings
@@ -276,7 +283,7 @@ public final class DexApiFacade {
         long localMaxDexBytes = Math.max(maxDexBytes, 512L * 1024L * 1024L);
         boolean includeSmali = true;
         int maxSmali = 200_000;
-        boolean verbose = true;
+        boolean verbose = debugLogging;
 
         Object opts = unwrap(optionsObject);
         if (opts instanceof Scriptable) {
@@ -392,7 +399,7 @@ public final class DexApiFacade {
                             out.put("parameters", new ArrayList<CharSequence>(method.getParameterTypes()));
                             out.put("elapsedMs", System.currentTimeMillis() - started);
                             if (includeSmali) out.put("smali", DexSmaliPrinter.method(method, maxSmali));
-                            Log.i(TAG, "locateMethodInCookieDumps FOUND path=" + file.getAbsolutePath()
+                            if (verbose) Log.i(TAG, "locateMethodInCookieDumps FOUND path=" + file.getAbsolutePath()
                                     + " target=" + targetClassName + "." + targetMethodName + targetProto
                                     + " elapsedMs=" + elapsed);
                             return out;
@@ -423,7 +430,7 @@ public final class DexApiFacade {
         }
         out.put("opened", opened);
         out.put("elapsedMs", System.currentTimeMillis() - started);
-        Log.w(TAG, "locateMethodInCookieDumps NOT_FOUND target=" + targetClassName + "." + targetMethodName + targetProto
+        if (verbose) Log.w(TAG, "locateMethodInCookieDumps NOT_FOUND target=" + targetClassName + "." + targetMethodName + targetProto
                 + " candidates=" + dexFiles.size() + " scanned=" + limit + " opened=" + opened
                 + " elapsedMs=" + out.get("elapsedMs"));
 
@@ -446,6 +453,7 @@ public final class DexApiFacade {
     public Map<String, Object> dumpDecryptedDexForMethod(Object optionsObject) {
         Map<String, Object> legacyCleanup = cleanupLegacyCookieDirs(packageName);
         DumpDecryptedTargetOptions options = DumpDecryptedTargetOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         long started = System.currentTimeMillis();
         out.put("strategy", "app-loader-cookie-dump-locate-export");
@@ -467,7 +475,7 @@ public final class DexApiFacade {
         }
 
         DexClassLoadDumper.rememberAppClassLoader(loader, "dex.dumpDecryptedDexForMethod.loader", module);
-        Log.i(TAG, "dumpDecryptedDexForMethod start target=" + options.className + "." + options.methodName + options.proto
+        if (options.verbose) Log.i(TAG, "dumpDecryptedDexForMethod start target=" + options.className + "." + options.methodName + options.proto
                 + " loader=" + loader
                 + " cookieDir=" + options.cookieDir
                 + " outputDir=" + options.outputDir
@@ -479,7 +487,7 @@ public final class DexApiFacade {
             Class<?> c = loadClassWith(loader, options.className);
             out.put("loadedClass", String.valueOf(c));
             out.put("loadedClassLoader", c == null ? null : String.valueOf(c.getClassLoader()));
-            Log.i(TAG, "dumpDecryptedDexForMethod loadClass OK class=" + c + " classLoader=" + (c == null ? null : c.getClassLoader()));
+            if (options.verbose) Log.i(TAG, "dumpDecryptedDexForMethod loadClass OK class=" + c + " classLoader=" + (c == null ? null : c.getClassLoader()));
         } catch (Throwable t) {
             out.put("error", "loadClass failed: " + String.valueOf(t));
             Log.w(TAG, "dumpDecryptedDexForMethod loadClass failed target=" + options.className, t);
@@ -490,7 +498,7 @@ public final class DexApiFacade {
         if (options.clearCookieDir) {
             Map<String, Object> clear = clearDexFiles(cookieDir, options.cookiePrefix);
             out.put("clearCookieDir", clear);
-            Log.i(TAG, "dumpDecryptedDexForMethod clear cookie dir deleted=" + clear.get("deleted") + " failed=" + clear.get("failed"));
+            if (options.verbose) Log.i(TAG, "dumpDecryptedDexForMethod clear cookie dir deleted=" + clear.get("deleted") + " failed=" + clear.get("failed"));
         } else {
             ensureDir(cookieDir, "cookie dex dump 目录");
         }
@@ -511,7 +519,7 @@ public final class DexApiFacade {
             out.put("cookieValueCount", dumped.cookieValueCount);
             out.put("dexFileObjectCount", dumped.dexFileObjectCount);
             out.put("dumpSources", dumped.dumps);
-            Log.i(TAG, "dumpDecryptedDexForMethod cookie dump done count=" + dumped.dumps.size()
+            if (options.verbose) Log.i(TAG, "dumpDecryptedDexForMethod cookie dump done count=" + dumped.dumps.size()
                     + " dexFileObjects=" + dumped.dexFileObjectCount
                     + " cookieValues=" + dumped.cookieValueCount);
             cleanupLegacyCookieDirs(packageName);
@@ -558,7 +566,7 @@ public final class DexApiFacade {
             out.put("exportedPath", exported.getAbsolutePath());
             out.put("exportedSize", exported.length());
             out.put("elapsedMs", System.currentTimeMillis() - started);
-            Log.i(TAG, "dumpDecryptedDexForMethod EXPORTED targetDex=" + exported.getAbsolutePath()
+            if (options.verbose) Log.i(TAG, "dumpDecryptedDexForMethod EXPORTED targetDex=" + exported.getAbsolutePath()
                     + " source=" + source.getAbsolutePath()
                     + " size=" + exported.length()
                     + " elapsedMs=" + out.get("elapsedMs"));
@@ -764,7 +772,7 @@ public final class DexApiFacade {
                             out.put("parameters", new ArrayList<CharSequence>(method.getParameterTypes()));
                             out.put("elapsedMs", System.currentTimeMillis() - started);
                             if (includeSmali) out.put("smali", DexSmaliPrinter.method(method, maxSmali));
-                            Log.i(TAG, "locateMethodInCookieDumps FOUND path=" + file.getAbsolutePath()
+                            if (verbose) Log.i(TAG, "locateMethodInCookieDumps FOUND path=" + file.getAbsolutePath()
                                     + " target=" + targetClassName + "." + targetMethodName + targetProto
                                     + " elapsedMs=" + elapsed);
                             return out;
@@ -795,7 +803,7 @@ public final class DexApiFacade {
         }
         out.put("opened", opened);
         out.put("elapsedMs", System.currentTimeMillis() - started);
-        Log.w(TAG, "locateMethodInCookieDumps NOT_FOUND target=" + targetClassName + "." + targetMethodName + targetProto
+        if (verbose) Log.w(TAG, "locateMethodInCookieDumps NOT_FOUND target=" + targetClassName + "." + targetMethodName + targetProto
                 + " candidates=" + dexFiles.size() + " scanned=" + limit + " opened=" + opened
                 + " elapsedMs=" + out.get("elapsedMs"));
         return out;
@@ -903,6 +911,7 @@ public final class DexApiFacade {
     public Map<String, Object> dumpDexCookies(Object optionsObject) {
         Map<String, Object> legacyCleanup = cleanupLegacyCookieDirs(packageName);
         CookieDumpOptions options = CookieDumpOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         ClassLoader cookieRootLoader = options.loader != null ? options.loader : defaultLoader;
         if (options.loader != null) DexClassLoadDumper.rememberAppClassLoader(options.loader, "dex.dumpDexCookies.options", module);
         DexCookieDumper.Result result = DexCookieDumper.dump(
@@ -1133,6 +1142,7 @@ public final class DexApiFacade {
         // Do not trust only the in-memory DUMPS table. A script may run after the dump happened.
         // Scan configured class-dump output and the unified DumpDex output directory.
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         String configuredDir = DexClassLoadDumper.outputDir();
         options.dir = configuredDir;
         options.prefix = null;
@@ -1164,6 +1174,7 @@ public final class DexApiFacade {
     public Map<String, Object> classDumpDirStatus() { return classDumpDirStatus(null); }
     public Map<String, Object> classDumpDirStatus(Object optionsObject) {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         String configuredDir = DexClassLoadDumper.outputDir();
         options.dir = configuredDir;
         options.prefix = null;
@@ -1337,6 +1348,7 @@ public final class DexApiFacade {
 
     public Map<String, Object> scanDumpDir(Object optionsObject) {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         ArrayList<Map<String, Object>> rows = new ArrayList<>();
         int ok = 0;
         int invalid = 0;
@@ -1401,6 +1413,7 @@ public final class DexApiFacade {
 
     public DexFileView fromDumpDir(Object optionsObject) throws Exception {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         ArrayList<DexSource> sources = new ArrayList<>();
         List<File> files = dumpFiles(options);
         int openIndex = 0;
@@ -1442,6 +1455,7 @@ public final class DexApiFacade {
 
     public Map<String, Object> clearDumpDir(Object optionsObject) {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         out.put("dir", options.dir);
         out.put("repairedDir", options.repairedDir);
@@ -1469,6 +1483,7 @@ public final class DexApiFacade {
 
     public List<Map<String, Object>> dumpSources(Object optionsObject) {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         ArrayList<Map<String, Object>> out = new ArrayList<>();
         for (File file : dumpFiles(options)) {
             LinkedHashMap<String, Object> map = new LinkedHashMap<>();
@@ -1490,6 +1505,7 @@ public final class DexApiFacade {
     public Map<String, Object> repairDex(String path, Object optionsObject) {
         if (path == null || path.trim().isEmpty()) throw new IllegalArgumentException("path 不能为空");
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         return repairDexFile(new File(path.trim()), options);
     }
 
@@ -1497,6 +1513,7 @@ public final class DexApiFacade {
 
     public List<Map<String, Object>> repairDumpDir(Object optionsObject) {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
+        if (debugLogging) options.verbose = true;
         ArrayList<Map<String, Object>> out = new ArrayList<>();
         for (File file : dumpFiles(options)) out.add(repairDexFile(file, options));
         return out;
@@ -1596,6 +1613,7 @@ public final class DexApiFacade {
 
     public DexSearchResult findMethods(Object queryObject) throws Exception {
         Query query = Query.from(queryObject);
+        if (debugLogging) query.verbose = true;
         DexFileView fileView = query.file != null ? query.file : fromLoader(query.loader == null ? defaultLoader : query.loader);
         return fileView.findMethods(queryObject);
     }
@@ -2438,7 +2456,7 @@ public final class DexApiFacade {
         boolean includeParents = true;
         boolean includeThreadContext = true;
         boolean registerSources = true;
-        boolean verbose = true;
+        boolean verbose = false;
         ClassLoader loader = null;
 
         static CookieDumpOptions from(Object raw, String packageName) {
@@ -2489,7 +2507,7 @@ public final class DexApiFacade {
         boolean includeParents = false;
         boolean includeThreadContext = false;
         boolean clearCookieDir = true;
-        boolean verbose = true;
+        boolean verbose = false;
         ClassLoader loader = null;
 
         static DumpDecryptedTargetOptions from(Object raw, String packageName) {

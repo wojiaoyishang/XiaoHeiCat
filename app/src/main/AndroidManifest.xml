@@ -57,6 +57,19 @@
                 android:value="Embedded local WebIDE HTTP/dataSync server for user-authorized script editing and debugging. Runs in a dedicated foreground service process while the user explicitly enables WebIDE." />
         </service>
 
+
+        <service
+            android:name=".mcp.McpForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync|specialUse"
+            android:process=":mcp"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Embedded local MCP HTTP server for user-authorized remote JS method calls. Runs only while the user explicitly enables MCP." />
+        </service>
+
         <receiver
             android:name=".data.LogReceiver"
             android:exported="true">

@@ -285,10 +285,12 @@ class WebIdeApi(private val context: Context) {
         val sync = bridge.syncScripts(packageName)
         val extra = JSONObject().put("debugEnabled", enabled)
         if (restart) {
-            extra.put("forceStop", AppControl.forceStop(packageName).fold({ "ok" }, { it.message ?: it.javaClass.simpleName }))
+            val restartResult = AppControl.restartPackage(context, packageName, launch = launch, appendLog = true)
+            extra.put("forceStop", if (restartResult.forceStopOk) "ok" else restartResult.forceStopMessage.orEmpty())
             if (launch) {
-                extra.put("launch", AppControl.launchPackage(context, packageName).fold({ "ok" }, { it.message ?: it.javaClass.simpleName }))
+                extra.put("launch", if (restartResult.launchOk == true) "ok" else restartResult.launchMessage.orEmpty())
             }
+            extra.put("restart", restartResultJson(restartResult))
         }
         return json(JSONObject()
             .put("ok", true)
@@ -484,10 +486,12 @@ class WebIdeApi(private val context: Context) {
         }
         val obj = bridge.syncScripts(packageName)
         if (!packageName.isNullOrBlank() && restart) {
-            extra.put("forceStop", AppControl.forceStop(packageName).fold({ "ok" }, { it.message ?: it.javaClass.simpleName }))
+            val restartResult = AppControl.restartPackage(context, packageName, launch = launch, appendLog = true)
+            extra.put("forceStop", if (restartResult.forceStopOk) "ok" else restartResult.forceStopMessage.orEmpty())
             if (launch) {
-                extra.put("launch", AppControl.launchPackage(context, packageName).fold({ "ok" }, { it.message ?: it.javaClass.simpleName }))
+                extra.put("launch", if (restartResult.launchOk == true) "ok" else restartResult.launchMessage.orEmpty())
             }
+            extra.put("restart", restartResultJson(restartResult))
         }
         obj.put("extra", extra)
         return json(obj)
@@ -565,19 +569,29 @@ class WebIdeApi(private val context: Context) {
         )
     }
 
-    private fun restartApp(request: HttpRequest): HttpResponse {        val body = request.jsonBody()
+    private fun restartApp(request: HttpRequest): HttpResponse {
+        val body = request.jsonBody()
         val packageName = body.optString("packageName").trim()
         val launch = body.optBoolean("launch", true)
         require(packageName.isNotBlank()) { "packageName 不能为空" }
-        val stopResult = AppControl.forceStop(packageName)
-        if (stopResult.isFailure) {
-            return json(500, error(stopResult.exceptionOrNull()?.message ?: "强制终止失败"))
-        }
-        val launchResult = if (launch) AppControl.launchPackage(context, packageName) else Result.success(Unit)
-        return launchResult.fold(
-            onSuccess = { json(JSONObject().put("ok", true).put("packageName", packageName).put("launch", launch)) },
-            onFailure = { json(500, error(it.message ?: it.javaClass.simpleName)) }
+        val restartResult = AppControl.restartPackage(context, packageName, launch = launch, appendLog = true)
+        return json(
+            JSONObject()
+                .put("ok", true)
+                .put("packageName", packageName)
+                .put("launch", launch)
+                .put("restart", restartResultJson(restartResult))
         )
+    }
+
+    private fun restartResultJson(result: AppControl.RestartResult): JSONObject {
+        return JSONObject()
+            .put("forceStopOk", result.forceStopOk)
+            .put("forceStopMessage", result.forceStopMessage ?: "")
+            .put("needsManualRestart", result.needsManualRestart)
+            .put("launchRequested", result.launchRequested)
+            .put("launchOk", result.launchOk ?: JSONObject.NULL)
+            .put("launchMessage", result.launchMessage ?: "")
     }
 
     private fun launchApp(request: HttpRequest): HttpResponse {
@@ -1072,7 +1086,7 @@ data class HttpResponse(
     fun withCors(): HttpResponse {
         headers["Access-Control-Allow-Origin"] = "*"
         headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        headers["Access-Control-Allow-Headers"] = "Content-Type, X-XiaoHeiHook-Token"
+        headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-XiaoHeiHook-Token, Mcp-Session-Id"
         return this
     }
 

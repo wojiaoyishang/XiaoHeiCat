@@ -11,4 +11,5 @@
    js_api
    boundaries
    dynamic_dex_scan/index
+   mcp
    examples

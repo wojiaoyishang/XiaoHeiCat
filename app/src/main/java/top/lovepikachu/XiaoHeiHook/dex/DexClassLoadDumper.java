@@ -43,6 +43,7 @@ public final class DexClassLoadDumper {
     private static volatile String currentPackageName = "";
     private static volatile String currentProcessName = "";
     private static volatile ClassLoader defaultLoader;
+    private static volatile boolean debugLogging = false;
 
     private static final int DEFAULT_MAX_DEX_BYTES = 256 * 1024 * 1024;
     private static final int DEFAULT_MAX_DUMP_COUNT = 512;
@@ -62,8 +63,17 @@ public final class DexClassLoadDumper {
                                @Nullable String packageName,
                                @Nullable String processName,
                                @Nullable ClassLoader loader) {
+        install(module, packageName, processName, loader, false);
+    }
+
+    public static void install(@Nullable HookEntry module,
+                               @Nullable String packageName,
+                               @Nullable String processName,
+                               @Nullable ClassLoader loader,
+                               boolean enableDebugLogging) {
         currentPackageName = packageName == null ? "" : packageName;
         currentProcessName = processName == null ? "" : processName;
+        debugLogging = debugLogging || enableDebugLogging;
         if (loader != null) defaultLoader = loader;
         if (module == null) return;
         if (installed) return;
@@ -474,6 +484,7 @@ public final class DexClassLoadDumper {
     }
 
     private static void log(@Nullable HookEntry module, int priority, @NonNull String message, @Nullable Throwable tr) {
+        if (!debugLogging && priority < Log.WARN) return;
         Log.println(priority, TAG, message + (tr == null ? "" : " : " + tr));
         try {
             if (module != null) {

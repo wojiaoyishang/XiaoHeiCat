@@ -84,11 +84,42 @@ Pika Pika Meow Meow Meow ~</string>
     <string name="webide_clear_logs_confirm">确认清空</string>
     <string name="webide_logs_cleared">已清空 %1$d 个日志文件，释放 %2$s</string>
 
+
+    <!-- MCP -->
+    <string name="mcp_title">MCP 远程调用</string>
+    <string name="mcp_danger_title">开启 MCP 远程调用？</string>
+    <string name="mcp_danger_message">开启后 XiaoHeiHook 会启动 MCP HTTP 服务，电脑端可以调用目标 App 脚本通过 xhh.rpc.register_method 注册的方法。
+
+建议默认绑定 127.0.0.1，并通过 adb forward tcp:%1$s tcp:%2$s 在电脑访问。
+
+未开启时会忽略所有方法注册和远程调用逻辑。</string>
+    <string name="mcp_confirm_enable">确认开启</string>
+    <string name="mcp_port_invalid">端口必须是 1024 到 65535</string>
+    <string name="mcp_started">MCP 已启动：%1$s</string>
+    <string name="mcp_start_failed">MCP 启动失败：%1$s</string>
+    <string name="mcp_stopped">MCP 已关闭</string>
+    <string name="mcp_running_at">正在监听 %1$s</string>
+    <string name="mcp_not_running_hint">未启动。开启后电脑端可通过 MCP 调用脚本注册方法。</string>
+    <string name="mcp_adb_access_hint">电脑访问：adb forward tcp:%1$d tcp:%2$d 后连接 http://127.0.0.1:%2$d/mcp</string>
+    <string name="mcp_bind_hint">默认 127.0.0.1 只允许本机/ADB 转发访问；0.0.0.0 会暴露到网络，请谨慎。</string>
+    <string name="mcp_token_title">访问令牌</string>
+    <string name="mcp_token_enabled_hint">已启用。电脑端请求需要携带 Authorization: Bearer token。</string>
+    <string name="mcp_token_disabled_hint">未启用。MCP 请求不校验 token。</string>
+    <string name="mcp_token_label">Token</string>
+    <string name="mcp_rotate_token">重新生成 Token</string>
+    <string name="mcp_token_rotated">Token 已重新生成</string>
+    <string name="mcp_token_copied">Token 已复制</string>
+    <string name="mcp_token_copy_hint">可左右拖动查看；长按复制 Token。</string>
+
     <!-- Notifications -->
     <string name="notification_webide_title">XiaoHeiHook WebIDE</string>
     <string name="notification_webide_stop_action">关闭 WebIDE</string>
     <string name="notification_webide_channel_name">WebIDE 服务</string>
     <string name="notification_webide_running">WebIDE 运行中，点击此处可关闭</string>
+    <string name="notification_mcp_title">XiaoHeiHook MCP</string>
+    <string name="notification_mcp_stop_action">关闭 MCP</string>
+    <string name="notification_mcp_channel_name">MCP 服务</string>
+    <string name="notification_mcp_running">MCP 远程调用服务运行中，点击此处可关闭</string>
 
     <!-- Apps -->
     <string name="apps_permission_settings_failed">无法打开管理所有文件权限页面，请手动到系统设置中授权</string>
@@ -96,6 +127,8 @@ Pika Pika Meow Meow Meow ~</string>
     <string name="app_launch_failed">启动失败</string>
     <string name="app_force_stopped">已强制终止 %1$s</string>
     <string name="app_force_stop_failed">强制终止失败</string>
+    <string name="app_restart_force_stop_failed_launch_attempted">终止程序失败，请手动终止后重启；已尝试打开应用</string>
+    <string name="app_restart_manual_required">Root 终止失败，请手动终止并重启应用</string>
     <string name="app_open_settings_failed">无法打开系统设置</string>
     <string name="apps_config_title">应用配置</string>
     <string name="apps_actions">应用操作</string>

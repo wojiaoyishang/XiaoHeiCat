@@ -1,10 +1,16 @@
 package top.lovepikachu.XiaoHeiHook.script;
 
+import android.app.Activity;
 import android.content.SharedPreferences;
+import android.os.Bundle;
 import android.content.BroadcastReceiver;
 import android.content.Intent;
 import android.content.IntentFilter;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
@@ -31,7 +37,12 @@ import org.mozilla.javascript.regexp.RegExpImpl;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -56,12 +67,16 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import io.github.libxposed.api.XposedInterface;
 import top.lovepikachu.XiaoHeiHook.HookEntry;
+import top.lovepikachu.XiaoHeiHook.XhhConstants;
 import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol;
 import top.lovepikachu.XiaoHeiHook.debug.JsDebugTrace;
 import top.lovepikachu.XiaoHeiHook.dex.DexApiFacade;
+import top.lovepikachu.XiaoHeiHook.mcp.McpBridgeProtocol;
 
 /**
  * Rhino based JavaScript runtime for XiaoHeiHook.
@@ -77,13 +92,14 @@ import top.lovepikachu.XiaoHeiHook.dex.DexApiFacade;
  */
 public final class JsHookRuntime {
     private static final String TAG = "XiaoHeiHook-JS";
+    private static final String MCP_TAG = "XiaoHeiHook-MCP-Bridge";
 
     private static final Object DEBUG_COMMAND_LOCK = new Object();
     private static final Map<String, DebugCommand> DEBUG_COMMANDS = new ConcurrentHashMap<>();
     private static final java.util.Set<String> CONSUMED_REMOTE_DEBUG_COMMANDS = java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private static volatile boolean debugCommandReceiverRegistered = false;
 
-    private static final boolean RHINO_REGEXP_DIAGNOSTICS = true;
+    private static final boolean RHINO_REGEXP_DIAGNOSTICS = false;
     private static volatile boolean rhinoRegExpListenerInstalled = false;
 
     static {
@@ -111,6 +127,21 @@ public final class JsHookRuntime {
     private final Object jsLock = new Object();
     private final ThreadLocal<Integer> debugFrameDepth = new ThreadLocal<>();
     private final ThreadLocal<DebugStepState> debugStepState = new ThreadLocal<>();
+    private final String mcpSessionId = UUID.randomUUID().toString();
+    private final Map<String, Function> mcpHandlers = new ConcurrentHashMap<>();
+    private final Map<String, String> mcpHandlerMethods = new ConcurrentHashMap<>();
+    private final Map<String, String> mcpHandlerConcurrency = new ConcurrentHashMap<>();
+    private final Map<String, PendingMcpRegistration> mcpPendingRegistrations = new ConcurrentHashMap<>();
+    private final java.util.Set<String> mcpRegisteredHandlers = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private volatile boolean mcpInvokeReceiverRegistered = false;
+    private volatile boolean mcpHeartbeatStarted = false;
+    private volatile boolean mcpRegistrationFlushStarted = false;
+    private final Object mcpBridgeLock = new Object();
+    private volatile Socket mcpBridgeSocket;
+    private volatile DataInputStream mcpBridgeInput;
+    private volatile DataOutputStream mcpBridgeOutput;
+    private volatile boolean mcpBridgeConnected = false;
+    private volatile String mcpBridgeUnavailableReason = "";
 
     @Nullable
     private android.content.Context logContext;
@@ -283,11 +314,12 @@ public final class JsHookRuntime {
                 ScriptableObject.putProperty(scope, "console", Context.javaToJS(new Console(), scope));
                 ScriptableObject.putProperty(scope, "Java", Context.javaToJS(new JavaBridge(), scope));
                 if (dexApiEnabled()) {
-                    ScriptableObject.putProperty(scope, "dex", Context.javaToJS(new DexApiFacade(module, appClassLoader, packageName, processName), scope));
+                    ScriptableObject.putProperty(scope, "dex", Context.javaToJS(new DexApiFacade(module, appClassLoader, packageName, processName, dexDebugLoggingEnabled()), scope));
                 }
                 ScriptableObject.putProperty(scope, "require", createRequireFunction(canonicalSourceName));
                 ScriptableObject.putProperty(scope, "xposed", Context.javaToJS(new XposedFacade(), scope));
                 ScriptableObject.putProperty(scope, "debuggerx", Context.javaToJS(new DebuggerFacade(canonicalSourceName, scriptName), scope));
+                ScriptableObject.putProperty(scope, "xhh", Context.javaToJS(new XhhFacade(), scope));
 
                 try {
                     cx.evaluateString(scope, source, canonicalSourceName, 1, null);
@@ -330,9 +362,11 @@ public final class JsHookRuntime {
                     public void contextCreated(Context cx) {
                         try {
                             installRegExpProxy(cx);
-                            Log.i(TAG, "RhinoRegExp contextCreated ok ctx=" + identity(cx)
-                                    + " proxy=" + safeRegExpProxyClass(cx)
-                                    + " factory=" + safeFactoryClass(cx));
+                            if (RHINO_REGEXP_DIAGNOSTICS) {
+                                Log.i(TAG, "RhinoRegExp contextCreated ok ctx=" + identity(cx)
+                                        + " proxy=" + safeRegExpProxyClass(cx)
+                                        + " factory=" + safeFactoryClass(cx));
+                            }
                         } catch (Throwable t) {
                             Log.w(TAG, "RhinoRegExp contextCreated failed ctx=" + identity(cx), t);
                         }
@@ -347,11 +381,15 @@ public final class JsHookRuntime {
                     }
                 });
                 rhinoRegExpListenerInstalled = true;
-                Log.i(TAG, "RhinoRegExp global ContextFactory listener installed factory="
-                        + ContextFactory.getGlobal().getClass().getName());
+                if (RHINO_REGEXP_DIAGNOSTICS) {
+                    Log.i(TAG, "RhinoRegExp global ContextFactory listener installed factory="
+                            + ContextFactory.getGlobal().getClass().getName());
+                }
             } catch (Throwable t) {
                 rhinoRegExpListenerInstalled = true;
-                Log.w(TAG, "RhinoRegExp global ContextFactory listener install failed; explicit install will be used", t);
+                if (RHINO_REGEXP_DIAGNOSTICS) {
+                    Log.w(TAG, "RhinoRegExp global ContextFactory listener install failed; explicit install will be used", t);
+                }
             }
         }
     }
@@ -423,7 +461,7 @@ public final class JsHookRuntime {
                                      @Nullable Context cx,
                                      @Nullable Scriptable currentScope,
                                      @Nullable Throwable tr) {
-        if (!RHINO_REGEXP_DIAGNOSTICS) return;
+        if (!RHINO_REGEXP_DIAGNOSTICS && !internalDebugLoggingEnabled()) return;
         String message = "RhinoRegExp stage=" + stage
                 + " package=" + packageName
                 + " process=" + processName
@@ -582,6 +620,25 @@ public final class JsHookRuntime {
                 || hasGrant("dex.search")
                 || hasGrant("dex.read");
     }
+
+    private boolean internalDebugLoggingEnabled() {
+        return hasGrant("xhh.debug")
+                || hasGrant("xhh.internal.debug")
+                || hasGrant("internal.debug");
+    }
+
+    private boolean mcpDebugLoggingEnabled() {
+        return internalDebugLoggingEnabled()
+                || hasGrant("mcp.debug")
+                || hasGrant("xhh.mcp.debug");
+    }
+
+    private boolean dexDebugLoggingEnabled() {
+        return internalDebugLoggingEnabled()
+                || hasGrant("dex.debug")
+                || hasGrant("dumpdex.debug")
+                || hasGrant("xhh.dex.debug");
+    }
     private static Map<String, String> normalizeScriptFileMap(@Nullable Map<String, String> input) {
         LinkedHashMap<String, String> result = new LinkedHashMap<>();
         if (input == null) return result;
@@ -613,6 +670,15 @@ public final class JsHookRuntime {
 
     private void log(int priority, @NonNull String msg, @Nullable Throwable tr) {
         writeLog(priority, TAG, msg, tr);
+    }
+
+    private void mcpLog(int priority, @NonNull String msg) {
+        mcpLog(priority, msg, null);
+    }
+
+    private void mcpLog(int priority, @NonNull String msg, @Nullable Throwable tr) {
+        if (!mcpDebugLoggingEnabled() && priority < Log.ERROR) return;
+        writeLog(priority, MCP_TAG, msg, tr);
     }
 
     private void writeLog(int priority, @Nullable String tag, @NonNull String msg, @Nullable Throwable tr) {
@@ -916,6 +982,889 @@ public final class JsHookRuntime {
         Object unwrapped = unwrap(value);
         if (unwrapped == Undefined.instance || unwrapped == Scriptable.NOT_FOUND) return null;
         return Context.jsToJava(unwrapped, Object.class);
+    }
+
+
+    private static final class PendingMcpRegistration {
+        final String methodName;
+        final String handlerId;
+        final String description;
+        final String paramsSchemaJson;
+        final long timeoutMs;
+        final String concurrency;
+        final String conflict;
+
+        PendingMcpRegistration(
+                @NonNull String methodName,
+                @NonNull String handlerId,
+                @NonNull String description,
+                @NonNull String paramsSchemaJson,
+                long timeoutMs,
+                @NonNull String concurrency,
+                @NonNull String conflict
+        ) {
+            this.methodName = methodName;
+            this.handlerId = handlerId;
+            this.description = description;
+            this.paramsSchemaJson = paramsSchemaJson;
+            this.timeoutMs = timeoutMs;
+            this.concurrency = concurrency;
+            this.conflict = conflict;
+        }
+    }
+
+    public final class XhhFacade {
+        public final RpcFacade rpc = new RpcFacade();
+        public final String name = XhhConstants.APP_NAME;
+        public final String version = XhhConstants.VERSION_NAME;
+        public final int versionCode = XhhConstants.VERSION_CODE;
+        public final String versionLabel = XhhConstants.VERSION_LABEL;
+        public final int jsApiVersion = XhhConstants.JS_API_VERSION;
+        public final int mcpBridgeVersion = XhhConstants.MCP_BRIDGE_VERSION;
+        public final int dexApiVersion = XhhConstants.DEX_API_VERSION;
+
+        public Object info() {
+            LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+            out.put("name", XhhConstants.APP_NAME);
+            out.put("version", XhhConstants.VERSION_NAME);
+            out.put("versionCode", XhhConstants.VERSION_CODE);
+            out.put("versionLabel", XhhConstants.VERSION_LABEL);
+            out.put("jsApiVersion", XhhConstants.JS_API_VERSION);
+            out.put("mcpBridgeVersion", XhhConstants.MCP_BRIDGE_VERSION);
+            out.put("dexApiVersion", XhhConstants.DEX_API_VERSION);
+            out.put("packageName", packageName);
+            out.put("processName", processName);
+            out.put("event", currentEvent);
+            out.put("scriptName", activeScriptDisplayName == null ? "" : activeScriptDisplayName);
+            out.put("scriptPath", activeScriptSourceName == null ? "" : activeScriptSourceName);
+            out.put("internalDebug", internalDebugLoggingEnabled());
+            out.put("mcpDebug", mcpDebugLoggingEnabled());
+            out.put("dexDebug", dexDebugLoggingEnabled());
+            return out;
+        }
+
+        public boolean hasGrant(String grant) {
+            return JsHookRuntime.this.hasGrant(grant);
+        }
+    }
+
+    public final class RpcFacade {
+        public Object register_method(String name, Function handler) {
+            return register_method(name, null, handler);
+        }
+
+        public Object register_method(String name, Object options, Function handler) {
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+            String methodName = name == null ? "" : name.trim();
+            if (methodName.isEmpty()) {
+                result.put("ok", false);
+                result.put("ignored", true);
+                result.put("error", "methodName is empty");
+                return result;
+            }
+            if (handler == null) {
+                result.put("ok", false);
+                result.put("ignored", true);
+                result.put("error", "handler is required");
+                return result;
+            }
+            if (!mcpEnabled()) {
+                mcpLog(Log.INFO, "MCP register ignored because MCP is disabled package=" + packageName + " process=" + processName + " method=" + methodName);
+                result.put("ok", true);
+                result.put("ignored", true);
+                result.put("reason", "mcp-disabled");
+                result.put("methodName", methodName);
+                return result;
+            }
+            String conflict = optionString(options, "conflict", McpBridgeProtocol.CONFLICT_OVERWRITE).toLowerCase(Locale.ROOT);
+            if (!McpBridgeProtocol.CONFLICT_IGNORE.equals(conflict) && !McpBridgeProtocol.CONFLICT_ERROR.equals(conflict)) {
+                conflict = McpBridgeProtocol.CONFLICT_OVERWRITE;
+            }
+            String concurrency = optionString(options, "concurrency", "parallel").toLowerCase(Locale.ROOT);
+            if (!"serial".equals(concurrency) && !"main".equals(concurrency)) concurrency = "parallel";
+            int timeoutMs = optionInt(options, "timeoutMs", 5000);
+            if (timeoutMs < 100) timeoutMs = 100;
+            if (timeoutMs > 30000) timeoutMs = 30000;
+            String description = optionString(options, "description", "");
+            String paramsSchemaJson = optionJsonString(options, "paramsSchema");
+
+            String oldHandlerId = null;
+            for (Map.Entry<String, String> entry : mcpHandlerMethods.entrySet()) {
+                if (methodName.equals(entry.getValue())) {
+                    oldHandlerId = entry.getKey();
+                    break;
+                }
+            }
+            if (oldHandlerId != null) {
+                if (McpBridgeProtocol.CONFLICT_IGNORE.equals(conflict)) {
+                    result.put("ok", true);
+                    result.put("ignored", true);
+                    result.put("action", "ignored");
+                    result.put("methodName", methodName);
+                    result.put("handlerId", oldHandlerId);
+                    return result;
+                }
+                if (McpBridgeProtocol.CONFLICT_ERROR.equals(conflict)) {
+                    result.put("ok", false);
+                    result.put("ignored", true);
+                    result.put("error", "Method already registered: " + methodName);
+                    result.put("methodName", methodName);
+                    return result;
+                }
+                mcpHandlers.remove(oldHandlerId);
+                mcpHandlerMethods.remove(oldHandlerId);
+                mcpHandlerConcurrency.remove(oldHandlerId);
+                mcpPendingRegistrations.remove(oldHandlerId);
+                mcpRegisteredHandlers.remove(oldHandlerId);
+            }
+
+            String handlerId = UUID.randomUUID().toString();
+            mcpHandlers.put(handlerId, handler);
+            mcpHandlerMethods.put(handlerId, methodName);
+            mcpHandlerConcurrency.put(handlerId, concurrency);
+            mcpPendingRegistrations.put(handlerId, new PendingMcpRegistration(
+                    methodName,
+                    handlerId,
+                    description,
+                    paramsSchemaJson,
+                    timeoutMs,
+                    concurrency,
+                    conflict
+            ));
+            mcpLog(Log.INFO, "MCP register requested package=" + packageName + " process=" + processName + " method=" + methodName + " handler=" + handlerId + " conflict=" + conflict + " concurrency=" + concurrency);
+
+            if (!flushMcpRegistrations()) {
+                if (isMcpBridgePending()) {
+                    startMcpRegistrationFlushThread();
+                    result.put("ok", true);
+                    result.put("ignored", false);
+                    result.put("pending", true);
+                    result.put("reason", mcpBridgeUnavailableReason);
+                    result.put("methodName", methodName);
+                    result.put("handlerId", handlerId);
+                    result.put("conflict", conflict);
+                    mcpLog(Log.INFO, "MCP register deferred until target application context is ready package=" + packageName + " process=" + processName + " method=" + methodName + " handler=" + handlerId + " event=" + currentEvent);
+                    return result;
+                }
+                mcpHandlers.remove(handlerId);
+                mcpHandlerMethods.remove(handlerId);
+                mcpHandlerConcurrency.remove(handlerId);
+                mcpPendingRegistrations.remove(handlerId);
+                mcpRegisteredHandlers.remove(handlerId);
+                result.put("ok", true);
+                result.put("ignored", true);
+                result.put("action", "ignored");
+                result.put("reason", "mcp-bridge-unavailable");
+                result.put("methodName", methodName);
+                mcpLog(Log.WARN, "MCP register ignored because bridge is unavailable package=" + packageName + " process=" + processName + " method=" + methodName + " reason=" + mcpBridgeUnavailableReason);
+                return result;
+            }
+
+            mcpLog(Log.INFO, "MCP register accepted package=" + packageName + " process=" + processName + " method=" + methodName + " handler=" + handlerId);
+            result.put("ok", true);
+            result.put("ignored", false);
+            result.put("methodName", methodName);
+            result.put("handlerId", handlerId);
+            result.put("conflict", conflict);
+            return result;
+        }
+
+        public Object unregister_method(String name) {
+            String methodName = name == null ? "" : name.trim();
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+            if (methodName.isEmpty()) {
+                result.put("ok", false);
+                result.put("error", "methodName is empty");
+                return result;
+            }
+            for (Map.Entry<String, String> entry : new ArrayList<>(mcpHandlerMethods.entrySet())) {
+                if (methodName.equals(entry.getValue())) {
+                    mcpHandlers.remove(entry.getKey());
+                    mcpHandlerMethods.remove(entry.getKey());
+                    mcpHandlerConcurrency.remove(entry.getKey());
+                    mcpPendingRegistrations.remove(entry.getKey());
+                    mcpRegisteredHandlers.remove(entry.getKey());
+                }
+            }
+            if (mcpEnabled()) sendMcpUnregisterFrame(methodName);
+            closeMcpBridgeIfNoRegisteredMethods("unregister-method");
+            result.put("ok", true);
+            result.put("methodName", methodName);
+            return result;
+        }
+
+        public Object unregister_all_methods() {
+            mcpHandlers.clear();
+            mcpHandlerMethods.clear();
+            mcpHandlerConcurrency.clear();
+            mcpPendingRegistrations.clear();
+            mcpRegisteredHandlers.clear();
+            if (mcpEnabled()) sendMcpUnregisterFrame(null);
+            closeMcpBridgeIfNoRegisteredMethods("unregister-all-methods");
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            return result;
+        }
+    }
+
+    public final class RpcCallContext {
+        public final String requestId;
+        public final String packageName = JsHookRuntime.this.packageName;
+        public final String processName = JsHookRuntime.this.processName;
+        public final long timeoutMs;
+        public volatile boolean cancelled = false;
+
+        RpcCallContext(String requestId, long timeoutMs) {
+            this.requestId = requestId;
+            this.timeoutMs = timeoutMs;
+        }
+
+        public boolean isCancelled() { return cancelled; }
+        public void throwIfCancelled() {
+            if (cancelled) throw new RuntimeException("RPC call cancelled");
+        }
+        public void log(Object message) {
+            JsHookRuntime.this.log(Log.INFO, "MCP " + requestId + ": " + String.valueOf(unwrap(message)));
+        }
+    }
+
+    private boolean mcpEnabled() {
+        try {
+            SharedPreferences prefs = module.getRemotePreferences(McpBridgeProtocol.PREF_GROUP);
+            return prefs != null && prefs.getBoolean(McpBridgeProtocol.KEY_ENABLED, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private String mcpBridgeToken() {
+        try {
+            SharedPreferences prefs = module.getRemotePreferences(McpBridgeProtocol.PREF_GROUP);
+            return prefs == null ? "" : prefs.getString(McpBridgeProtocol.KEY_BRIDGE_TOKEN, "");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private BridgeEndpoint discoverMcpBridgeEndpoint(@NonNull android.content.Context appContext) {
+        final String bridgeToken = mcpBridgeToken();
+        if (bridgeToken == null || bridgeToken.trim().isEmpty()) {
+            mcpBridgeUnavailableReason = "bridge-token-missing";
+            mcpLog(Log.WARN, "MCP bridge discovery skipped because bridge token is missing package=" + packageName
+                    + " process=" + processName);
+            return null;
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            mcpBridgeUnavailableReason = "discover-pending";
+            mcpLog(Log.INFO, "MCP bridge discovery deferred from main thread package=" + packageName
+                    + " process=" + processName
+                    + " action=defer-registration");
+            return null;
+        }
+
+        final CountDownLatch latch = new CountDownLatch(1);
+        final BridgeEndpoint[] endpoint = new BridgeEndpoint[1];
+        final String[] failure = new String[1];
+        final String requestId = UUID.randomUUID().toString();
+
+        BroadcastReceiver resultReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(android.content.Context context, Intent intent) {
+                try {
+                    int resultCode = getResultCode();
+                    Bundle extras = getResultExtras(false);
+                    if (resultCode != Activity.RESULT_OK || extras == null) {
+                        failure[0] = "no-discovery-response";
+                        return;
+                    }
+                    String host = extras.getString(McpBridgeProtocol.EXTRA_BRIDGE_HOST, "127.0.0.1");
+                    int port = extras.getInt(McpBridgeProtocol.EXTRA_BRIDGE_PORT, -1);
+                    if (port < 1024 || port > 65535) {
+                        failure[0] = "invalid-discovery-port";
+                        return;
+                    }
+                    endpoint[0] = new BridgeEndpoint(host == null || host.trim().isEmpty() ? "127.0.0.1" : host.trim(), port);
+                } finally {
+                    latch.countDown();
+                }
+            }
+        };
+
+        try {
+            Intent intent = new Intent(McpBridgeProtocol.ACTION_DISCOVER);
+            intent.putExtra(McpBridgeProtocol.EXTRA_PACKAGE_NAME, packageName);
+            intent.putExtra(McpBridgeProtocol.EXTRA_PROCESS_NAME, processName);
+            intent.putExtra(McpBridgeProtocol.EXTRA_SESSION_ID, mcpSessionId);
+            intent.putExtra(McpBridgeProtocol.EXTRA_BRIDGE_TOKEN, bridgeToken);
+            intent.putExtra(McpBridgeProtocol.EXTRA_DEBUG_LOG, mcpDebugLoggingEnabled());
+            intent.putExtra("requestId", requestId);
+            mcpLog(Log.INFO, "MCP bridge discovery broadcast package=" + packageName
+                    + " process=" + processName
+                    + " session=" + mcpSessionId
+                    + " request=" + requestId);
+            appContext.sendOrderedBroadcast(
+                    intent,
+                    null,
+                    resultReceiver,
+                    new Handler(Looper.getMainLooper()),
+                    Activity.RESULT_CANCELED,
+                    null,
+                    null
+            );
+            if (!latch.await(1200L, TimeUnit.MILLISECONDS)) {
+                mcpBridgeUnavailableReason = "no-discovery-response";
+                mcpLog(Log.WARN, "MCP bridge discovery no response package=" + packageName
+                        + " process=" + processName
+                        + " session=" + mcpSessionId
+                        + " request=" + requestId
+                        + " action=ignored");
+                return null;
+            }
+            if (endpoint[0] == null) {
+                mcpBridgeUnavailableReason = failure[0] == null ? "no-discovery-response" : failure[0];
+                mcpLog(Log.WARN, "MCP bridge discovery failed package=" + packageName
+                        + " process=" + processName
+                        + " session=" + mcpSessionId
+                        + " reason=" + mcpBridgeUnavailableReason);
+                return null;
+            }
+            mcpBridgeUnavailableReason = "";
+            mcpLog(Log.INFO, "MCP bridge discovery resolved package=" + packageName
+                    + " process=" + processName
+                    + " session=" + mcpSessionId
+                    + " host=" + endpoint[0].host
+                    + " port=" + endpoint[0].port);
+            return endpoint[0];
+        } catch (Throwable t) {
+            mcpBridgeUnavailableReason = "discover-exception";
+            mcpLog(Log.WARN, "MCP bridge discovery failed package=" + packageName
+                    + " process=" + processName
+                    + " error=" + (t.getMessage() == null ? t.getClass().getName() : t.getMessage()), t);
+            return null;
+        }
+    }
+
+    private boolean isMcpBridgePending() {
+        return "context-not-ready".equals(mcpBridgeUnavailableReason) || "discover-pending".equals(mcpBridgeUnavailableReason);
+    }
+
+    private android.content.Context resolveApplicationContext() {
+        return resolveApplicationContext(false);
+    }
+
+    private android.content.Context resolveApplicationContext(boolean verbose) {
+        try {
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Method currentApplication = activityThread.getDeclaredMethod("currentApplication");
+            currentApplication.setAccessible(true);
+            Object application = currentApplication.invoke(null);
+            if (application instanceof android.content.Context) {
+                android.content.Context context = (android.content.Context) application;
+                android.content.Context appContext = context.getApplicationContext();
+                if (appContext != null) context = appContext;
+                String actualPackage = context.getPackageName();
+                if (packageName.equals(actualPackage)) {
+                    logContext = context;
+                    if (verbose) {
+                        mcpLog(Log.INFO, "MCP bridge resolved target application context package=" + packageName
+                                + " process=" + processName
+                                + " event=" + currentEvent
+                                + " contextPackage=" + actualPackage);
+                    }
+                    return context;
+                }
+                if (verbose) {
+                    mcpLog(Log.WARN, "MCP bridge currentApplication package mismatch package=" + packageName
+                            + " process=" + processName
+                            + " event=" + currentEvent
+                            + " contextPackage=" + actualPackage);
+                }
+            } else if (verbose) {
+                mcpLog(Log.INFO, "MCP bridge currentApplication not ready package=" + packageName
+                        + " process=" + processName
+                        + " event=" + currentEvent
+                        + " application=" + (application == null ? "null" : application.getClass().getName()));
+            }
+        } catch (Throwable t) {
+            if (verbose) {
+                mcpLog(Log.WARN, "MCP bridge currentApplication lookup failed package=" + packageName
+                        + " process=" + processName
+                        + " event=" + currentEvent
+                        + " error=" + (t.getMessage() == null ? t.getClass().getName() : t.getMessage()));
+            }
+        }
+        if (logContext != null) {
+            String actualPackage = logContext.getPackageName();
+            if (packageName.equals(actualPackage)) {
+                if (verbose) {
+                    mcpLog(Log.INFO, "MCP bridge reused cached application context package=" + packageName
+                            + " process=" + processName
+                            + " event=" + currentEvent
+                            + " contextPackage=" + actualPackage);
+                }
+                return logContext;
+            }
+            if (verbose) {
+                mcpLog(Log.WARN, "MCP bridge cached context package mismatch package=" + packageName
+                        + " process=" + processName
+                        + " event=" + currentEvent
+                        + " contextPackage=" + actualPackage);
+            }
+        }
+        return null;
+    }
+
+    private boolean isMcpContextNotReady() {
+        return "context-not-ready".equals(mcpBridgeUnavailableReason);
+    }
+
+    private void clearMcpLocalRegistrations(@NonNull String reason) {
+        int count = mcpHandlers.size();
+        mcpHandlers.clear();
+        mcpHandlerMethods.clear();
+        mcpHandlerConcurrency.clear();
+        mcpPendingRegistrations.clear();
+        mcpRegisteredHandlers.clear();
+        closeMcpBridgeConnection(reason, true);
+        mcpLog(Log.WARN, "MCP local registrations cleared package=" + packageName
+                + " process=" + processName
+                + " session=" + mcpSessionId
+                + " reason=" + reason
+                + " count=" + count);
+    }
+
+    private boolean ensureMcpBridgeConnection() {
+        if (mcpBridgeConnected && mcpBridgeOutput != null) return true;
+        synchronized (mcpBridgeLock) {
+            if (mcpBridgeConnected && mcpBridgeOutput != null) return true;
+            if (mcpHandlers.isEmpty()) {
+                mcpLog(Log.INFO, "MCP bridge not opened because no remote methods are registered package=" + packageName + " process=" + processName);
+                return false;
+            }
+
+            android.content.Context context = resolveApplicationContext(true);
+            if (context == null) {
+                mcpBridgeUnavailableReason = "context-not-ready";
+                mcpLog(Log.WARN, "MCP bridge unavailable because target application context is not ready package=" + packageName
+                        + " process=" + processName
+                        + " event=" + currentEvent
+                        + " session=" + mcpSessionId
+                        + " action=defer-registration");
+                return false;
+            }
+            android.content.Context appContext = context.getApplicationContext();
+            if (appContext == null) appContext = context;
+
+            BridgeEndpoint endpoint = discoverMcpBridgeEndpoint(appContext);
+            if (endpoint == null) return false;
+
+            closeMcpBridgeConnectionLocked("reconnect", false);
+            try {
+                mcpLog(Log.INFO, "MCP bridge TCP connecting package=" + packageName
+                        + " process=" + processName
+                        + " session=" + mcpSessionId
+                        + " host=" + endpoint.host
+                        + " port=" + endpoint.port);
+                Socket socket = new Socket();
+                socket.setTcpNoDelay(true);
+                socket.connect(new InetSocketAddress(endpoint.host, endpoint.port), 700);
+                mcpBridgeSocket = socket;
+                mcpBridgeInput = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+                mcpBridgeOutput = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+                mcpBridgeConnected = true;
+                sendMcpHelloFrameLocked();
+                startMcpBridgeReader(socket, mcpBridgeInput);
+                mcpBridgeUnavailableReason = "";
+                mcpLog(Log.INFO, "MCP bridge TCP connected package=" + packageName
+                        + " process=" + processName
+                        + " session=" + mcpSessionId
+                        + " host=" + endpoint.host
+                        + " port=" + endpoint.port);
+                return true;
+            } catch (Throwable t) {
+                mcpBridgeUnavailableReason = "connect-failed";
+                mcpLog(Log.WARN, "MCP bridge TCP connect failed package=" + packageName
+                        + " process=" + processName
+                        + " error=" + (t.getMessage() == null ? t.getClass().getName() : t.getMessage()));
+                closeMcpBridgeConnectionLocked("connect-failed", true);
+                return false;
+            }
+        }
+    }
+
+    private void startMcpBridgeReader(@NonNull Socket socket, @NonNull DataInputStream input) {
+        new Thread(() -> {
+            String reason = "eof";
+            try {
+                while (mcpBridgeConnected && socket == mcpBridgeSocket) {
+                    JSONObject message = readMcpBridgeFrame(input);
+                    String type = message.optString("type", "");
+                    if ("invoke".equals(type)) {
+                        String handlerId = message.optString(McpBridgeProtocol.EXTRA_HANDLER_ID, "");
+                        if (handlerId.isEmpty() || !mcpHandlers.containsKey(handlerId)) continue;
+                        String concurrency = mcpHandlerConcurrency.get(handlerId);
+                        Runnable task = () -> handleMcpInvoke(message);
+                        if ("main".equals(concurrency)) {
+                            new Handler(Looper.getMainLooper()).post(task);
+                        } else {
+                            new Thread(task, "XHH-MCP-invoke-" + safeThreadName(message.optString(McpBridgeProtocol.EXTRA_METHOD_NAME, "method"))).start();
+                        }
+                    } else if ("register_result".equals(type)) {
+                        JSONObject result = message.optJSONObject("result");
+                        if (result != null && !result.optBoolean("ok", true)) {
+                            mcpLog(Log.WARN, "MCP register result: " + result);
+                        } else if (result != null) {
+                            mcpLog(Log.INFO, "MCP register result: " + result);
+                        }
+                    }
+                }
+            } catch (EOFException eof) {
+                reason = "eof";
+            } catch (Throwable t) {
+                reason = t.getMessage() == null ? t.getClass().getName() : t.getMessage();
+                if (mcpBridgeConnected) mcpLog(Log.WARN, "MCP bridge reader stopped: " + reason);
+            } finally {
+                synchronized (mcpBridgeLock) {
+                    if (socket == mcpBridgeSocket) closeMcpBridgeConnectionLocked(reason, true);
+                }
+            }
+        }, "XHH-MCP-bridge-reader").start();
+    }
+
+    private void sendMcpHelloFrameLocked() throws Exception {
+        JSONObject message = new JSONObject();
+        safeJsonPut(message, "type", "hello");
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_PACKAGE_NAME, packageName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_PROCESS_NAME, processName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_SESSION_ID, mcpSessionId);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_BRIDGE_TOKEN, mcpBridgeToken());
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_DEBUG_LOG, mcpDebugLoggingEnabled());
+        safeJsonPut(message, "xhhVersion", XhhConstants.VERSION_LABEL);
+        writeMcpBridgeFrameLocked(message);
+    }
+
+    private boolean sendMcpRegisterFrame(@NonNull PendingMcpRegistration registration) {
+        if (!ensureMcpBridgeConnection()) return false;
+        JSONObject message = new JSONObject();
+        safeJsonPut(message, "type", "register");
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_PACKAGE_NAME, packageName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_PROCESS_NAME, processName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_SESSION_ID, mcpSessionId);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_METHOD_NAME, registration.methodName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_HANDLER_ID, registration.handlerId);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_SCRIPT_NAME, activeScriptDisplayName == null ? "" : activeScriptDisplayName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_SCRIPT_PATH, activeScriptSourceName == null ? "" : activeScriptSourceName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_DESCRIPTION, registration.description);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_PARAMS_SCHEMA_JSON, registration.paramsSchemaJson);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_TIMEOUT_MS, registration.timeoutMs);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_CONCURRENCY, registration.concurrency);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_CONFLICT, registration.conflict);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_DEBUG_LOG, mcpDebugLoggingEnabled());
+        boolean sent = sendMcpBridgeFrame(message);
+        mcpLog(sent ? Log.INFO : Log.WARN, "MCP register frame " + (sent ? "sent" : "failed") + " package=" + packageName + " process=" + processName + " method=" + registration.methodName + " handler=" + registration.handlerId);
+        return sent;
+    }
+
+    private boolean sendMcpUnregisterFrame(@Nullable String methodName) {
+        if (!ensureMcpBridgeConnection()) return false;
+        JSONObject message = new JSONObject();
+        safeJsonPut(message, "type", "unregister");
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_PACKAGE_NAME, packageName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_PROCESS_NAME, processName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_SESSION_ID, mcpSessionId);
+        if (methodName != null) safeJsonPut(message, McpBridgeProtocol.EXTRA_METHOD_NAME, methodName);
+        return sendMcpBridgeFrame(message);
+    }
+
+    private boolean sendMcpPingFrame() {
+        if (!ensureMcpBridgeConnection()) return false;
+        JSONObject message = new JSONObject();
+        safeJsonPut(message, "type", "ping");
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_PACKAGE_NAME, packageName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_PROCESS_NAME, processName);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_SESSION_ID, mcpSessionId);
+        return sendMcpBridgeFrame(message);
+    }
+
+    private boolean sendMcpResultFrame(@NonNull JSONObject message) {
+        return sendMcpBridgeFrame(message);
+    }
+
+    private boolean sendMcpBridgeFrame(@NonNull JSONObject message) {
+        synchronized (mcpBridgeLock) {
+            if (!mcpBridgeConnected || mcpBridgeOutput == null) return false;
+            try {
+                writeMcpBridgeFrameLocked(message);
+                return true;
+            } catch (Throwable t) {
+                closeMcpBridgeConnectionLocked(t.getMessage() == null ? t.getClass().getName() : t.getMessage(), true);
+                return false;
+            }
+        }
+    }
+
+    private void writeMcpBridgeFrameLocked(@NonNull JSONObject message) throws Exception {
+        byte[] bytes = message.toString().getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > 1024 * 1024) throw new IllegalArgumentException("MCP bridge frame too large: " + bytes.length);
+        mcpBridgeOutput.writeInt(bytes.length);
+        mcpBridgeOutput.write(bytes);
+        mcpBridgeOutput.flush();
+    }
+
+    private JSONObject readMcpBridgeFrame(@NonNull DataInputStream input) throws Exception {
+        int length = input.readInt();
+        if (length <= 0 || length > 1024 * 1024) throw new IllegalArgumentException("Invalid MCP bridge frame length: " + length);
+        byte[] bytes = new byte[length];
+        input.readFully(bytes);
+        return new JSONObject(new String(bytes, StandardCharsets.UTF_8));
+    }
+
+    private void closeMcpBridgeConnection(@NonNull String reason, boolean clearRegistered) {
+        synchronized (mcpBridgeLock) {
+            closeMcpBridgeConnectionLocked(reason, clearRegistered);
+        }
+    }
+
+    private void closeMcpBridgeConnectionLocked(@NonNull String reason, boolean clearRegistered) {
+        boolean wasConnected = mcpBridgeConnected || mcpBridgeSocket != null;
+        Socket socket = mcpBridgeSocket;
+        mcpBridgeConnected = false;
+        mcpBridgeSocket = null;
+        mcpBridgeInput = null;
+        mcpBridgeOutput = null;
+        try { if (socket != null) socket.close(); } catch (Throwable ignored) {}
+        if (clearRegistered) mcpRegisteredHandlers.clear();
+        if (wasConnected) {
+            mcpLog(Log.INFO, "MCP bridge closed package=" + packageName + " process=" + processName + " reason=" + reason + " clearRegistered=" + clearRegistered);
+        }
+    }
+
+    private void closeMcpBridgeIfNoRegisteredMethods(@NonNull String reason) {
+        if (!mcpHandlers.isEmpty()) return;
+        mcpHeartbeatStarted = false;
+        closeMcpBridgeConnection(reason, true);
+    }
+
+    private void flushOrScheduleMcpRegistrations() {
+        flushMcpRegistrations();
+    }
+
+    private void startMcpRegistrationFlushThread() {
+        if (mcpRegistrationFlushStarted) return;
+        synchronized (this) {
+            if (mcpRegistrationFlushStarted) return;
+            mcpRegistrationFlushStarted = true;
+            new Thread(() -> {
+                try {
+                    mcpLog(Log.INFO, "MCP deferred registration watcher started package=" + packageName + " process=" + processName + " session=" + mcpSessionId);
+                    for (int i = 0; i < 120; i++) {
+                        if (mcpHandlers.isEmpty()) return;
+                        if (!mcpEnabled()) {
+                            clearMcpLocalRegistrations("mcp-disabled");
+                            return;
+                        }
+                        if (flushMcpRegistrations()) {
+                            mcpLog(Log.INFO, "MCP deferred registration flushed package=" + packageName + " process=" + processName + " session=" + mcpSessionId);
+                            return;
+                        }
+                        if (!isMcpBridgePending()) {
+                            clearMcpLocalRegistrations("bridge-unavailable:" + mcpBridgeUnavailableReason);
+                            return;
+                        }
+                        try {
+                            Thread.sleep(500L);
+                        } catch (InterruptedException interrupted) {
+                            return;
+                        }
+                    }
+                    mcpLog(Log.WARN, "MCP deferred registration timed out waiting for target application context package=" + packageName + " process=" + processName + " session=" + mcpSessionId);
+                    clearMcpLocalRegistrations("context-timeout");
+                } finally {
+                    mcpRegistrationFlushStarted = false;
+                }
+            }, "XHH-MCP-register-wait-" + safeThreadName(packageName)).start();
+        }
+    }
+
+    private boolean flushMcpRegistrations() {
+        if (!mcpEnabled()) {
+            closeMcpBridgeConnection("mcp-disabled", true);
+            return true;
+        }
+        if (mcpHandlers.isEmpty()) {
+            closeMcpBridgeConnection("no-registered-methods", true);
+            return true;
+        }
+        if (!ensureMcpBridgeConnection()) return false;
+        ensureMcpHeartbeat();
+        boolean allSent = true;
+        for (PendingMcpRegistration registration : new ArrayList<>(mcpPendingRegistrations.values())) {
+            if (!mcpHandlers.containsKey(registration.handlerId)) {
+                mcpPendingRegistrations.remove(registration.handlerId);
+                mcpRegisteredHandlers.remove(registration.handlerId);
+                continue;
+            }
+            if (mcpRegisteredHandlers.contains(registration.handlerId)) continue;
+            if (sendMcpRegisterFrame(registration)) {
+                mcpRegisteredHandlers.add(registration.handlerId);
+            } else {
+                allSent = false;
+            }
+        }
+        return allSent;
+    }
+
+    private void ensureMcpHeartbeat() {
+        if (mcpHeartbeatStarted) return;
+        synchronized (this) {
+            if (mcpHeartbeatStarted) return;
+            mcpHeartbeatStarted = true;
+            new Thread(() -> {
+                while (mcpHeartbeatStarted) {
+                    try {
+                        if (!mcpEnabled()) {
+                            closeMcpBridgeConnection("mcp-disabled", true);
+                            Thread.sleep(15000L);
+                            continue;
+                        }
+                        if (mcpHandlers.isEmpty()) {
+                            closeMcpBridgeConnection("no-registered-methods", true);
+                            mcpHeartbeatStarted = false;
+                            return;
+                        }
+                        flushMcpRegistrations();
+                        sendMcpPingFrame();
+                        Thread.sleep(15000L);
+                    } catch (InterruptedException interrupted) {
+                        return;
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }, "XHH-MCP-heartbeat").start();
+        }
+    }
+
+    private void handleMcpInvoke(@NonNull JSONObject message) {
+        String requestId = message.optString(McpBridgeProtocol.EXTRA_REQUEST_ID, "");
+        String handlerId = message.optString(McpBridgeProtocol.EXTRA_HANDLER_ID, "");
+        String methodName = message.optString(McpBridgeProtocol.EXTRA_METHOD_NAME, "");
+        long timeoutMs = message.optLong(McpBridgeProtocol.EXTRA_TIMEOUT_MS, 5000L);
+        if (requestId.isEmpty() || handlerId.isEmpty()) return;
+        Function handler = mcpHandlers.get(handlerId);
+        if (handler == null) {
+            sendMcpError(requestId, McpBridgeProtocol.ERROR_METHOD_NOT_FOUND, "No local handler: " + methodName);
+            return;
+        }
+        try {
+            Object params = parseMcpParams(message.optString(McpBridgeProtocol.EXTRA_PARAMS_JSON, "{}"));
+            Object jsResult = callJs(handler, params, new RpcCallContext(requestId, timeoutMs));
+            Object jsonValue = toDebugJsonValue(jsResult, 0);
+            sendMcpSuccess(requestId, jsonValue);
+        } catch (Throwable t) {
+            sendMcpError(requestId, McpBridgeProtocol.ERROR_INVOKE_FAILED, t.getMessage() == null ? t.getClass().getName() : t.getMessage());
+        }
+    }
+
+    private Object parseMcpParams(@Nullable String raw) throws Exception {
+        String text = raw == null || raw.trim().isEmpty() ? "{}" : raw.trim();
+        if (text.startsWith("[")) return jsonToJava(new JSONArray(text));
+        if (text.startsWith("{")) return jsonToJava(new JSONObject(text));
+        return text;
+    }
+
+    private static void safeJsonPut(@NonNull JSONObject object, @NonNull String key, @Nullable Object value) {
+        try {
+            object.put(key, value == null ? JSONObject.NULL : value);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void sendMcpSuccess(@NonNull String requestId, @Nullable Object result) {
+        JSONObject message = new JSONObject();
+        safeJsonPut(message, "type", "result");
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_REQUEST_ID, requestId);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_SESSION_ID, mcpSessionId);
+        safeJsonPut(message, McpBridgeProtocol.EXTRA_OK, true);
+        safeJsonPut(message, "result", result == null ? JSONObject.NULL : result);
+        sendMcpResultFrame(message);
+    }
+
+    @NonNull
+    private String toMcpResultJson(@Nullable Object result) {
+        Object value = result == null ? JSONObject.NULL : result;
+        try {
+            if (value == JSONObject.NULL) return "null";
+            if (value instanceof JSONObject || value instanceof JSONArray) return value.toString();
+            if (value instanceof Boolean) return String.valueOf(value);
+            if (value instanceof Number) {
+                Number number = (Number) value;
+                if (number instanceof Double) {
+                    double doubleValue = number.doubleValue();
+                    if (Double.isNaN(doubleValue) || Double.isInfinite(doubleValue)) {
+                        return JSONObject.quote(String.valueOf(value));
+                    }
+                }
+                if (number instanceof Float) {
+                    float floatValue = number.floatValue();
+                    if (Float.isNaN(floatValue) || Float.isInfinite(floatValue)) {
+                        return JSONObject.quote(String.valueOf(value));
+                    }
+                }
+                return String.valueOf(value);
+            }
+            return JSONObject.quote(String.valueOf(value));
+        } catch (Throwable ignored) {
+            return JSONObject.quote(String.valueOf(result));
+        }
+    }
+
+    private void sendMcpError(@NonNull String requestId, @NonNull String code, @NonNull String message) {
+        JSONObject error = new JSONObject();
+        safeJsonPut(error, "code", code);
+        safeJsonPut(error, "message", message);
+        JSONObject frame = new JSONObject();
+        safeJsonPut(frame, "type", "result");
+        safeJsonPut(frame, McpBridgeProtocol.EXTRA_REQUEST_ID, requestId);
+        safeJsonPut(frame, McpBridgeProtocol.EXTRA_SESSION_ID, mcpSessionId);
+        safeJsonPut(frame, McpBridgeProtocol.EXTRA_OK, false);
+        safeJsonPut(frame, "error", error);
+        sendMcpResultFrame(frame);
+    }
+
+    private String optionString(Object options, String key, String fallback) {
+        Object value = optionValue(options, key);
+        if (value == null || value == Undefined.instance || value == Scriptable.NOT_FOUND) return fallback;
+        Object unwrapped = unwrap(value);
+        if (unwrapped == null) return fallback;
+        String text = String.valueOf(unwrapped).trim();
+        return text.isEmpty() ? fallback : text;
+    }
+
+    private String optionJsonString(Object options, String key) {
+        Object value = optionValue(options, key);
+        if (value == null || value == Undefined.instance || value == Scriptable.NOT_FOUND) return "";
+        try {
+            Object jsonValue = toDebugJsonValue(value, 0);
+            if (jsonValue instanceof JSONObject || jsonValue instanceof JSONArray) return jsonValue.toString();
+            return "";
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private String safeThreadName(@Nullable String value) {
+        if (value == null || value.trim().isEmpty()) return "method";
+        return value.replaceAll("[^A-Za-z0-9_.-]", "_");
+    }
+
+    private static final class BridgeEndpoint {
+        final String host;
+        final int port;
+
+        BridgeEndpoint(@NonNull String host, int port) {
+            this.host = host;
+            this.port = port;
+        }
     }
 
 

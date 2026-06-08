@@ -28,7 +28,9 @@ import androidx.compose.ui.unit.sp
 import top.lovepikachu.XiaoHeiHook.R
 import top.lovepikachu.XiaoHeiHook.composables.AnimatedPressIcon
 import top.lovepikachu.XiaoHeiHook.composables.FullWidthTextButton
+import top.lovepikachu.XiaoHeiHook.composables.McpSettingsCard
 import top.lovepikachu.XiaoHeiHook.composables.WebIdeSettingsCard
+import top.lovepikachu.XiaoHeiHook.composables.WebIdeLogMaintenanceCard
 import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
 import top.lovepikachu.XiaoHeiHook.ui.material.AppPageTitle
 
@@ -44,6 +46,10 @@ fun AboutScreen(modifier: Modifier = Modifier) {
         item { AppPageTitle(title = stringResource(R.string.settings_title)) }
 
         item { WebIdeSettingsCard() }
+
+        item { McpSettingsCard() }
+
+        item { WebIdeLogMaintenanceCard() }
 
         item {
             AppCard(modifier = Modifier.fillMaxWidth()) {

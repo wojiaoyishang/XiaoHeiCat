@@ -81,6 +81,21 @@ object WebIdeManager {
         }
     }
 
+
+    fun resetOnApplicationStart(context: Context) {
+        val appContext = context.applicationContext
+        val config = loadConfig(appContext)
+        saveConfig(appContext, config.copy(enabled = false))
+        _status.value = WebIdeStatus(
+            running = false,
+            host = config.host,
+            port = config.port,
+            lastError = null
+        )
+        runCatching { appContext.startService(WebIdeForegroundService.stopIntent(appContext)) }
+        runCatching { appContext.stopService(android.content.Intent(appContext, WebIdeForegroundService::class.java)) }
+    }
+
     fun syncStatusWithSavedConfig(context: Context) {
         val config = loadConfig(context)
         _status.value = WebIdeStatus(

@@ -74,13 +74,14 @@ public class HookEntry extends XposedModule {
             return;
         }
         try {
+            DexRuntimeRegistry.setDebugLogging(hasEnabledDexDebugGrant(packageName));
             DexRuntimeRegistry.install(this, packageName, processName, classLoader);
             log(Log.INFO, TAG, "Dex runtime capture early install ok: " + packageName + " @" + stage);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "Dex runtime capture early install failed: " + packageName + " @" + stage, t);
         }
         try {
-            DexClassLoadDumper.install(this, packageName, processName, classLoader);
+            DexClassLoadDumper.install(this, packageName, processName, classLoader, hasEnabledDexDebugGrant(packageName));
             log(Log.INFO, TAG, "Dex class-load dumper early install ok: " + packageName + " @" + stage);
         } catch (Throwable t) {
             log(Log.WARN, TAG, "Dex class-load dumper early install failed: " + packageName + " @" + stage, t);
@@ -145,6 +146,22 @@ public class HookEntry extends XposedModule {
             }
         } catch (Throwable t) {
             log(Log.WARN, TAG, "检查 dex.dump grant 失败: " + packageName, t);
+        }
+        return false;
+    }
+
+    private boolean hasEnabledDexDebugGrant(@NonNull String packageName) {
+        try {
+            if (prefs == null || !prefs.getBoolean(appEnabledKey(packageName), false)) return false;
+            List<ScriptDescriptor> scripts = parseScriptIndex(prefs.getString(SCRIPT_INDEX_JSON, "[]"));
+            for (ScriptDescriptor script : scripts) {
+                if (!script.supportsPackage(packageName)) continue;
+                if (!script.supportsProcess(processName)) continue;
+                if (!prefs.getBoolean(scriptEnabledKey(packageName, script.id), false)) continue;
+                if (script.dexDebugEnabled()) return true;
+            }
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "检查 dex.debug grant 失败: " + packageName, t);
         }
         return false;
     }
@@ -435,6 +452,15 @@ public class HookEntry extends XposedModule {
 
         boolean dexDumpEnabled() {
             return hasGrant("dex.full") || hasGrant("dex.dump") || hasGrant("dumpdex");
+        }
+
+        boolean dexDebugEnabled() {
+            return hasGrant("xhh.debug")
+                    || hasGrant("xhh.internal.debug")
+                    || hasGrant("internal.debug")
+                    || hasGrant("dex.debug")
+                    || hasGrant("dumpdex.debug")
+                    || hasGrant("xhh.dex.debug");
         }
 
         private boolean hasGrant(String grant) {

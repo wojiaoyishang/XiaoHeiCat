@@ -2,13 +2,19 @@ package top.lovepikachu.XiaoHeiHook
 
 import android.app.Application
 import android.content.SharedPreferences
+import android.util.Log
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import top.lovepikachu.XiaoHeiHook.mcp.McpManager
+import top.lovepikachu.XiaoHeiHook.webide.ProcessUtil
+import top.lovepikachu.XiaoHeiHook.webide.WebIdeManager
 
 class XiaoHeiApplication : Application() {
+
+    private var resetVolatileServicesOnBind: Boolean = false
 
     data class ModuleState(
         val isActivated: Boolean = false,
@@ -18,6 +24,7 @@ class XiaoHeiApplication : Application() {
     )
 
     companion object {
+        private const val TAG = "XiaoHeiHook-App"
         private val _moduleState = MutableStateFlow(ModuleState())
         val moduleState: StateFlow<ModuleState> = _moduleState.asStateFlow()
 
@@ -35,6 +42,16 @@ class XiaoHeiApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        val currentProcess = ProcessUtil.currentProcessName(this)
+        if (currentProcess == packageName) {
+            resetVolatileServicesOnBind = true
+            Log.i(TAG, "main process created; reset volatile WebIDE/MCP state on app start")
+            WebIdeManager.resetOnApplicationStart(this)
+            McpManager.resetOnApplicationStart(this)
+        } else {
+            Log.i(TAG, "non-main process created; skip volatile WebIDE/MCP reset, process=$currentProcess")
+        }
+
         XposedServiceHelper.registerListener(object : XposedServiceHelper.OnServiceListener {
 
             override fun onServiceBind(service: XposedService) {
@@ -47,6 +64,11 @@ class XiaoHeiApplication : Application() {
 
                 xposedService = service
                 remotePreferences = getRemotePreferences()
+                if (resetVolatileServicesOnBind) {
+                    resetVolatileServicesOnBind = false
+                    Log.i(TAG, "xposed service bound in main process; refresh remote MCP disabled state")
+                    McpManager.resetOnApplicationStart(this@XiaoHeiApplication)
+                }
             }
 
             override fun onServiceDied(service: XposedService) {

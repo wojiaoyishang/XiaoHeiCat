@@ -240,9 +240,6 @@ fun AppsScreen(
                     app.packageName,
                     allowRootFallback
                 ).mapCatching { synced ->
-                    if (restartAfterSync) {
-                        AppControl.forceStop(app.packageName).getOrThrow()
-                    }
                     synced
                 }
             }
@@ -250,11 +247,19 @@ fun AppsScreen(
                 val matchedCount = scripts.count { it.supportsPackage(app.packageName) }
                 Log.d(TAG, "syncScriptsForApp: package=${app.packageName}, syncedEnabled=${synced.size}, displayMatched=$matchedCount, displayTotal=${scripts.size}, restart=$restartAfterSync")
                 if (restartAfterSync) {
+                    val restartResult = withContext(Dispatchers.IO) {
+                        AppControl.restartPackage(context, app.packageName, launch = false, appendLog = true)
+                    }
                     delay(500)
-                    AppControl.launchPackage(context, app.packageName).onFailure { error ->
+                    val launchResult = AppControl.launchPackage(context, app.packageName)
+                    launchResult.onFailure { error ->
                         Toast.makeText(context, error.message ?: context.getString(R.string.app_launch_failed), Toast.LENGTH_LONG).show()
                     }
-                    Toast.makeText(context, context.getString(R.string.sync_enabled_restart_done, app.label), Toast.LENGTH_SHORT).show()
+                    if (restartResult.forceStopOk) {
+                        Toast.makeText(context, context.getString(R.string.sync_enabled_restart_done, app.label), Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, context.getString(R.string.app_restart_force_stop_failed_launch_attempted), Toast.LENGTH_LONG).show()
+                    }
                 } else {
                     Toast.makeText(context, context.getString(R.string.sync_enabled_for_app_done, synced.size, matchedCount), Toast.LENGTH_SHORT).show()
                 }

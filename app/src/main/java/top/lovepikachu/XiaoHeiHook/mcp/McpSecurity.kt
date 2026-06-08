@@ -1,0 +1,48 @@
+package top.lovepikachu.XiaoHeiHook.mcp
+
+import android.content.Context
+import java.security.SecureRandom
+
+object McpSecurity {
+    private val random = SecureRandom()
+
+    fun token(context: Context): String {
+        val prefs = context.applicationContext.getSharedPreferences(McpDefaults.SECURITY_PREFS_NAME, Context.MODE_PRIVATE)
+        val existing = prefs.getString(McpDefaults.KEY_TOKEN, null)
+        if (!existing.isNullOrBlank()) return existing
+        val bytes = ByteArray(24)
+        random.nextBytes(bytes)
+        val generated = bytes.joinToString("") { "%02x".format(it) }
+        prefs.edit().putString(McpDefaults.KEY_TOKEN, generated).commit()
+        return generated
+    }
+
+    fun rotateToken(context: Context): String {
+        val bytes = ByteArray(24)
+        random.nextBytes(bytes)
+        val generated = bytes.joinToString("") { "%02x".format(it) }
+        context.applicationContext.getSharedPreferences(McpDefaults.SECURITY_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(McpDefaults.KEY_TOKEN, generated)
+            .commit()
+        return generated
+    }
+
+    fun isValid(context: Context, value: String?): Boolean {
+        val expected = token(context)
+        return !value.isNullOrBlank() && constantTimeEquals(expected, value.trim())
+    }
+
+    private fun constantTimeEquals(a: String, b: String): Boolean {
+        val aa = a.toByteArray(Charsets.UTF_8)
+        val bb = b.toByteArray(Charsets.UTF_8)
+        var diff = aa.size xor bb.size
+        val max = maxOf(aa.size, bb.size)
+        for (i in 0 until max) {
+            val x = if (i < aa.size) aa[i].toInt() else 0
+            val y = if (i < bb.size) bb[i].toInt() else 0
+            diff = diff or (x xor y)
+        }
+        return diff == 0
+    }
+}
