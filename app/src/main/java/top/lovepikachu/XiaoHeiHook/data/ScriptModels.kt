@@ -45,7 +45,9 @@ data class ScriptMetadata(
     /** Normalized settings schema JSON. Empty when hasSettings=false. */
     val settingsSchema: String = "",
     /** Remote JS/files belonging to this script unit. For directory scripts this includes index.js, dependencies and settings.json. */
-    val files: List<ScriptFileAsset> = emptyList()
+    val files: List<ScriptFileAsset> = emptyList(),
+    /** Remote files for current script assets/. These are not require-able JS modules. */
+    val assets: List<ScriptFileAsset> = emptyList()
 ) {
     fun supportsPackage(packageName: String): Boolean {
         return targets.isEmpty() || targets.any { it == "*" || it == packageName }
@@ -69,6 +71,8 @@ object ScriptPrefs {
      */
     const val SCRIPT_METADATA_CACHE_JSON = "script_metadata_cache_json"
     const val SCRIPT_METADATA_CACHE_UPDATED_AT = "script_metadata_cache_updated_at"
+    const val SCRIPT_ROOT = "scriptRoot"
+    const val SCRIPT_ROOT_LEGACY = "script.root"
 
     fun appEnabledKey(packageName: String): String = "app_enabled_$packageName"
 

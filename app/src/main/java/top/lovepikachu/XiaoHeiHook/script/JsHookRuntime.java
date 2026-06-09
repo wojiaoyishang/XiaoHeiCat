@@ -123,6 +123,12 @@ public final class JsHookRuntime {
     private final java.util.List<String> scriptGrants;
     private final Map<String, String> scriptFiles;
     private final Map<String, String> scriptFileHashes;
+    private final Map<String, String> scriptAssetFiles;
+    private final Map<String, String> scriptAssetFileHashes;
+    private final String scriptId;
+    private final String scriptVersion;
+    private final String scriptRootPath;
+    private final String scriptRootRelativePath;
     private final String settingsJson;
     private SettingsFacade settingsFacade;
     private final Map<String, Object> commonJsModuleCache = new ConcurrentHashMap<>();
@@ -186,6 +192,12 @@ public final class JsHookRuntime {
         this.scriptGrants = new ArrayList<>();
         this.scriptFiles = new LinkedHashMap<>();
         this.scriptFileHashes = new LinkedHashMap<>();
+        this.scriptAssetFiles = new LinkedHashMap<>();
+        this.scriptAssetFileHashes = new LinkedHashMap<>();
+        this.scriptId = "";
+        this.scriptVersion = "1.0.0";
+        this.scriptRootPath = ScriptPathResolver.defaultScriptRoot().getAbsolutePath();
+        this.scriptRootRelativePath = "";
         this.settingsJson = "{}";
     }
 
@@ -245,6 +257,30 @@ public final class JsHookRuntime {
             @Nullable String settingsJson,
             @Nullable java.util.List<String> scriptGrants
     ) {
+        this(module, packageName, processName, appClassLoader, currentEvent, currentRawParam, rawEnabled,
+                scriptFiles, scriptFileHashes, settingsJson, scriptGrants,
+                null, null, null, null, null, null);
+    }
+
+    public JsHookRuntime(
+            @NonNull HookEntry module,
+            @NonNull String packageName,
+            @NonNull String processName,
+            @NonNull ClassLoader appClassLoader,
+            @NonNull String currentEvent,
+            @Nullable Object currentRawParam,
+            boolean rawEnabled,
+            @Nullable Map<String, String> scriptFiles,
+            @Nullable Map<String, String> scriptFileHashes,
+            @Nullable String settingsJson,
+            @Nullable java.util.List<String> scriptGrants,
+            @Nullable String scriptId,
+            @Nullable String scriptVersion,
+            @Nullable String scriptRootPath,
+            @Nullable String scriptRootRelativePath,
+            @Nullable Map<String, String> scriptAssetFiles,
+            @Nullable Map<String, String> scriptAssetFileHashes
+    ) {
         this.module = module;
         this.packageName = packageName;
         this.processName = processName;
@@ -255,6 +291,14 @@ public final class JsHookRuntime {
         this.scriptGrants = normalizeGrantList(scriptGrants);
         this.scriptFiles = normalizeScriptFileMap(scriptFiles);
         this.scriptFileHashes = normalizeScriptFileMap(scriptFileHashes);
+        this.scriptAssetFiles = normalizeScriptFileMap(scriptAssetFiles);
+        this.scriptAssetFileHashes = normalizeScriptFileMap(scriptAssetFileHashes);
+        this.scriptId = scriptId == null ? "" : scriptId.trim();
+        this.scriptVersion = scriptVersion == null || scriptVersion.trim().isEmpty() ? "1.0.0" : scriptVersion.trim();
+        this.scriptRootPath = scriptRootPath == null || scriptRootPath.trim().isEmpty()
+                ? ScriptPathResolver.defaultScriptRoot().getAbsolutePath()
+                : scriptRootPath.trim();
+        this.scriptRootRelativePath = scriptRootRelativePath == null ? "" : ScriptPathResolver.normalizeRelativePath(scriptRootRelativePath);
         this.settingsJson = settingsJson == null || settingsJson.trim().isEmpty() ? "{}" : settingsJson;
     }
 
@@ -315,14 +359,14 @@ public final class JsHookRuntime {
                 ScriptableObject.putProperty(scope, "settings", Context.javaToJS(settingsFacade, scope));
                 ScriptableObject.putProperty(scope, "env", Context.javaToJS(new Env(scriptName, canonicalSourceName), scope));
                 ScriptableObject.putProperty(scope, "console", Context.javaToJS(new Console(), scope));
-                ScriptableObject.putProperty(scope, "Java", Context.javaToJS(new JavaBridge(), scope));
+                ScriptableObject.putProperty(scope, "Java", Context.javaToJS(new top.lovepikachu.XiaoHeiHook.script.JavaBridge(appClassLoader, scope, jsLock), scope));
                 if (dexApiEnabled()) {
                     ScriptableObject.putProperty(scope, "dex", Context.javaToJS(new DexApiFacade(module, appClassLoader, packageName, processName, dexDebugLoggingEnabled()), scope));
                 }
                 ScriptableObject.putProperty(scope, "require", createRequireFunction(canonicalSourceName));
                 ScriptableObject.putProperty(scope, "xposed", Context.javaToJS(new XposedFacade(), scope));
                 ScriptableObject.putProperty(scope, "debuggerx", Context.javaToJS(new DebuggerFacade(canonicalSourceName, scriptName), scope));
-                ScriptableObject.putProperty(scope, "xhh", Context.javaToJS(new XhhFacade(), scope));
+                ScriptableObject.putProperty(scope, "xhh", Context.javaToJS(new XhhFacade(scriptName, canonicalSourceName), scope));
 
                 try {
                     cx.evaluateString(scope, source, canonicalSourceName, 1, null);
@@ -418,20 +462,7 @@ public final class JsHookRuntime {
      * detected separately by selfTestLexicalBindings().
      */
     private static void configureRhinoContext(@NonNull Context cx, @NonNull String stage) {
-        try {
-            cx.setLanguageVersion(Context.VERSION_ES6);
-        } catch (Throwable t) {
-            throw new IllegalStateException("Rhino ES6 language mode is required for XiaoHeiHook 1.30 JS lexical bindings, stage=" + stage, t);
-        }
-
-        try {
-            // Interpreted mode is safer inside app processes and keeps stack/debug
-            // behavior deterministic.  Keep this together with languageVersion so
-            // all entry points share the same syntax/runtime contract.
-            cx.setOptimizationLevel(-1);
-        } catch (Throwable t) {
-            throw new IllegalStateException("Rhino interpreted mode configuration failed, stage=" + stage, t);
-        }
+        RhinoContextHelper.configure(cx, stage);
     }
 
     private static void installRegExpProxy(@NonNull Context cx) {
@@ -762,6 +793,10 @@ public final class JsHookRuntime {
     }
 
     public static String readRemoteText(@NonNull ParcelFileDescriptor pfd) throws Exception {
+        return new String(readRemoteBytes(pfd), StandardCharsets.UTF_8);
+    }
+
+    public static byte[] readRemoteBytes(@NonNull ParcelFileDescriptor pfd) throws Exception {
         try (InputStream in = new ParcelFileDescriptor.AutoCloseInputStream(pfd);
              ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[4096];
@@ -769,7 +804,7 @@ public final class JsHookRuntime {
             while ((len = in.read(buffer)) != -1) {
                 out.write(buffer, 0, len);
             }
-            return out.toString(StandardCharsets.UTF_8.name());
+            return out.toByteArray();
         }
     }
 
@@ -1164,6 +1199,7 @@ public final class JsHookRuntime {
 
     public final class XhhFacade {
         public final RpcFacade rpc = new RpcFacade();
+        public final FileJsApi fs;
         public final String name = XhhConstants.APP_NAME;
         public final String version = XhhConstants.VERSION_NAME;
         public final int versionCode = XhhConstants.VERSION_CODE;
@@ -1171,6 +1207,19 @@ public final class JsHookRuntime {
         public final int jsApiVersion = XhhConstants.JS_API_VERSION;
         public final int mcpBridgeVersion = XhhConstants.MCP_BRIDGE_VERSION;
         public final int dexApiVersion = XhhConstants.DEX_API_VERSION;
+
+        XhhFacade(String scriptDisplayName, String sourceName) {
+            ScriptPathResolver.ScriptContextInfo info = new ScriptPathResolver.ScriptContextInfo(
+                    scriptId,
+                    scriptDisplayName,
+                    scriptVersion,
+                    sourceName,
+                    scriptRootPath,
+                    scriptRootRelativePath
+            );
+            ScriptPathResolver resolver = new ScriptPathResolver(info);
+            this.fs = new FileJsApi(resolver, new ScriptAssetManager(module, resolver, scriptAssetFiles, scriptAssetFileHashes));
+        }
 
         public Object info() {
             LinkedHashMap<String, Object> out = new LinkedHashMap<>();
@@ -1185,8 +1234,11 @@ public final class JsHookRuntime {
             out.put("packageName", packageName);
             out.put("processName", processName);
             out.put("event", currentEvent);
+            out.put("scriptId", scriptId);
+            out.put("scriptVersion", scriptVersion);
             out.put("scriptName", activeScriptDisplayName == null ? "" : activeScriptDisplayName);
             out.put("scriptPath", activeScriptSourceName == null ? "" : activeScriptSourceName);
+            out.put("scriptRoot", scriptRootPath);
             out.put("internalDebug", internalDebugLoggingEnabled());
             out.put("mcpDebug", mcpDebugLoggingEnabled());
             out.put("dexDebug", dexDebugLoggingEnabled());
@@ -2171,6 +2223,10 @@ public final class JsHookRuntime {
         public Object all() {
             return JsApiValueNormalizer.toJs(new LinkedHashMap<>(values));
         }
+
+        public String getScriptRoot() {
+            return scriptRootPath;
+        }
     }
 
     private Map<String, Object> parseSettingsValues(@NonNull String raw) {
@@ -2301,67 +2357,6 @@ public final class JsHookRuntime {
         }
     }
 
-    public final class JavaBridge {
-        public final Class<?> BOOLEAN = Boolean.TYPE;
-        public final Class<?> BYTE = Byte.TYPE;
-        public final Class<?> CHAR = Character.TYPE;
-        public final Class<?> SHORT = Short.TYPE;
-        public final Class<?> INT = Integer.TYPE;
-        public final Class<?> LONG = Long.TYPE;
-        public final Class<?> FLOAT = Float.TYPE;
-        public final Class<?> DOUBLE = Double.TYPE;
-        public final Class<?> VOID = Void.TYPE;
-
-        public Class<?> type(String className) throws ClassNotFoundException {
-            return loadClass(className);
-        }
-
-        public Class<?> use(String className) throws ClassNotFoundException {
-            return loadClass(className);
-        }
-
-        public Class<?> classForName(String className) throws ClassNotFoundException {
-            return loadClass(className);
-        }
-
-        public Class<?> classForName(String className, boolean initialize, ClassLoader loader) throws ClassNotFoundException {
-            return Class.forName(className, initialize, loader == null ? appClassLoader : loader);
-        }
-
-        public Method method(Object clazzOrName, String methodName) throws Exception {
-            return method(clazzOrName, methodName, null);
-        }
-
-        public Method method(Object clazzOrName, String methodName, Object parameterTypes) throws Exception {
-            Class<?> clazz = asClass(clazzOrName);
-            Method method = clazz.getDeclaredMethod(methodName, toClassArray(parameterTypes));
-            method.setAccessible(true);
-            return method;
-        }
-
-        public Constructor<?> constructor(Object clazzOrName) throws Exception {
-            return constructor(clazzOrName, null);
-        }
-
-        public Constructor<?> constructor(Object clazzOrName, Object parameterTypes) throws Exception {
-            Class<?> clazz = asClass(clazzOrName);
-            Constructor<?> constructor = clazz.getDeclaredConstructor(toClassArray(parameterTypes));
-            constructor.setAccessible(true);
-            return constructor;
-        }
-
-        public Field field(Object clazzOrName, String fieldName) throws Exception {
-            Class<?> clazz = asClass(clazzOrName);
-            Field field = clazz.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            return field;
-        }
-
-        public Object newArray(Object componentType, int length) throws Exception {
-            return java.lang.reflect.Array.newInstance(asClass(componentType), length);
-        }
-    }
-
     public final class XposedFacade {
         public final int PRIORITY_HIGHEST = intConst("PRIORITY_HIGHEST", 10000);
         public final int PRIORITY_DEFAULT = intConst("PRIORITY_DEFAULT", 0);
@@ -2399,12 +2394,36 @@ public final class JsHookRuntime {
             return new JsHookBuilder(module.hook(executable));
         }
 
+        public JsHookBuilder hook(Object executable) {
+            Object unwrapped = unwrap(executable);
+            if (!(unwrapped instanceof Executable)) {
+                throw new IllegalArgumentException("xposed.hook expects java.lang.reflect.Executable, got " + String.valueOf(unwrapped));
+            }
+            return hook((Executable) unwrapped);
+        }
+
         public JsHookBuilder hookClassInitializer(Class<?> clazz) {
             return new JsHookBuilder(module.hookClassInitializer(clazz));
         }
 
+        public JsHookBuilder hookClassInitializer(Object clazz) {
+            Object unwrapped = unwrap(clazz);
+            if (!(unwrapped instanceof Class<?>)) {
+                throw new IllegalArgumentException("xposed.hookClassInitializer expects java.lang.Class, got " + String.valueOf(unwrapped));
+            }
+            return hookClassInitializer((Class<?>) unwrapped);
+        }
+
         public boolean deoptimize(Executable executable) {
             return module.deoptimize(executable);
+        }
+
+        public boolean deoptimize(Object executable) {
+            Object unwrapped = unwrap(executable);
+            if (!(unwrapped instanceof Executable)) {
+                throw new IllegalArgumentException("xposed.deoptimize expects java.lang.reflect.Executable, got " + String.valueOf(unwrapped));
+            }
+            return deoptimize((Executable) unwrapped);
         }
 
         public JsInvoker getInvoker(Method method) {
@@ -2413,6 +2432,13 @@ public final class JsHookRuntime {
 
         public JsInvoker getInvoker(Constructor<?> constructor) {
             return new JsInvoker(module.getInvoker(constructor));
+        }
+
+        public JsInvoker getInvoker(Object executable) {
+            Object unwrapped = unwrap(executable);
+            if (unwrapped instanceof Method) return getInvoker((Method) unwrapped);
+            if (unwrapped instanceof Constructor<?>) return getInvoker((Constructor<?>) unwrapped);
+            throw new IllegalArgumentException("xposed.getInvoker expects Method or Constructor, got " + String.valueOf(unwrapped));
         }
 
         public void log(int priority, String tag, Object msg) {
@@ -2960,8 +2986,8 @@ public final class JsHookRuntime {
         @Override
         public void onExceptionThrown(Context cx, Throwable ex) {
             JsDebugTrace.e("frameException"
-                    + " source=" + frameSourceName
-                    + " function=" + functionName,
+                            + " source=" + frameSourceName
+                            + " function=" + functionName,
                     ex);
         }
 
@@ -4040,6 +4066,12 @@ public final class JsHookRuntime {
     }
 
     private Object unwrap(Object value) {
+        if (value instanceof top.lovepikachu.XiaoHeiHook.script.JavaClassWrapper) {
+            return ((top.lovepikachu.XiaoHeiHook.script.JavaClassWrapper) value).getRawClass();
+        }
+        if (value instanceof top.lovepikachu.XiaoHeiHook.script.JavaObjectWrapper) {
+            return ((top.lovepikachu.XiaoHeiHook.script.JavaObjectWrapper) value).getRawObject();
+        }
         if (value instanceof Wrapper) {
             return ((Wrapper) value).unwrap();
         }
@@ -4194,6 +4226,116 @@ public final class JsHookRuntime {
         } catch (Throwable ignored) {
             return null;
         }
+    }
+
+    private boolean hasExplicitTypes(Object value) {
+        Object unwrapped = unwrap(value);
+        return unwrapped != null && unwrapped != Undefined.instance && unwrapped != Scriptable.NOT_FOUND;
+    }
+
+    private Method findBestCompatibleMethod(Class<?> clazz, String methodName, Object[] args, boolean requireStatic) throws NoSuchMethodException {
+        Method firstByCount = null;
+        for (Class<?> current = clazz; current != null; current = current.getSuperclass()) {
+            for (Method method : current.getDeclaredMethods()) {
+                if (!method.getName().equals(methodName)) continue;
+                if (method.getParameterTypes().length != args.length) continue;
+                if (requireStatic && !Modifier.isStatic(method.getModifiers())) continue;
+                if (!requireStatic && Modifier.isStatic(method.getModifiers())) continue;
+                method.setAccessible(true);
+                if (firstByCount == null) firstByCount = method;
+                if (canConvertArguments(method.getParameterTypes(), args)) return method;
+            }
+        }
+        if (firstByCount != null) return firstByCount;
+        throw new NoSuchMethodException(clazz.getName() + "." + methodName + "/" + args.length + (requireStatic ? " static" : ""));
+    }
+
+    private Constructor<?> findBestCompatibleConstructor(Class<?> clazz, Object[] args) throws NoSuchMethodException {
+        Constructor<?> firstByCount = null;
+        for (Constructor<?> constructor : clazz.getDeclaredConstructors()) {
+            if (constructor.getParameterTypes().length != args.length) continue;
+            constructor.setAccessible(true);
+            if (firstByCount == null) firstByCount = constructor;
+            if (canConvertArguments(constructor.getParameterTypes(), args)) return constructor;
+        }
+        if (firstByCount != null) return firstByCount;
+        throw new NoSuchMethodException(clazz.getName() + ".<init>/" + args.length);
+    }
+
+    private Field findField(Class<?> clazz, String fieldName) throws NoSuchFieldException {
+        for (Class<?> current = clazz; current != null; current = current.getSuperclass()) {
+            try {
+                Field field = current.getDeclaredField(fieldName);
+                field.setAccessible(true);
+                return field;
+            } catch (NoSuchFieldException ignored) {
+            }
+        }
+        throw new NoSuchFieldException(clazz.getName() + "." + fieldName);
+    }
+
+    private boolean canConvertArguments(Class<?>[] targetTypes, Object[] args) {
+        if (targetTypes.length != args.length) return false;
+        for (int i = 0; i < targetTypes.length; i++) {
+            if (!canConvertArgument(targetTypes[i], args[i])) return false;
+        }
+        return true;
+    }
+
+    private Object[] convertArguments(Class<?>[] targetTypes, Object[] args) {
+        Object[] out = new Object[args.length];
+        for (int i = 0; i < args.length; i++) out[i] = convertArgument(targetTypes[i], args[i]);
+        return out;
+    }
+
+    private boolean canConvertArgument(Class<?> targetType, Object arg) {
+        Object value = unwrap(arg);
+        if (value == Undefined.instance || value == Scriptable.NOT_FOUND) value = null;
+        if (value == null) return !targetType.isPrimitive();
+        Class<?> boxed = boxType(targetType);
+        if (boxed.isInstance(value)) return true;
+        if (Number.class.isAssignableFrom(boxed) && value instanceof Number) return true;
+        if ((boxed == Boolean.class) && value instanceof Boolean) return true;
+        if ((boxed == Character.class) && (value instanceof Character || String.valueOf(value).length() == 1)) return true;
+        if (targetType == String.class || targetType == CharSequence.class) return true;
+        return false;
+    }
+
+    private Object convertArgument(Class<?> targetType, Object arg) {
+        Object value = jsToJavaValue(arg);
+        if (value == Undefined.instance || value == Scriptable.NOT_FOUND) value = null;
+        if (value == null) return null;
+        Class<?> boxed = boxType(targetType);
+        if (boxed.isInstance(value)) return value;
+        if (boxed == Integer.class && value instanceof Number) return ((Number) value).intValue();
+        if (boxed == Long.class && value instanceof Number) return ((Number) value).longValue();
+        if (boxed == Float.class && value instanceof Number) return ((Number) value).floatValue();
+        if (boxed == Double.class && value instanceof Number) return ((Number) value).doubleValue();
+        if (boxed == Short.class && value instanceof Number) return ((Number) value).shortValue();
+        if (boxed == Byte.class && value instanceof Number) return ((Number) value).byteValue();
+        if (boxed == Boolean.class && value instanceof Boolean) return value;
+        if (boxed == Character.class) {
+            if (value instanceof Character) return value;
+            String text = String.valueOf(value);
+            return text.isEmpty() ? '\0' : text.charAt(0);
+        }
+        if (targetType == String.class) return String.valueOf(value);
+        if (targetType == CharSequence.class) return String.valueOf(value);
+        return value;
+    }
+
+    private Class<?> boxType(Class<?> type) {
+        if (!type.isPrimitive()) return type;
+        if (type == Boolean.TYPE) return Boolean.class;
+        if (type == Byte.TYPE) return Byte.class;
+        if (type == Character.TYPE) return Character.class;
+        if (type == Short.TYPE) return Short.class;
+        if (type == Integer.TYPE) return Integer.class;
+        if (type == Long.TYPE) return Long.class;
+        if (type == Float.TYPE) return Float.class;
+        if (type == Double.TYPE) return Double.class;
+        if (type == Void.TYPE) return Void.class;
+        return type;
     }
 
     private Method findCompatibleMethod(Class<?> clazz, String methodName, int argCount, boolean requireStatic) throws NoSuchMethodException {

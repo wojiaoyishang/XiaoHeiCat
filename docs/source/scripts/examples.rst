@@ -22,8 +22,9 @@ Application.onCreate 日志
    // ==/LSPosedScript==
 
    xposed.onPackageLoaded(function (param) {
-       const Application = Java.use('android.app.Application');
-       const onCreate = Java.method(Application, 'onCreate');
+       const Application = Java.type('android.app.Application');
+       const onCreate = Application.getDeclaredMethod('onCreate');
+       onCreate.setAccessible(true);
 
        xposed.hook(onCreate).intercept(function (chain) {
            xposed.i('XHH-App', 'before onCreate: ' + param.getPackageName());
@@ -31,6 +32,68 @@ Application.onCreate 日志
            xposed.i('XHH-App', 'after onCreate: ' + param.getPackageName());
            return result;
        });
+   });
+
+Application.attach 后 Toast
+------------------------------
+
+.. tip::
+	完整脚本可以参考 https://github.com/wojiaoyishang/XiaoHeiCat/tree/master/examples/toast.js
+
+.. code-block:: javascript
+
+   // ==LSPosedScript==
+   // @name         App 启动后 Toast
+   // @id           example.toast.after.launch
+   // @target       *
+   // @process      *
+   // @run-at       package-loaded
+   // @grant        java.full
+   // @grant        xposed.full
+   // ==/LSPosedScript==
+
+   const TAG = 'ToastDemo';
+   let executed = false;
+
+   function showToast(context, text) {
+       const Toast = Java.type('android.widget.Toast');
+       const Looper = Java.type('android.os.Looper');
+       const Handler = Java.type('android.os.Handler');
+
+       const mainHandler = new Handler(Looper.getMainLooper());
+
+       mainHandler.post(function () {
+           Toast.makeText(context, String(text), Toast.LENGTH_SHORT).show();
+       });
+   }
+
+   xposed.onPackageLoaded(function (param) {
+       const Application = Java.type('android.app.Application');
+       const ContextClass = Java.type('android.content.Context');
+
+       const attach = Application.getDeclaredMethod('attach', ContextClass);
+       attach.setAccessible(true);
+
+       xposed.hook(attach)
+           .setPriority(xposed.PRIORITY_DEFAULT)
+           .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
+           .intercept(function (chain) {
+               const context = chain.getArg(0);
+               const result = chain.proceed();
+
+               if (executed) return result;
+               executed = true;
+
+               try {
+                   const appPackage = String(context.getPackageName());
+                   xposed.i(TAG, 'Application.attach after package=' + appPackage);
+                   showToast(context, 'XiaoHeiHook 脚本已运行: ' + appPackage);
+               } catch (e) {
+                   xposed.e(TAG, 'show toast failed', e);
+               }
+
+               return result;
+           });
    });
 
 修改方法参数
@@ -68,6 +131,120 @@ Application.onCreate 日志
 
    xposed.i(tag, 'script enabled');
    
+
+文件读写：写入目标 App 私有目录
+--------------------------------------------
+
+.. note::
+   文件路径不要硬编码 ``/data/user/0``。应该在 ``Application.attach(Context)`` 后，
+   通过 ``xhh.fs.appDirs(context)`` 获取当前目标 App 的真实私有目录。
+
+.. code-block:: javascript
+
+   const TAG = 'FsReadWriteDemo';
+   let executed = false;
+
+   xposed.onPackageLoaded(function () {
+       const Application = Java.type('android.app.Application');
+       const ContextClass = Java.type('android.content.Context');
+       const attach = Application.getDeclaredMethod('attach', ContextClass);
+       attach.setAccessible(true);
+
+       xposed.hook(attach).intercept(function (chain) {
+           const context = chain.getArg(0);
+           const result = chain.proceed();
+
+           if (executed) return result;
+           executed = true;
+
+           try {
+               const dirs = xhh.fs.appDirs(context);
+               const workDir = xhh.fs.join(dirs.filesDir, 'xhh_demo');
+               const filePath = xhh.fs.join(workDir, 'hello.txt');
+
+               xhh.fs.mkdirs(workDir);
+               xhh.fs.writeText(filePath, 'package=' + dirs.packageName + '\n', 'UTF-8');
+
+               const text = xhh.fs.readText(filePath, 'UTF-8');
+               xposed.i(TAG, 'file=' + filePath);
+               xposed.i(TAG, 'content=\n' + text);
+           } catch (e) {
+               xposed.e(TAG, 'fs read/write failed', e);
+           }
+
+           return result;
+       });
+   });
+
+多文件脚本：复制 assets 并展示图片
+--------------------------------------------
+
+.. tip::
+   完整代码参考 https://github.com/wojiaoyishang/XiaoHeiCat/tree/master/examples/multi_asset_showcase 。
+
+这个示例适合学习 ``require``、``assets/`` 和 ``xhh.fs.copyAssetToApp`` 的组合用法。
+脚本启动后会把 ``assets/images/generated-showcase.png`` 复制到目标 App 私有目录，并在
+首个 ``Activity.onResume`` 后尝试用 ``ImageView`` 展示。
+
+目录结构::
+
+   demo.multi.asset.showcase/
+   ├─ index.js
+   ├─ main.js
+   ├─ lib/
+   │  ├─ assets.js
+   │  └─ showcase.js
+   └─ assets/
+      ├─ data/config.json
+      ├─ images/generated-showcase.png
+      └─ panel/index.html
+
+``index.js`` 只负责加载入口模块::
+
+   require('./main.js').install();
+
+``lib/assets.js`` 中的核心逻辑::
+
+   function prepare(context) {
+       const config = JSON.parse(xhh.fs.readAssetText('data/config.json', 'UTF-8'));
+
+       const options = {
+           rootDir: config.targetRootDir,
+           overwrite: true,
+           clean: false
+       };
+
+       const sync = xhh.fs.syncAssetsToApp(context, options);
+       const image = xhh.fs.copyAssetToApp(
+           context,
+           config.imageAsset,
+           config.imageTarget,
+           options
+       );
+
+       return {
+           config: config,
+           sync: sync,
+           image: image,
+           targetDir: xhh.fs.appAssetDir(context, options)
+       };
+   }
+
+``Activity.onResume`` 后展示图片的核心逻辑::
+
+   const ImageView = Java.type('android.widget.ImageView');
+   const Uri = Java.type('android.net.Uri');
+   const File = Java.type('java.io.File');
+
+   const image = new ImageView(activity);
+   image.setAdjustViewBounds(true);
+   image.setImageURI(Uri.fromFile(new File(prepared.image.path)));
+
+.. important::
+   ``rootDir`` 是相对目标 App ``filesDir`` 的安全子目录，例如
+   ``xhh_showcase/demo.multi.asset.showcase``。不要写 ``../``，也不要把资源复制到
+   App 私有目录之外。
+
 Hook 某个方法
 -----------------
 

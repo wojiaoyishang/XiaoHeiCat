@@ -23,7 +23,9 @@
    ├─ index.js
    ├─ logger.js
    ├─ okhttp.js
-   └─ settings.json
+   ├─ settings.json
+   └─ assets/
+      └─ icon.png
 
 扫描规则：
 
@@ -58,6 +60,21 @@ CommonJS require
 
 ``require`` 会缓存模块结果，同一个文件多次 require 不会重复执行。
 
+assets 资源目录
+-----------------
+
+多文件脚本可以包含 ``assets/`` 目录，用于存放 HTML、CSS、图片、JSON、本地图标等
+非 JS 资源。脚本通过 ``xhh.fs.readAssetText``、``xhh.fs.readAssetBytes``、
+``xhh.fs.copyAssetToApp`` 和 ``xhh.fs.syncAssetsToApp`` 访问这些资源。
+
+.. important::
+   ``assets/`` 只用于资源文件，不会参与 ``require`` 模块加载。需要被 ``require``
+   的 JS 文件应该放在脚本目录或 ``lib/`` 等普通目录中，不要放进 ``assets/``。
+
+.. tip::
+   资源要交给目标 App 的 ``ImageView``、``WebView`` 或 Java 业务代码使用时，推荐先复制到
+   目标 App 私有目录，再使用返回值里的完整路径。
+
 同步规则
 -----------------
 
@@ -65,6 +82,11 @@ CommonJS require
 
 - ``index.js``
 - ``settings.json``
-- 其他依赖文件
+- 其他依赖 JS 文件
+- ``assets/`` 下的资源文件
 
 同步到目标进程后，脚本通过 Remote Files 读取内容。同步文件会带有 SHA-256 校验，避免目标进程读取到不一致的脚本内容。
+
+.. note::
+   ``assets/`` 会被同步给 ``xhh.fs`` 读取和复制，但不会作为 JS 源码执行，也不会加入
+   ``require`` 搜索结果。

@@ -87,6 +87,33 @@ XiaoHeiHook 的执行脚本链路可以理解为：
 
 最后，用户脚本在 JS 环境中运行，通过 ``xposed.hook`` 等接口间接调用现代 LSPosed/libxposed 的 Hook 能力，从而完成方法拦截、日志输出、配置读取等操作。
 
+
+脚本文件、Remote Files 与目标 App 私有目录
+----------------------------------------------
+
+从 ``1.30 (107)`` 起，多文件脚本的 ``assets/`` 资源会随脚本一起同步到 LSPosed Remote Files。
+目标进程中的 JS 运行时通过 ``xhh.fs`` 读取这些资源，再按需复制到目标 App 私有目录。
+
+这条链路可以理解为：
+
+.. code-block:: text
+
+   Documents/XiaoHeiHook/<script>/assets/
+      => XiaoHeiHook 管理端同步
+      => LSPosed Remote Files
+      => 目标进程 xhh.fs 读取
+      => context.getFilesDir() 下的安全子目录
+      => ImageView / WebView / 目标 App Java API 使用
+
+.. important::
+   Remote Files 是脚本同步机制的一部分，不等于目标 App 自己的可访问文件目录。
+   如果目标 App 的 Java API、``ImageView`` 或 ``WebView`` 需要普通文件路径，应使用
+   ``xhh.fs.copyAssetToApp`` 或 ``xhh.fs.syncAssetsToApp``，然后使用返回值里的完整路径。
+
+.. tip::
+   完整的多文件资源展示示例见
+   https://github.com/wojiaoyishang/XiaoHeiCat/tree/master/examples/multi_asset_showcase 。
+
 libxposed 到 JS 的映射
 --------------------------------------
 
@@ -151,9 +178,41 @@ libxposed 到 JS 的映射
    * - ``listRemoteFiles`` / ``openRemoteFile``
      - ``xposed.listRemoteFiles`` / ``xposed.openRemoteFile``
      - 访问同步后的 Remote Files。
-   * - Java 反射
-     - ``Java.use`` / ``Java.method`` / ``Java.constructor``
-     - 获取 Class、Method、Constructor、Field。
+   * - Java 反射与桥接
+     - ``Java.type`` / wrapper 调用 / ``Java.method`` / ``Java.proxy``
+     - 获取 Class、Method、Constructor、Field，或通过 wrapper 直接调用 Java 静态方法、构造函数和实例方法。
+
+Java Bridge wrapper 的定位
+--------------------------------------
+
+从 ``1.30 (106)`` 起，``Java.type`` 返回的不是裸 ``java.lang.Class``，而是
+``JavaClassWrapper``。这样脚本既可以继续做反射，也可以直接使用更简洁的 Java 调用写法。
+
+.. code-block:: javascript
+
+   const Looper = Java.type('android.os.Looper');
+   const Handler = Java.type('android.os.Handler');
+
+   const handler = new Handler(Looper.getMainLooper());
+
+   handler.post(function () {
+       xposed.i('XHH', 'posted on main thread');
+   });
+
+``JavaClassWrapper`` 仍然保留原始 ``Class`` 入口：
+
+.. code-block:: javascript
+
+   const Activity = Java.type('android.app.Activity');
+   const raw = Activity.classObject || Activity.getRawClass();
+   xposed.i('XHH', raw.getName());
+
+当脚本调用 ``Application.getDeclaredMethod('attach', ContextClass)`` 这类
+``java.lang.Class`` 方法时，Bridge 会把 ``JavaClassWrapper`` 参数自动解包为原始
+``Class``，并处理 ``Class<?>...`` 这类 varargs 参数。
+
+``Java.call``、``Java.callStatic``、``Java.newInstance`` 等低层反射接口仍然保留，
+但普通脚本优先使用 wrapper 写法；只有动态类名、动态方法名、复杂重载或兼容旧脚本时再使用低层接口。
 
 Hook 模型差异
 ------------------
@@ -194,7 +253,7 @@ Hook 模型差异
 
 .. code-block:: javascript
 
-   const Activity = Java.use('android.app.Activity');
+   const Activity = Java.type('android.app.Activity');
    const onResume = Java.method(Activity, 'onResume');
 
    xposed.hook(onResume).intercept(function (chain) {
@@ -206,7 +265,7 @@ Hook 模型差异
 
 .. code-block:: javascript
 
-   const Activity = Java.use('android.app.Activity');
+   const Activity = Java.type('android.app.Activity');
    const onResume = Activity.getDeclaredMethod('onResume');
    onResume.setAccessible(true);
 

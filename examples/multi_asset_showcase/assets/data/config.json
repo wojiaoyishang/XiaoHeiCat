@@ -1,0 +1,11 @@
+{
+  "targetRootDir": "xhh_showcase/demo.multi.asset.showcase",
+  "imageAsset": "images/lxh.png",
+  "imageTarget": "images/lxh.png",
+  "htmlAsset": "panel/index.html",
+  "htmlTarget": "panel/index.html",
+  "dialogTitle": "XiaoHeiHook Asset 展示",
+  "message": "这张图片来自脚本 assets/，启动时已复制到目标 App 私有 filesDir 子目录。",
+  "showDelayMs": 800,
+  "maxBytes": 16777216
+}

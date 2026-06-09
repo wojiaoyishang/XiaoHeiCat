@@ -1,4 +1,4 @@
-动态 Dex Source API（1.30 / 106）
+动态 Dex Source API
 ================================================================================
 
 .. module:: XiaoHeiHook.dex
@@ -352,6 +352,7 @@ Class dump 与运行时来源
 
 .. function:: dex.dumpClassDex(classNameOrArray)
 .. function:: dex.dumpClassDex(classNameOrArray, loader)
+   :no-index:
 
    dump 指定类名或类名数组对应的 dexCache。
 
@@ -464,6 +465,7 @@ DexClassView 方法
 
 .. function:: cls.findMethod(name)
 .. function:: cls.findMethod(name, proto)
+   :no-index:
 
    查找类内方法。
 

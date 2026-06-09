@@ -116,6 +116,23 @@ Grant 权限边界
           console.log("rpc register grant declared");
       }
 
+``xhh.fs``
+   文件与资源桥接接口。从 ``1.30 (107)`` 起提供目标 App 私有目录查询、普通文件读写、
+   当前脚本 ``assets/`` 读取和资源复制能力。
+
+   常用能力：
+
+   - ``xhh.fs.appDirs(context)``
+   - ``xhh.fs.readText(path)`` / ``xhh.fs.writeText(path, text)``
+   - ``xhh.fs.readAssetText(relativePath)``
+   - ``xhh.fs.copyAssetToApp(context, assetRelativePath, targetRelativePath, options)``
+   - ``xhh.fs.syncAssetsToApp(context, options)``
+
+   示例::
+
+      const dirs = xhh.fs.appDirs(context);
+      xposed.i("XHH", "filesDir=" + dirs.filesDir);
+
 ``env``
    运行环境信息，例如包名、进程名、脚本名等。
 
@@ -153,6 +170,100 @@ Grant 权限边界
    - ``dex.dumpAndInspectMethod(options)``
    - ``dex.inspectMethodInFile(options)``
    - ``dex.locateMethodInCookieDumps(options)``
+
+
+文件路径与 assets 边界
+--------------------------------------
+
+``xhh.fs`` 解决的是“脚本资源”和“目标 App 私有目录”之间的桥接问题，但它不是
+Node.js 的 ``fs``，也不是一个任意路径沙箱逃逸工具。初学者最容易踩坑的是把三类路径混在一起：
+
+1. 脚本根目录，例如当前用户 ``Documents/XiaoHeiHook``。
+2. 当前脚本 ``assets/`` 资源目录。
+3. 目标 App 自己的 ``filesDir``、``dataDir`` 等私有目录。
+
+.. important::
+   不要硬编码 ``/data/user/0``、``/data/data`` 或 ``/sdcard``。目标 App 的真实目录应通过
+   ``xhh.fs.appDirs(context)`` 或 Android ``Context`` 动态获取。多用户、工作资料夹、分身应用
+   和部分系统环境下，真实 userId 不一定是 ``0``。
+
+脚本 assets 只能访问当前脚本自己的 ``assets/``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``readAssetText``、``readAssetBytes``、``assetPath``、``copyAssetToApp`` 和
+``syncAssetsToApp`` 都只面向当前脚本的 ``assets/`` 目录。
+
+允许::
+
+   xhh.fs.readAssetText("data/config.json", "UTF-8");
+   xhh.fs.copyAssetToApp(context, "images/icon.png", "images/icon.png");
+
+不允许::
+
+   xhh.fs.readAssetText("../index.js");
+   xhh.fs.copyAssetToApp(context, "../main.js");
+   xhh.fs.copyAssetToApp(context, "/sdcard/Download/a.png");
+
+.. note::
+   ``assets/`` 是资源目录，不是 JS 模块目录。需要 ``require`` 的文件放在脚本目录、
+   ``lib/`` 或其他普通子目录中；图片、HTML、CSS、JSON 等资源放在 ``assets/``。
+
+资源复制目标必须在目标 App filesDir 内
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``copyAssetToApp`` 和 ``syncAssetsToApp`` 第一版只支持复制到目标 App ``filesDir`` 下，
+不支持 ``cacheDir``，也不会把资源复制到外部存储。默认目录为::
+
+   <context.getFilesDir()>/xhh_assets/<scriptId>/<version>/
+
+如果传入 ``rootDir``，它可以是相对路径，也可以是位于 ``filesDir`` 内的绝对路径，但最终仍必须在
+目标 App ``filesDir`` 内。例如：
+
+推荐::
+
+   xhh.fs.copyAssetToApp(context, "images/icon.png", "images/icon.png", {
+       rootDir: "xhh_showcase/demo.multi.asset.showcase",
+       overwrite: true
+   });
+
+不推荐或会失败::
+
+   xhh.fs.copyAssetToApp(context, "images/icon.png", "../icon.png");
+   xhh.fs.copyAssetToApp(context, "images/icon.png", "images/icon.png", {
+       rootDir: "/sdcard/XiaoHeiHook/out"
+   });
+
+.. tip::
+   一定要使用返回值里的 ``path``。这个路径是复制完成后的完整路径，适合传给
+   ``ImageView``、``WebView.loadUrl('file://' + path)`` 或目标 App 的 Java API。
+
+普通文件 API 与 assets API 的区别
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``readText``、``writeText``、``readBytes``、``writeBytes``、``copy`` 是普通文件 API。
+它们用于脚本已经明确拿到路径的场景，例如写入目标 App ``filesDir`` 下的日志或配置。
+
+``readAssetText``、``copyAssetToApp``、``syncAssetsToApp`` 是 assets API。
+它们会额外检查资源路径，防止读取或复制 ``assets/`` 之外的脚本源码和其他文件。
+
+.. warning::
+   如果你的目的是“把脚本附带的图片、HTML、JSON 给目标 App 使用”，不要用普通
+   ``copy`` 自己拼源路径。直接使用 ``copyAssetToApp`` 或 ``syncAssetsToApp``。
+
+读取大小限制
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+文本和二进制读取默认限制为 ``16MB``。这是为了避免目标 App 启动阶段因为脚本一次性读取大文件而卡顿或 OOM。
+需要临时放宽时，可以传 ``maxBytes``：
+
+.. code-block:: javascript
+
+   const text = xhh.fs.readAssetText("data/big.json", "UTF-8", {
+       maxBytes: 32 * 1024 * 1024
+   });
+
+.. tip::
+   启动阶段尽量只读取小配置和小资源。大文件、全量扫描、复杂解析应该延后执行，并且只执行一次。
 
 不支持或不建议使用的能力
 --------------------------------------
@@ -301,22 +412,45 @@ Android 上 Rhino 的 ``JavaAdapter`` 常见问题是无法动态生成/加载 c
 
 推荐改为：
 
-- 使用 Xposed Hook 的生命周期触发。
-- 在 Java 层暴露安全的延迟/调度 API。
-- 或者通过目标 App 生命周期事件触发扫描。
+- 如果 Java 方法参数需要 ``Runnable``、listener 或 callback，优先传入 JS 函数，让 Java Bridge 自动创建 SAM 代理。
+- 多方法接口使用 ``Java.proxy(interfaceName, { methodName: function () {} })`` 显式声明。
+- 长耗时逻辑仍应通过 Xposed Hook 生命周期或目标 App 生命周期事件触发，不要在启动链路里阻塞等待。
 
-不要直接 new Runnable / Handler.postDelayed
+不要直接 new Java 接口 / 避免阻塞式调度
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-不要在 JS 里尝试构造 Java 接口实现::
+不要在 JS 里尝试直接构造 Java 接口实现::
 
-   new Runnable(...)
-   new java.lang.Thread(...)
-   new Handler().postDelayed(...)
+   const Runnable = Java.type("java.lang.Runnable");
+   new Runnable(...);
 
-这些写法容易因为接口实现、ClassLoader、线程上下文导致异常。
+Java 接口不能直接 ``new``。如果 Java 方法参数需要 ``Runnable`` 这类单方法接口，
+推荐直接传入 JS 函数，Bridge 会自动转换为 Java 代理：
 
-推荐用生命周期触发::
+.. code-block:: javascript
+
+   const Handler = Java.type("android.os.Handler");
+   const Looper = Java.type("android.os.Looper");
+
+   const handler = new Handler(Looper.getMainLooper());
+
+   handler.post(function () {
+     xposed.i("TAG", "posted");
+   });
+
+多方法接口或需要显式声明方法名时，使用 ``Java.proxy``：
+
+.. code-block:: javascript
+
+   const runnable = Java.proxy("java.lang.Runnable", {
+     run: function () {
+       xposed.i("TAG", "run");
+     }
+   });
+
+   handler.post(runnable);
+
+仍然不建议在启动链路中随意创建线程、长时间延迟或阻塞等待。推荐用生命周期触发::
 
    Application.attach
    Application.onCreate
@@ -421,6 +555,70 @@ Java ``String`` 与 JS ``String`` 不是完全相同的对象。调用 JS 字符
 不推荐直接写::
 
    file.getName().startsWith("cookie_")
+
+Java Bridge wrapper 边界
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``Java.type(className)`` 返回 ``JavaClassWrapper``，不是裸 ``java.lang.Class``。
+它可以直接读取静态字段、调用静态方法，也可以通过 ``new`` 调用构造函数：
+
+.. code-block:: javascript
+
+   const Looper = Java.type("android.os.Looper");
+   const Handler = Java.type("android.os.Handler");
+
+   const handler = new Handler(Looper.getMainLooper());
+
+``JavaClassWrapper`` 传入 Java 反射或 Android API 时会自动解包为原始
+``java.lang.Class``。因此可以直接写：
+
+.. code-block:: javascript
+
+   const Application = Java.type("android.app.Application");
+   const ContextClass = Java.type("android.content.Context");
+
+   const attach = Application.getDeclaredMethod("attach", ContextClass);
+   attach.setAccessible(true);
+
+需要原始 ``Class`` 时，可使用：
+
+.. code-block:: javascript
+
+   const raw = Application.classObject || Application.getRawClass();
+   xposed.i("TAG", raw.getName());
+
+普通 Java 实例会以 ``JavaObjectWrapper`` 形式暴露。它支持实例方法和字段访问，
+传回 Java 方法、``xposed.hook``、``chain.proceed`` 等接口时会自动解包。
+
+.. code-block:: javascript
+
+   const StringBuilder = Java.type("java.lang.StringBuilder");
+
+   const sb = new StringBuilder();
+   sb.append("hello").append(" world");
+
+   xposed.i("TAG", String(sb.toString()));
+
+常见边界转换规则：
+
+.. list-table:: Java Bridge 边界转换
+   :header-rows: 1
+   :widths: 35 65
+
+   * - JS 侧值
+     - 传入 Java 时
+   * - ``JavaClassWrapper``
+     - 解包为原始 ``java.lang.Class``。
+   * - ``JavaObjectWrapper``
+     - 解包为原始 Java 对象。
+   * - JS ``function``
+     - 在 SAM 接口参数位置自动转换为 Java ``Proxy``。
+   * - JS object
+     - 通过 ``Java.proxy`` 作为接口实现对象时，按 Java 方法名查找同名 JS 函数。
+   * - JS number
+     - 根据目标参数转换为 ``int``、``long``、``float``、``double`` 等。
+   * - JS string
+     - 转为 Java ``String``，并兼容 ``CharSequence`` 参数。
 
 ClassLoader 边界
 -------------------------
@@ -947,7 +1145,7 @@ Inspect / 搜索 Dex 方法体
 1. 普通 Hook 脚本只声明 ``java.full`` 和 ``xposed.full``。
 2. 脱壳脚本额外声明 ``dex.dump``。
 3. 业务类必须通过 ``Application.attach`` 后的 ``context.getClassLoader()`` 加载。
-4. 不要使用 ``JavaAdapter``、``Runnable``、``Thread.sleep``。
+4. 不要使用 ``JavaAdapter`` 或直接 ``new`` Java 接口；需要接口回调时使用自动 SAM 代理或 ``Java.proxy``。
 5. 不要在 JS 里手动处理大 dex 文件或大量 Java 文件对象。
 6. Dex 搜索和 inspect 优先交给 Java 层 API。
 7. 使用 ``executed`` / ``installed`` 防止重复执行。

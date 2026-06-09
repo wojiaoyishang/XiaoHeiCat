@@ -9,6 +9,7 @@
    structure
    metadata
    js_api
+   file_api
    boundaries
    dynamic_dex_scan/index
    mcp

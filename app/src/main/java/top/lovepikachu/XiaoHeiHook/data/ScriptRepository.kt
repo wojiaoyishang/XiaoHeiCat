@@ -18,11 +18,34 @@ object ScriptRepository {
     private const val HEADER_BEGIN = "// ==LSPosedScript=="
     private const val HEADER_END = "// ==/LSPosedScript=="
 
+    @Volatile
+    private var configuredScriptsDir: File? = null
+
     val publicScriptsDir: File
-        get() = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-            "XiaoHeiHook"
-        )
+        get() = configuredScriptsDir ?: defaultPublicScriptsDir()
+
+    fun defaultPublicScriptsDir(): File = File(
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+        "XiaoHeiHook"
+    )
+
+    fun scriptRootFromPrefs(prefs: SharedPreferences?): File {
+        val raw = prefs?.getString(ScriptPrefs.SCRIPT_ROOT, null)
+            ?: prefs?.getString(ScriptPrefs.SCRIPT_ROOT_LEGACY, null)
+        return raw?.trim()?.takeIf { it.isNotBlank() }?.let { File(it) } ?: defaultPublicScriptsDir()
+    }
+
+    fun applyScriptRootFromPrefs(prefs: SharedPreferences?) {
+        configuredScriptsDir = scriptRootFromPrefs(prefs).absoluteFile
+    }
+
+    fun setScriptRoot(prefs: SharedPreferences?, path: String): File {
+        val dir = File(path.trim()).absoluteFile
+        require(dir.path.isNotBlank()) { "脚本根目录不能为空" }
+        configuredScriptsDir = dir
+        prefs?.edit()?.putString(ScriptPrefs.SCRIPT_ROOT, dir.absolutePath)?.commit()
+        return dir
+    }
 
     val sampleScriptFile: File
         get() = File(publicScriptsDir, "application_on_create_log.js")
@@ -75,6 +98,13 @@ xposed.onPackageLoaded(function (param) {
         val path: String,
         val file: File,
         val content: String,
+        val source: String
+    )
+
+    private data class ScriptAssetFile(
+        val path: String,
+        val file: File,
+        val bytes: ByteArray,
         val source: String
     )
 
@@ -140,6 +170,7 @@ xposed.onPackageLoaded(function (param) {
     }
 
     fun readScriptMetadataCache(prefs: SharedPreferences?): List<ScriptMetadata> {
+        applyScriptRootFromPrefs(prefs)
         val raw = prefs?.getString(ScriptPrefs.SCRIPT_METADATA_CACHE_JSON, null)
         if (raw == null) {
             Log.d(TAG, "readScriptMetadataCache: no cache")
@@ -151,6 +182,7 @@ xposed.onPackageLoaded(function (param) {
     }
 
     fun hasScriptMetadataCache(prefs: SharedPreferences?): Boolean {
+        applyScriptRootFromPrefs(prefs)
         return prefs?.contains(ScriptPrefs.SCRIPT_METADATA_CACHE_JSON) == true
     }
 
@@ -158,6 +190,7 @@ xposed.onPackageLoaded(function (param) {
         prefs: SharedPreferences?,
         allowRootFallback: Boolean = true
     ): List<ScriptMetadata> {
+        applyScriptRootFromPrefs(prefs)
         if (hasScriptMetadataCache(prefs)) {
             return readScriptMetadataCache(prefs)
         }
@@ -172,6 +205,7 @@ xposed.onPackageLoaded(function (param) {
         prefs: SharedPreferences?,
         allowRootFallback: Boolean = true
     ): Result<List<ScriptMetadata>> = runCatching {
+        applyScriptRootFromPrefs(prefs)
         Log.d(TAG, "refreshScriptMetadataCache: start, allowRootFallback=$allowRootFallback")
         val scripts = readPublicScriptSources(
             debugPackageName = null,
@@ -390,6 +424,7 @@ xposed.onPackageLoaded(function (param) {
         debugPackageName: String? = null,
         allowRootFallback: Boolean = true
     ): Result<List<ScriptMetadata>> = runCatching {
+        applyScriptRootFromPrefs(prefs)
         Log.d(TAG, "syncPublicScriptsToRemote: start, service=${service != null}, prefs=${prefs != null}, debugPackage=${debugPackageName.orEmpty()}, allowRootFallback=$allowRootFallback")
         if (service == null || prefs == null) {
             throw IllegalStateException("LSPosed 服务未连接，无法同步 Remote Files")
@@ -422,6 +457,7 @@ xposed.onPackageLoaded(function (param) {
         prefs: SharedPreferences?,
         allowRootFallback: Boolean = true
     ): Result<List<ScriptMetadata>> = runCatching {
+        applyScriptRootFromPrefs(prefs)
         Log.d(TAG, "syncEnabledAppsScriptsToRemote: start, service=${service != null}, prefs=${prefs != null}, allowRootFallback=$allowRootFallback")
         if (service == null || prefs == null) {
             throw IllegalStateException("LSPosed 服务未连接，无法同步 Remote Files")
@@ -489,6 +525,7 @@ xposed.onPackageLoaded(function (param) {
         packageName: String,
         allowRootFallback: Boolean = true
     ): Result<List<ScriptMetadata>> = runCatching {
+        applyScriptRootFromPrefs(prefs)
         val targetPackage = packageName.trim()
         Log.d(TAG, "syncEnabledScriptsForPackageToRemote: start, service=${service != null}, prefs=${prefs != null}, package=$targetPackage, allowRootFallback=$allowRootFallback")
         if (service == null || prefs == null) {
@@ -615,6 +652,15 @@ xposed.onPackageLoaded(function (param) {
                         })
                     }
                 })
+                put("assets", JSONArray().apply {
+                    script.assets.forEach { asset ->
+                        put(JSONObject().apply {
+                            put("path", asset.path)
+                            put("remoteName", asset.remoteName)
+                            put("sha256", asset.sha256)
+                        })
+                    }
+                })
             })
         }
         return array
@@ -646,7 +692,8 @@ xposed.onPackageLoaded(function (param) {
                             hasSettings = obj.optBoolean("hasSettings", false),
                             settingsPath = obj.optString("settingsPath", ""),
                             settingsSchema = obj.optJSONObject("settingsSchema")?.toString() ?: obj.optString("settingsSchema", ""),
-                            files = obj.optJSONArray("files").toScriptFileAssets()
+                            files = obj.optJSONArray("files").toScriptFileAssets(),
+                            assets = obj.optJSONArray("assets").toScriptFileAssets()
                         )
                     )
                 }
@@ -668,7 +715,7 @@ xposed.onPackageLoaded(function (param) {
         val entryRemoteName = metadata.remoteName.ifBlank { remoteNameFor(metadata.id) }
         val entryContent = source.content
         val unitFiles = collectScriptUnitFiles(source, entryContent)
-        val assets = mutableListOf<ScriptFileAsset>()
+        val jsFiles = mutableListOf<ScriptFileAsset>()
 
         unitFiles.forEach { assetFile ->
             val remoteName = if (assetFile.path == metadata.path || assetFile.path == metadata.entryPath) {
@@ -686,10 +733,10 @@ xposed.onPackageLoaded(function (param) {
                 writeRemoteFile(service, remoteName, assetFile.content)
             }
             currentFiles[remoteName] = RemoteManifestFile(assetFile.path, remoteName, sha256)
-            assets += ScriptFileAsset(assetFile.path, remoteName, sha256)
+            jsFiles += ScriptFileAsset(assetFile.path, remoteName, sha256)
         }
 
-        if (assets.none { it.path == metadata.path }) {
+        if (jsFiles.none { it.path == metadata.path }) {
             val sha256 = sha256(entryContent)
             val unchanged = previousManifest[entryRemoteName] == sha256
             Log.d(TAG, "syncScriptUnitToRemote: entry not in asset list, ${if (unchanged) "skip" else "write"} fallback path=${metadata.path}, remoteName=$entryRemoteName, sha256=$sha256")
@@ -697,10 +744,30 @@ xposed.onPackageLoaded(function (param) {
                 writeRemoteFile(service, entryRemoteName, entryContent)
             }
             currentFiles[entryRemoteName] = RemoteManifestFile(metadata.path, entryRemoteName, sha256)
-            assets += ScriptFileAsset(metadata.path, entryRemoteName, sha256)
+            jsFiles += ScriptFileAsset(metadata.path, entryRemoteName, sha256)
         }
 
-        return metadata.copy(remoteName = entryRemoteName, files = assets.distinctBy { it.path })
+        val runtimeAssets = mutableListOf<ScriptFileAsset>()
+        collectScriptAssets(source).forEach { assetFile ->
+            val remoteName = remoteNameForScriptAsset(metadata.id, assetFile.path)
+            val sha256 = sha256(assetFile.bytes)
+            val unchanged = previousManifest[remoteName] == sha256
+            Log.d(
+                TAG,
+                "syncScriptAssetToRemote: ${if (unchanged) "skip" else "write"} path=${assetFile.path}, remoteName=$remoteName, sha256=$sha256, id=${metadata.id}, source=${assetFile.source}, bytes=${assetFile.bytes.size}"
+            )
+            if (!unchanged) {
+                writeRemoteBytes(service, remoteName, assetFile.bytes)
+            }
+            currentFiles[remoteName] = RemoteManifestFile(assetFile.path, remoteName, sha256)
+            runtimeAssets += ScriptFileAsset(assetFile.path, remoteName, sha256)
+        }
+
+        return metadata.copy(
+            remoteName = entryRemoteName,
+            files = jsFiles.distinctBy { it.path },
+            assets = runtimeAssets.distinctBy { it.path }
+        )
     }
 
 
@@ -762,6 +829,45 @@ xposed.onPackageLoaded(function (param) {
     }
 
 
+    private fun collectScriptAssets(source: ScriptSource): List<ScriptAssetFile> {
+        val metadata = source.metadata
+        if (metadata.kind != "directory" || metadata.rootPath.isBlank()) return emptyList()
+
+        val rootDir = File(publicScriptsDir, metadata.rootPath)
+        val assetsDir = File(rootDir, "assets")
+        if (!assetsDir.exists() || !assetsDir.isDirectory) {
+            Log.d(TAG, "collectScriptAssets: no assets dir id=${metadata.id}, root=${metadata.rootPath}")
+            return emptyList()
+        }
+
+        val canonicalAssetsDir = runCatching { assetsDir.canonicalFile }.getOrElse { assetsDir.absoluteFile }
+        val result = mutableListOf<ScriptAssetFile>()
+        assetsDir.walkTopDown()
+            .filter { it.isFile }
+            .sortedBy { relativeScriptPath(it).lowercase() }
+            .forEach { file ->
+                val canonical = runCatching { file.canonicalFile }.getOrElse { file.absoluteFile }
+                if (!isInside(canonicalAssetsDir, canonical)) {
+                    Log.w(TAG, "collectScriptAssets: skip path outside assets by symlink ${file.absolutePath}")
+                    return@forEach
+                }
+                val rel = relativeScriptPath(canonical)
+                val bytes = runCatching { canonical.readBytes() }
+                    .onFailure { Log.e(TAG, "collectScriptAssets: read failed ${canonical.absolutePath}", it) }
+                    .getOrNull() ?: return@forEach
+                result += ScriptAssetFile(rel, canonical, bytes, "file")
+            }
+        Log.d(TAG, "collectScriptAssets: id=${metadata.id}, root=${metadata.rootPath}, assets=${result.map { it.path }.joinToString()}")
+        return result
+    }
+
+    private fun isInside(root: File, target: File): Boolean {
+        val rootPath = root.path.trimEnd(File.separatorChar)
+        val targetPath = target.path
+        return targetPath == rootPath || targetPath.startsWith(rootPath + File.separator)
+    }
+
+
     private fun parseSyncManifest(raw: String?): Map<String, String> {
         if (raw.isNullOrBlank()) return emptyMap()
         return runCatching {
@@ -802,6 +908,15 @@ xposed.onPackageLoaded(function (param) {
                         put("remoteName", script.remoteName.ifBlank { remoteNameFor(script.id) })
                         put("files", JSONArray().apply {
                             script.files.forEach { asset ->
+                                put(JSONObject().apply {
+                                    put("path", asset.path)
+                                    put("remoteName", asset.remoteName)
+                                    put("sha256", asset.sha256)
+                                })
+                            }
+                        })
+                        put("assets", JSONArray().apply {
+                            script.assets.forEach { asset ->
                                 put(JSONObject().apply {
                                     put("path", asset.path)
                                     put("remoteName", asset.remoteName)
@@ -921,10 +1036,14 @@ xposed.onPackageLoaded(function (param) {
     }
 
     private fun writeRemoteFile(service: XposedService, name: String, content: String) {
+        writeRemoteBytes(service, name, content.toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun writeRemoteBytes(service: XposedService, name: String, bytes: ByteArray) {
         val pfd: ParcelFileDescriptor = service.openRemoteFile(name)
         ParcelFileDescriptor.AutoCloseOutputStream(pfd).use { out ->
             out.channel.truncate(0)
-            out.write(content.toByteArray(StandardCharsets.UTF_8))
+            out.write(bytes)
             out.flush()
         }
     }
@@ -960,8 +1079,10 @@ xposed.onPackageLoaded(function (param) {
         return digest.joinToString("") { "%02x".format(it) }
     }
 
-    fun sha256(value: String): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8))
+    fun sha256(value: String): String = sha256(value.toByteArray(StandardCharsets.UTF_8))
+
+    fun sha256(value: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(value)
         return digest.joinToString("") { "%02x".format(it) }
     }
 

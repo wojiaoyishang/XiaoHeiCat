@@ -1,0 +1,27 @@
+body {
+  margin: 0;
+  padding: 20px;
+  font-family: sans-serif;
+  background: #f5f7fb;
+  color: #1f2937;
+}
+
+.card {
+  border-radius: 18px;
+  background: white;
+  padding: 18px;
+  box-shadow: 0 8px 24px rgba(31, 41, 55, 0.16);
+}
+
+img {
+  width: 160px;
+  height: 160px;
+  display: block;
+  margin: 12px auto;
+}
+
+.path {
+  word-break: break-all;
+  font-size: 12px;
+  color: #4b5563;
+}

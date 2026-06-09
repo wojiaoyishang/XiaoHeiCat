@@ -1,10 +1,13 @@
-JS API 参考（1.30 / 106）
+JS API 参考
 ================================================================================
 
 本页按 Python 文档的写法组织 XiaoHeiHook 注入到 JavaScript 运行时的全局接口：
 每个对象先说明源码定义，再把每个函数单独列为 ``.. function::`` 条目，便于查阅。
 ``1.30 (106)`` 是一次 JS API 返回值稳定化和语法边界明确化版本，新脚本应优先使用
 JS 对象、JS 数组和对象字面量参数。
+
+``1.30 (107)`` 新增 ``xhh.fs`` 文件与资源桥接接口，用于脚本文件读写、当前脚本
+``assets/`` 读取，以及资源复制到目标 App 私有目录。
 
 .. module:: XiaoHeiHook.js
 
@@ -28,14 +31,17 @@ JS 对象、JS 数组和对象字面量参数。
      - ``JsHookRuntime.Console``
      - 控制台日志输出。
    * - ``Java``
-     - ``JsHookRuntime.JavaBridge``
-     - Java 类型加载、反射方法、字段、数组创建。
+     - ``JavaBridge`` / ``JavaClassWrapper`` / ``JavaObjectWrapper``
+     - Java 类型加载、wrapper 调用、反射方法、字段、数组创建。
    * - ``xposed``
      - ``JsHookRuntime.XposedFacade``
      - LSPosed 生命周期、Hook、Invoker、日志、堆栈、Remote File。
    * - ``xhh``
      - ``JsHookRuntime.XhhFacade`` / ``RpcFacade``
      - XiaoHeiHook 版本、grant、JS 引擎能力、对象类型、稳定遍历和 RPC。
+   * - ``xhh.fs``
+     - ``FileJsApi`` / ``ScriptAssetManager`` / ``TargetAppPathHelper``
+     - 文件读写、脚本 assets 读取、资源复制到目标 App 私有目录。
    * - ``debuggerx``
      - ``JsHookRuntime.DebuggerFacade``
      - WebIDE 软断点、行断点和调试日志。
@@ -67,8 +73,10 @@ JS 对象、JS 数组和对象字面量参数。
      - 调试对象 ``{ type, message, text }``；日志接口仍能识别真正的 Java ``Throwable``。
    * - ``File``
      - 文件绝对路径字符串。
-   * - ``Class`` / ``ClassLoader`` / ``Method`` / ``Constructor`` / ``Field``
-     - 保留为 Java bridge 对象，供 Hook 或反射继续使用。
+   * - ``Class``
+     - 返回 ``JavaClassWrapper``；可直接读静态字段、调静态方法、执行 ``new``，也可通过 ``classObject`` / ``getRawClass()`` 取得原始 ``Class``。
+   * - ``ClassLoader`` / ``Method`` / ``Constructor`` / ``Field`` / 普通 Java 对象
+     - 返回 Java bridge 对象，供 Hook 或反射继续使用；传回 Java API 时会自动解包。
    * - 字符串、数字、布尔值、``null``
      - 原样返回。
 
@@ -122,6 +130,7 @@ JS 脚本语法边界说明
    :return: 返回 JS 稳定值；不存在时返回 ``null``。
 
 .. function:: settings.get(key, defaultValue)
+   :no-index:
 
    读取指定设置项，不存在时返回默认值。
 
@@ -210,14 +219,18 @@ JS 脚本语法边界说明
 ``Java`` 反射接口
 --------------------------------------------------------------------------------
 
-源码定义：``JsHookRuntime.JavaBridge``。
+源码定义：``top.lovepikachu.XiaoHeiHook.script.JavaBridge``。
+
+``Java`` 全局对象由 ``JsHookRuntime`` 注入；类 wrapper、实例 wrapper、参数转换和
+接口代理分别由 ``JavaClassWrapper``、``JavaObjectWrapper``、``JavaReflectionInvoker``
+和 ``JavaProxyFactory`` 实现。
 
 .. function:: Java.type(className)
 
-   加载 Java 类。
+   加载 Java 类，并返回 JS 友好的 ``JavaClassWrapper``。
 
    :param string className: Java 类名，例如 ``android.app.Application``。
-   :return: Java ``Class`` 对象。
+   :return: ``JavaClassWrapper``，不是裸 ``java.lang.Class``。
 
 .. function:: Java.use(className)
 
@@ -228,6 +241,7 @@ JS 脚本语法边界说明
    使用默认 ClassLoader 加载类。
 
 .. function:: Java.classForName(className, initialize, loader)
+   :no-index:
 
    使用指定初始化参数和 ClassLoader 加载类。
 
@@ -236,12 +250,13 @@ JS 脚本语法边界说明
    获取无参方法。
 
 .. function:: Java.method(clazzOrName, methodName, parameterTypes)
+   :no-index:
 
    获取指定参数列表的方法。
 
-   :param clazzOrName: Java ``Class`` 对象或类名字符串。
+   :param clazzOrName: Java ``Class`` 对象、``JavaClassWrapper`` 或类名字符串。
    :param string methodName: 方法名。
-   :param parameterTypes: JS 数组或 Java Class 数组。
+   :param parameterTypes: JS 数组、Java Class 数组、``JavaClassWrapper`` 数组或类名数组。
    :return: Java ``Method`` 对象。
 
 .. function:: Java.constructor(clazzOrName)
@@ -249,6 +264,7 @@ JS 脚本语法边界说明
    获取无参构造器。
 
 .. function:: Java.constructor(clazzOrName, parameterTypes)
+   :no-index:
 
    获取指定参数构造器。
 
@@ -256,9 +272,186 @@ JS 脚本语法边界说明
 
    获取字段对象。
 
+.. function:: Java.callStatic(clazzOrName, methodName)
+
+   反射调用静态方法。
+
+.. function:: Java.callStatic(clazzOrName, methodName, args)
+   :no-index:
+
+   反射调用静态方法，并传入参数数组。
+
+.. function:: Java.callStatic(clazzOrName, methodName, args, parameterTypes)
+   :no-index:
+
+   反射调用静态方法，并显式指定参数类型。
+
+.. function:: Java.call(target, methodName)
+
+   反射调用实例方法；如果 ``target`` 是类对象，则按静态方法调用。
+
+.. function:: Java.call(target, methodName, args)
+   :no-index:
+
+   反射调用实例方法，并传入参数数组。
+
+.. function:: Java.call(target, methodName, args, parameterTypes)
+   :no-index:
+
+   反射调用实例方法，并显式指定参数类型。
+
+.. function:: Java.newInstance(clazzOrName)
+
+   反射调用无参构造器创建实例。
+
+.. function:: Java.newInstance(clazzOrName, args)
+   :no-index:
+
+   反射调用构造器创建实例，并传入参数数组。
+
+.. function:: Java.newInstance(clazzOrName, args, parameterTypes)
+   :no-index:
+
+   反射调用构造器创建实例，并显式指定参数类型。
+
+.. function:: Java.getStatic(clazzOrName, fieldName)
+
+   读取静态字段。
+
+.. function:: Java.setStatic(clazzOrName, fieldName, value)
+
+   写入静态字段。
+
+.. function:: Java.get(target, fieldName)
+
+   读取实例字段；如果 ``target`` 是类对象，则按静态字段读取。
+
+.. function:: Java.set(target, fieldName, value)
+
+   写入实例字段；如果 ``target`` 是类对象，则按静态字段写入。
+
 .. function:: Java.newArray(componentType, length)
 
    创建 Java 数组。
+
+.. function:: Java.proxy(interfaceName, implementation)
+
+   创建 Java 接口代理。``implementation`` 可以是 JS 函数，也可以是包含同名方法的 JS 对象。
+
+   :param string interfaceName: Java 接口名，例如 ``java.lang.Runnable``。
+   :param implementation: JS ``function`` 或对象字面量。
+   :return: Java ``Proxy`` 对象，可传给需要该接口的 Java 方法。
+
+Java Bridge wrapper 语法
+--------------------------------------------------------------------------------
+
+``Java.type(className)`` 返回的是 ``JavaClassWrapper``。它内部持有原始
+``java.lang.Class``，但脚本侧可以直接使用更接近 Frida / Rhino 的写法读取静态字段、
+调用静态方法、调用构造函数和实例方法。
+
+**推荐写法：**
+
+.. code-block:: javascript
+
+   const Toast = Java.type("android.widget.Toast");
+   const Looper = Java.type("android.os.Looper");
+   const Handler = Java.type("android.os.Handler");
+
+   const mainHandler = new Handler(Looper.getMainLooper());
+
+   mainHandler.post(function () {
+       Toast.makeText(context, String(text), Toast.LENGTH_SHORT).show();
+   });
+
+.. list-table:: wrapper 行为
+   :header-rows: 1
+   :widths: 34 66
+
+   * - 写法
+     - 行为
+   * - ``Toast.LENGTH_SHORT``
+     - 读取 Java 静态字段。
+   * - ``Looper.getMainLooper()``
+     - 调用 Java 静态方法。
+   * - ``new Handler(mainLooper)``
+     - 调用 Java 构造函数，返回 ``JavaObjectWrapper``。
+   * - ``handler.post(function () {})``
+     - 调用 Java 实例方法；当目标参数是 ``Runnable`` 等 SAM 接口时自动创建代理。
+   * - ``Application.getDeclaredMethod("attach", ContextClass)``
+     - 兼容 ``java.lang.Class`` 实例方法，并自动把 ``JavaClassWrapper`` 参数解包为原始 ``Class``。
+   * - ``clazz.classObject`` / ``clazz.getRawClass()``
+     - 获取原始 ``java.lang.Class``。
+
+``JavaObjectWrapper`` 表示普通 Java 实例。它支持实例字段读取/写入、实例方法调用，
+传回 Java 方法或 Xposed API 时会自动解包为原始 Java 对象。
+
+.. code-block:: javascript
+
+   const StringBuilder = Java.type("java.lang.StringBuilder");
+
+   const sb = new StringBuilder();
+   sb.append("bridge").append("-").append(106);
+
+   xposed.i("XHH", String(sb.toString()));
+
+如果需要原始对象，可以使用 ``obj.raw`` 或 ``obj.getRawObject()``。普通脚本通常不需要手动解包。
+
+Java Bridge 自动代理
+--------------------------------------------------------------------------------
+
+当 Java 方法参数类型是接口，并且该接口只有一个抽象方法时，可以直接传入 JS 函数。
+Bridge 会自动创建 Java ``Proxy``，并在 Java 回调进入时重新进入 Rhino ``Context`` 调用 JS 函数。
+
+.. code-block:: javascript
+
+   const Handler = Java.type("android.os.Handler");
+   const Looper = Java.type("android.os.Looper");
+
+   const handler = new Handler(Looper.getMainLooper());
+
+   handler.post(function () {
+       xposed.i("XHH", "run on main thread");
+   });
+
+多方法接口或需要显式声明方法名时，使用 ``Java.proxy``：
+
+.. code-block:: javascript
+
+   const runnable = Java.proxy("java.lang.Runnable", {
+       run: function () {
+           xposed.i("XHH", "explicit proxy");
+       }
+   });
+
+   handler.post(runnable);
+
+单方法接口也可以直接把函数传给 ``Java.proxy``：
+
+.. code-block:: javascript
+
+   const runnable = Java.proxy("java.lang.Runnable", function () {
+       xposed.i("XHH", "run");
+   });
+
+``equals``、``hashCode``、``toString`` 会由代理默认处理。接口方法返回值会按目标 Java
+返回类型转换；JS 异常会沿 Java 调用链抛出。
+
+Java Bridge 低层反射 fallback
+--------------------------------------------------------------------------------
+
+推荐优先使用 wrapper 写法。低层反射接口仍然保留，适合动态类名、动态方法名、复杂重载、
+调试或兼容旧脚本。
+
+.. code-block:: javascript
+
+   const mainLooper = Java.callStatic("android.os.Looper", "getMainLooper");
+   const handler = Java.newInstance("android.os.Handler", [mainLooper]);
+
+   Java.call(handler, "post", [
+       Java.proxy("java.lang.Runnable", function () {
+           xposed.i("XHH", "fallback reflection");
+       })
+   ], ["java.lang.Runnable"]);
 
 ``xposed`` 生命周期接口
 --------------------------------------------------------------------------------
@@ -380,6 +573,7 @@ JS 脚本语法边界说明
    执行原始方法。
 
 .. function:: chain.proceed(args)
+   :no-index:
 
    使用新的参数数组执行原始方法。
 
@@ -388,6 +582,7 @@ JS 脚本语法边界说明
    使用指定 ``this`` 执行原始方法。
 
 .. function:: chain.proceedWith(thisObject, args)
+   :no-index:
 
    使用指定 ``this`` 和参数执行原始方法。
 
@@ -411,21 +606,25 @@ JS 脚本语法边界说明
 
 .. function:: invoker.invoke(thisObject)
 .. function:: invoker.invoke(thisObject, args)
+   :no-index:
 
    调用方法。
 
 .. function:: invoker.invokeSpecial(thisObject)
 .. function:: invoker.invokeSpecial(thisObject, args)
+   :no-index:
 
    special 调用方法。
 
 .. function:: invoker.newInstance()
 .. function:: invoker.newInstance(args)
+   :no-index:
 
    调用构造器创建实例。
 
 .. function:: invoker.newInstanceSpecial(subClass)
 .. function:: invoker.newInstanceSpecial(subClass, args)
+   :no-index:
 
    special 构造。
 
@@ -437,6 +636,7 @@ JS 脚本语法边界说明
    按 Android 日志优先级输出。
 
 .. function:: xposed.log(priority, tag, msg, throwable)
+   :no-index:
 
    输出日志并附带异常；非 Java ``Throwable`` 会安全转成字符串。
 
@@ -446,6 +646,7 @@ JS 脚本语法边界说明
 .. function:: xposed.w(tag, msg)
 .. function:: xposed.e(tag, msg)
 .. function:: xposed.e(tag, msg, any)
+   :no-index:
 .. function:: xposed.wtf(tag, msg)
 
    各日志级别快捷方法。``xposed.e(tag, msg, any)`` 的第三参可以是 Java
@@ -472,6 +673,7 @@ JS 脚本语法边界说明
 
 .. function:: xposed.stackTrace()
 .. function:: xposed.stackTrace(options)
+   :no-index:
 
    返回 JS 堆栈数组。``options`` 支持 ``appOnly``、``maxDepth``、``skipNative``。
 
@@ -539,14 +741,17 @@ JS 脚本语法边界说明
 
 .. function:: xposed.raw.call(target, methodName)
 .. function:: xposed.raw.call(target, methodName, args)
+   :no-index:
 
    反射调用方法；返回 Map/List 时会稳定化。
 
 .. function:: xposed.raw.field(targetOrClass, fieldName)
 .. function:: xposed.raw.method(clazzOrName, methodName)
 .. function:: xposed.raw.method(clazzOrName, methodName, parameterTypes)
+   :no-index:
 .. function:: xposed.raw.constructor(clazzOrName)
 .. function:: xposed.raw.constructor(clazzOrName, parameterTypes)
+   :no-index:
 
    raw 反射辅助。
 
@@ -605,6 +810,65 @@ JS 脚本语法边界说明
 
    判断值是否为 Java bridge 对象。
 
+
+``xhh.fs`` 文件与资源接口
+--------------------------------------------------------------------------------
+
+源码定义：``top.lovepikachu.XiaoHeiHook.script.FileJsApi``。
+底层路径解析与资源复制分别由 ``ScriptPathResolver``、``ScriptAssetManager``、
+``TargetAppPathHelper`` 和 ``FileCopyUtils`` 实现。
+
+``xhh.fs`` 用于目标 App 私有目录文件读写、当前脚本 ``assets/`` 资源读取、
+以及把脚本资源复制到目标 App ``filesDir`` 下的安全子目录。完整参数、返回值、示例和常见坑见
+:doc:`file_api`。
+
+.. list-table:: 常用入口
+   :header-rows: 1
+   :widths: 36 64
+
+   * - 方法
+     - 说明
+   * - ``xhh.fs.appDirs(context)``
+     - 获取目标 App 私有目录信息。目录来自目标 App ``Context``，不要硬编码 ``/data/user/0``。
+   * - ``xhh.fs.join(...parts)``
+     - 拼接路径片段。
+   * - ``xhh.fs.exists(path)`` / ``isFile(path)`` / ``isDirectory(path)``
+     - 判断路径状态。
+   * - ``xhh.fs.mkdirs(path)``
+     - 创建目录及父目录。
+   * - ``xhh.fs.readText(path, charset, options)`` / ``writeText(path, text, charset)``
+     - 读取或写入文本文件。读取默认最大 ``16MB``，可通过 ``{ maxBytes }`` 调整。
+   * - ``xhh.fs.readBytes(path, options)`` / ``writeBytes(path, bytes)``
+     - 读取或写入二进制文件。
+   * - ``xhh.fs.copy(src, dst, options)``
+     - 复制普通文件，返回 ``{ source, path, bytes, copied, skipped, overwritten }``。
+   * - ``xhh.fs.scriptRoot()`` / ``scriptDir()`` / ``assetsDir()``
+     - 返回脚本根目录、当前脚本目录、当前脚本 ``assets/`` 目录。
+   * - ``xhh.fs.assetPath(relativePath)`` / ``readAssetText(...)`` / ``readAssetBytes(...)``
+     - 解析或读取当前脚本 ``assets/`` 下的资源。
+   * - ``xhh.fs.appAssetDir(context, options)``
+     - 返回当前脚本在目标 App 私有目录中的资源目标根目录。
+   * - ``xhh.fs.copyAssetToApp(context, asset, target, options)``
+     - 复制单个 asset 到目标 App ``filesDir`` 下的安全子目录，并返回完整目标路径。
+   * - ``xhh.fs.syncAssetsToApp(context, options)``
+     - 递归同步当前脚本 ``assets/`` 到目标 App 私有目录。
+
+.. tip::
+
+   资源给目标 App 使用时，优先使用 ``copyAssetToApp`` 或 ``syncAssetsToApp``。
+   当前版本只支持复制到目标 App ``filesDir`` 下，不支持 ``cacheDir``。
+
+**示例：**
+
+.. code-block:: javascript
+
+   const config = JSON.parse(xhh.fs.readAssetText('data/config.json', 'UTF-8'));
+   const copied = xhh.fs.copyAssetToApp(context, 'images/icon.png', 'images/icon.png', {
+       rootDir: 'xhh_showcase/demo.multi.asset.showcase',
+       overwrite: true
+   });
+   xposed.i(TAG, 'icon=' + copied.path);
+
 ``xhh.rpc`` RPC 接口
 --------------------------------------------------------------------------------
 
@@ -615,6 +879,7 @@ JS 脚本语法边界说明
    注册 RPC 方法。
 
 .. function:: xhh.rpc.register_method(name, options, handler)
+   :no-index:
 
    注册 RPC 方法并指定说明、schema 等元信息。
 
@@ -656,6 +921,7 @@ JS 脚本语法边界说明
 
 .. function:: debuggerx.breakpoint(name)
 .. function:: debuggerx.breakpoint(name, locals)
+   :no-index:
 
    触发命名断点。
 

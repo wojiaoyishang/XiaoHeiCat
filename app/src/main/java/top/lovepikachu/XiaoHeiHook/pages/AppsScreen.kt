@@ -1480,7 +1480,7 @@ private fun openScriptDirectory(context: Context, relativePath: String) {
 
 private fun resolveScriptFile(relativePath: String): File {
     val clean = relativePath.trim('/').replace('\\', '/')
-    val root = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "XiaoHeiHook").canonicalFile
+    val root = ScriptRepository.publicScriptsDir.canonicalFile
     val target = File(root, clean).canonicalFile
     require(target.path == root.path || target.path.startsWith(root.path + File.separator)) {
         "脚本路径越界"

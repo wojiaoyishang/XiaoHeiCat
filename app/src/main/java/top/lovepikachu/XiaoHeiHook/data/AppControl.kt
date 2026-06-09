@@ -18,7 +18,10 @@ object AppControl {
         val forceStopMessage: String?,
         val launchRequested: Boolean,
         val launchOk: Boolean?,
-        val launchMessage: String?
+        val launchMessage: String?,
+        val launchMode: String? = null,
+        val rootLaunchOk: Boolean? = null,
+        val rootLaunchMessage: String? = null
     ) {
         val needsManualRestart: Boolean
             get() = !forceStopOk
@@ -29,7 +32,23 @@ object AppControl {
             ?: throw IllegalStateException("找不到可启动入口：$packageName")
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)
-        Log.d(TAG, "launchPackage: $packageName")
+        Log.d(TAG, "launchPackage: foreground $packageName")
+    }
+
+    fun launchPackageByRoot(context: Context, packageName: String): Result<Unit> = runCatching {
+        val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+            ?: throw IllegalStateException("找不到可启动入口：$packageName")
+        val component = intent.component
+        val command = if (component != null) {
+            "am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -n ${shellQuote(component.flattenToString())}"
+        } else {
+            "monkey -p ${shellQuote(packageName)} -c android.intent.category.LAUNCHER 1"
+        }
+        val result = runRootCommand(command, timeoutSeconds = 8)
+        if (result.exitCode != 0 || result.timedOut) {
+            throw IllegalStateException("Root 打开失败：exit=${result.exitCode}, timeout=${result.timedOut}, stderr=${result.stderr.trim().ifBlank { result.stdout.trim() }}")
+        }
+        Log.d(TAG, "launchPackageByRoot: $packageName command=$command")
     }
 
     fun openSystemSettings(context: Context, packageName: String): Result<Unit> = runCatching {
@@ -59,23 +78,52 @@ object AppControl {
             val message = stopMessage ?: "Root 终止失败"
             Log.w(TAG, "restartPackage: force-stop failed package=$packageName message=$message")
             if (appendLog) {
-                appendRestartLog(appContext, packageName, "Root 终止失败，请手动终止并重启应用。详情：$message")
+                appendRestartLog(appContext, packageName, "Root 终止失败；没有 Root 时只能在 XiaoHeiHook 前台尝试打开目标应用。详情：$message")
             }
         }
 
-        val launchResult = if (launch) launchPackage(appContext, packageName) else Result.success(Unit)
+        var rootLaunchOk: Boolean? = null
+        var rootLaunchMessage: String? = null
+        var launchMode: String? = null
+        val launchResult = if (!launch) {
+            Result.success(Unit)
+        } else if (stopOk) {
+            val rootLaunchResult = launchPackageByRoot(appContext, packageName)
+            rootLaunchOk = rootLaunchResult.isSuccess
+            rootLaunchMessage = rootLaunchResult.exceptionOrNull()?.message
+            if (rootLaunchResult.isSuccess) {
+                launchMode = "root"
+                rootLaunchResult
+            } else {
+                Log.w(TAG, "restartPackage: root launch failed package=$packageName message=${rootLaunchMessage.orEmpty()}")
+                val foregroundLaunchResult = launchPackage(appContext, packageName)
+                launchMode = if (foregroundLaunchResult.isSuccess) "root-fallback-foreground" else "root-failed"
+                foregroundLaunchResult
+            }
+        } else {
+            launchMode = "foreground"
+            launchPackage(appContext, packageName)
+        }
         val launchOk = if (launch) launchResult.isSuccess else null
         val launchMessage = if (launch) launchResult.exceptionOrNull()?.message else null
         if (launch && launchResult.isFailure && appendLog) {
-            appendRestartLog(appContext, packageName, "自动打开应用失败：${launchMessage ?: "未知错误"}")
+            val rootPart = rootLaunchMessage?.let { "Root 打开失败：$it；" }.orEmpty()
+            appendRestartLog(appContext, packageName, "${rootPart}自动打开应用失败：${launchMessage ?: "未知错误"}")
         }
         return RestartResult(
             forceStopOk = stopOk,
             forceStopMessage = stopMessage,
             launchRequested = launch,
             launchOk = launchOk,
-            launchMessage = launchMessage
+            launchMessage = launchMessage,
+            launchMode = launchMode,
+            rootLaunchOk = rootLaunchOk,
+            rootLaunchMessage = rootLaunchMessage
         )
+    }
+
+    fun terminatePackage(context: Context, packageName: String, appendLog: Boolean = true): RestartResult {
+        return restartPackage(context, packageName, launch = false, appendLog = appendLog)
     }
 
     private fun appendRestartLog(context: Context, packageName: String, message: String) {

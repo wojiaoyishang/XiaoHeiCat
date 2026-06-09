@@ -14,6 +14,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import android.os.Environment;
+import java.io.File;
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 
@@ -125,7 +127,13 @@ public class HookEntry extends XposedModule {
                         script.files,
                         script.fileHashes,
                         mergedSettingsJson(packageName, script),
-                        script.grants
+                        script.grants,
+                        script.id,
+                        script.version,
+                        scriptRootPath(),
+                        script.rootPath,
+                        script.assetFiles,
+                        script.assetFileHashes
                 );
                 runtime.evaluate(script.displayName(), script.sourceName(), source);
             } catch (Throwable t) {
@@ -175,8 +183,12 @@ public class HookEntry extends XposedModule {
     }
 
     private static String sha256(String value) {
+        return sha256(value == null ? new byte[0] : value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String sha256(byte[] value) {
         try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value == null ? new byte[0] : value);
             StringBuilder out = new StringBuilder(digest.length * 2);
             for (byte b : digest) out.append(String.format("%02x", b & 0xff));
             return out.toString();
@@ -195,6 +207,17 @@ public class HookEntry extends XposedModule {
 
     private static String scriptSettingsKey(String packageName, String scriptId) {
         return "script_settings_" + packageName + "_" + scriptId;
+    }
+
+    private String scriptRootPath() {
+        String configured = prefs == null ? null : prefs.getString("scriptRoot", null);
+        if (configured == null || configured.trim().isEmpty()) {
+            configured = prefs == null ? null : prefs.getString("script.root", null);
+        }
+        if (configured == null || configured.trim().isEmpty()) {
+            return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "XiaoHeiHook").getAbsolutePath();
+        }
+        return configured.trim();
     }
 
     private String mergedSettingsJson(String packageName, ScriptDescriptor script) {
@@ -294,9 +317,13 @@ public class HookEntry extends XposedModule {
                         obj.optString("runAt", JsHookRuntime.EVENT_PACKAGE_LOADED),
                         toStringList(obj.optJSONArray("grants")),
                         remoteName,
+                        obj.optString("version", "1.0.0"),
                         obj.optString("path", obj.optString("scriptPath", "")),
+                        obj.optString("rootPath", ""),
                         parseFiles(obj.optJSONArray("files"), obj.optString("path", obj.optString("scriptPath", "")), remoteName),
                         parseFileHashes(obj.optJSONArray("files"), obj.optString("path", obj.optString("scriptPath", "")), obj.optString("sha256", "")),
+                        parseAssets(obj.optJSONArray("assets"), obj.optString("rootPath", "")),
+                        parseAssetHashes(obj.optJSONArray("assets"), obj.optString("rootPath", "")),
                         obj.optBoolean("hasSettings", false),
                         obj.optString("settingsPath", ""),
                         obj.optJSONObject("settingsSchema")
@@ -355,6 +382,46 @@ public class HookEntry extends XposedModule {
         return map;
     }
 
+    private static Map<String, String> parseAssets(JSONArray array, String rootPath) {
+        LinkedHashMap<String, String> map = new LinkedHashMap<>();
+        if (array == null) return map;
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject obj = array.optJSONObject(i);
+            if (obj == null) continue;
+            String path = normalizeAssetRelativePath(obj.optString("path", ""), rootPath);
+            String remoteName = obj.optString("remoteName", "").trim();
+            if (!path.isEmpty() && !remoteName.isEmpty()) map.put(path, remoteName);
+        }
+        return map;
+    }
+
+    private static Map<String, String> parseAssetHashes(JSONArray array, String rootPath) {
+        LinkedHashMap<String, String> map = new LinkedHashMap<>();
+        if (array == null) return map;
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject obj = array.optJSONObject(i);
+            if (obj == null) continue;
+            String path = normalizeAssetRelativePath(obj.optString("path", ""), rootPath);
+            String sha256 = obj.optString("sha256", "").trim();
+            if (!path.isEmpty() && !sha256.isEmpty()) map.put(path, sha256);
+        }
+        return map;
+    }
+
+    private static String normalizeAssetRelativePath(String path, String rootPath) {
+        String clean = normalizeScriptPath(path);
+        String root = normalizeScriptPath(rootPath);
+        if (!root.isEmpty() && clean.startsWith(root + "/assets/")) {
+            clean = clean.substring((root + "/assets/").length());
+        } else if (clean.startsWith("assets/")) {
+            clean = clean.substring("assets/".length());
+        } else {
+            int idx = clean.indexOf("/assets/");
+            if (idx >= 0) clean = clean.substring(idx + "/assets/".length());
+        }
+        return normalizeScriptPath(clean);
+    }
+
     private static String normalizeScriptPath(String path) {
         if (path == null) return "";
         String value = path.replace('\\', '/').trim();
@@ -373,6 +440,20 @@ public class HookEntry extends XposedModule {
         return source;
     }
 
+    public byte[] readRemoteBinaryFile(@NonNull String remoteName, String expectedSha256, String path) throws Exception {
+        byte[] bytes = JsHookRuntime.readRemoteBytes(openRemoteFile(remoteName));
+        verifyRemoteBytes(path == null ? remoteName : path, remoteName, bytes, expectedSha256);
+        return bytes;
+    }
+
+    private void verifyRemoteBytes(String path, String remoteName, byte[] bytes, String expectedSha256) {
+        if (expectedSha256 == null || expectedSha256.trim().isEmpty()) return;
+        String actual = sha256(bytes);
+        if (!expectedSha256.equalsIgnoreCase(actual)) {
+            throw new IllegalStateException("Remote File SHA-256 校验失败: " + path + " -> " + remoteName + ", expected=" + expectedSha256 + ", actual=" + actual);
+        }
+    }
+
     private static final class ScriptDescriptor {
         final String id;
         final String name;
@@ -381,9 +462,13 @@ public class HookEntry extends XposedModule {
         final String runAt;
         final List<String> grants;
         final String remoteName;
+        final String version;
         final String path;
+        final String rootPath;
         final Map<String, String> files;
         final Map<String, String> fileHashes;
+        final Map<String, String> assetFiles;
+        final Map<String, String> assetFileHashes;
         final boolean hasSettings;
         final String settingsPath;
         final JSONObject settingsSchema;
@@ -396,9 +481,13 @@ public class HookEntry extends XposedModule {
                 String runAt,
                 List<String> grants,
                 String remoteName,
+                String version,
                 String path,
+                String rootPath,
                 Map<String, String> files,
                 Map<String, String> fileHashes,
+                Map<String, String> assetFiles,
+                Map<String, String> assetFileHashes,
                 boolean hasSettings,
                 String settingsPath,
                 JSONObject settingsSchema
@@ -410,9 +499,13 @@ public class HookEntry extends XposedModule {
             this.runAt = runAt;
             this.grants = grants;
             this.remoteName = remoteName;
+            this.version = version == null || version.trim().isEmpty() ? "1.0.0" : version.trim();
             this.path = normalizeScriptPath(path);
+            this.rootPath = normalizeScriptPath(rootPath);
             this.files = files == null ? new LinkedHashMap<>() : files;
             this.fileHashes = fileHashes == null ? new LinkedHashMap<>() : fileHashes;
+            this.assetFiles = assetFiles == null ? new LinkedHashMap<>() : assetFiles;
+            this.assetFileHashes = assetFileHashes == null ? new LinkedHashMap<>() : assetFileHashes;
             this.hasSettings = hasSettings && settingsSchema != null;
             this.settingsPath = normalizeScriptPath(settingsPath);
             this.settingsSchema = settingsSchema;

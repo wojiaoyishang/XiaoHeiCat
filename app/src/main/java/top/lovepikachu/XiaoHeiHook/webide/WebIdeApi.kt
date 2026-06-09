@@ -306,11 +306,14 @@ class WebIdeApi(private val context: Context) {
         require(packageName.isNotBlank()) { "packageName 不能为空" }
         val disabled = bridge.setDebugEnabled(packageName, false)
         DebugEventRepository.clear(context)
+        val terminateResult = AppControl.terminatePackage(context, packageName, appendLog = true)
         return json(JSONObject()
             .put("ok", true)
             .put("packageName", packageName)
             .put("debug", false)
-            .put("debugDisabled", disabled))
+            .put("debugDisabled", disabled)
+            .put("terminated", terminateResult.forceStopOk)
+            .put("terminate", restartResultJson(terminateResult)))
     }
 
     private fun debugBreakpoints(request: HttpRequest): HttpResponse {
@@ -592,6 +595,9 @@ class WebIdeApi(private val context: Context) {
             .put("launchRequested", result.launchRequested)
             .put("launchOk", result.launchOk ?: JSONObject.NULL)
             .put("launchMessage", result.launchMessage ?: "")
+            .put("launchMode", result.launchMode ?: JSONObject.NULL)
+            .put("rootLaunchOk", result.rootLaunchOk ?: JSONObject.NULL)
+            .put("rootLaunchMessage", result.rootLaunchMessage ?: "")
     }
 
     private fun launchApp(request: HttpRequest): HttpResponse {
