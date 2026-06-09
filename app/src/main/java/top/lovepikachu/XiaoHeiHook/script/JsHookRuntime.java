@@ -101,6 +101,8 @@ public final class JsHookRuntime {
 
     private static final boolean RHINO_REGEXP_DIAGNOSTICS = false;
     private static volatile boolean rhinoRegExpListenerInstalled = false;
+    private static volatile Boolean rhinoConstLoopLexicalBindingSupported = null;
+    private static volatile String rhinoConstLoopLexicalBindingStatus = "not-tested";
 
     static {
         installGlobalRhinoRegExpListener();
@@ -279,7 +281,7 @@ public final class JsHookRuntime {
             Context cx = Context.enter();
             try {
                 Thread.currentThread().setContextClassLoader(appClassLoader);
-                cx.setOptimizationLevel(-1);
+                configureRhinoContext(cx, "evaluate");
                 logRhinoRegExpState("evaluate.enter.before-install", cx, null, null);
                 installRegExpProxy(cx);
                 logRhinoRegExpState("evaluate.after-install-before-init", cx, null, null);
@@ -306,6 +308,7 @@ public final class JsHookRuntime {
                 ensureRegExpObjects(cx, scope);
                 logRhinoRegExpState("evaluate.after-init-standard-objects", cx, scope, null);
                 selfTestRegExp(cx, scope, canonicalSourceName);
+                selfTestLexicalBindings(cx, scope, canonicalSourceName);
                 logRhinoRegExpState("evaluate.after-regexp-self-test", cx, scope, null);
                 settingsFacade = new SettingsFacade();
 
@@ -361,6 +364,7 @@ public final class JsHookRuntime {
                     @Override
                     public void contextCreated(Context cx) {
                         try {
+                            configureRhinoContext(cx, "contextCreated");
                             installRegExpProxy(cx);
                             if (RHINO_REGEXP_DIAGNOSTICS) {
                                 Log.i(TAG, "RhinoRegExp contextCreated ok ctx=" + identity(cx)
@@ -396,6 +400,38 @@ public final class JsHookRuntime {
 
     private static RegExpProxy newRegExpProxy() {
         return new RegExpImpl();
+    }
+
+    /**
+     * Configure every Rhino Context before parsing or executing user code.
+     *
+     * Rhino defaults are intentionally conservative.  On some Android/LSPosed
+     * combinations the default language mode accepts ``const`` but treats it
+     * like an old function/global binding rather than an ES2015 block binding.
+     * That breaks code such as:
+     *
+     *   for (...) { const path = paths[i]; ... }
+     *
+     * where the second iteration may keep reading the first value.  This is not
+     * a script-source compatibility rewrite; it only requests the strongest
+     * syntax mode Rhino exposes.  Actual per-iteration ``const`` support is
+     * detected separately by selfTestLexicalBindings().
+     */
+    private static void configureRhinoContext(@NonNull Context cx, @NonNull String stage) {
+        try {
+            cx.setLanguageVersion(Context.VERSION_ES6);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Rhino ES6 language mode is required for XiaoHeiHook 1.30 JS lexical bindings, stage=" + stage, t);
+        }
+
+        try {
+            // Interpreted mode is safer inside app processes and keeps stack/debug
+            // behavior deterministic.  Keep this together with languageVersion so
+            // all entry points share the same syntax/runtime contract.
+            cx.setOptimizationLevel(-1);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Rhino interpreted mode configuration failed, stage=" + stage, t);
+        }
     }
 
     private static void installRegExpProxy(@NonNull Context cx) {
@@ -455,6 +491,79 @@ public final class JsHookRuntime {
                     + " proxy=" + safeRegExpProxyClass(cx)
                     + " regExpGlobal=" + hasGlobalRegExp(scope), t);
         }
+    }
+
+    /**
+     * Detect whether the embedded Rhino build really implements ES2015 per-iteration
+     * lexical bindings for ``const`` inside ``for`` loops.  Some Rhino versions accept
+     * the syntax even in ES6 mode, but still reuse the first iteration's binding and
+     * produce results such as ``a|a`` instead of ``a|b``.
+     *
+     * This capability check is intentionally non-fatal.  XiaoHeiHook must not refuse
+     * to load scripts just because a syntax corner of the embedded engine is weak.
+     * Scripts can inspect ``xhh.jsEngine().constLoopLexicalBinding`` and use
+     * ``xhh.each(array, callback)`` or ``let`` loop variables when the flag is false.
+     */
+    private static boolean selfTestLexicalBindings(@NonNull Context cx, @NonNull Scriptable scope, @NonNull String sourceName) {
+        try {
+            Object value = cx.evaluateString(scope,
+                    "var __xhh_lexical_paths = ['a', 'b'];"
+                            + "var __xhh_lexical_out = [];"
+                            + "for (let __xhh_lexical_i = 0; __xhh_lexical_i < __xhh_lexical_paths.length; __xhh_lexical_i++) {"
+                            + "  const __xhh_lexical_path = String(__xhh_lexical_paths[__xhh_lexical_i]);"
+                            + "  __xhh_lexical_out.push(__xhh_lexical_path);"
+                            + "}"
+                            + "__xhh_lexical_out.join('|');",
+                    sourceName + ":lexical-binding-self-test", 1, null);
+            boolean ok = "a|b".equals(String.valueOf(value));
+            rhinoConstLoopLexicalBindingSupported = ok;
+            rhinoConstLoopLexicalBindingStatus = ok ? "ok" : "unexpected-result:" + String.valueOf(value);
+            if (!ok) {
+                Log.w(TAG, "Rhino const loop lexical binding is not supported correctly; "
+                        + "expected a|b but got " + value
+                        + ". Use xhh.each(array, callback) or let loop variables, "
+                        + "or switch to a modern JS engine.");
+            }
+            return ok;
+        } catch (Throwable t) {
+            rhinoConstLoopLexicalBindingSupported = false;
+            rhinoConstLoopLexicalBindingStatus = "error:" + t.getClass().getName() + ":" + t.getMessage();
+            Log.w(TAG, "Rhino const loop lexical binding self-test failed; "
+                    + "scripts will continue with compatibility capabilities exposed by xhh.jsEngine()", t);
+            return false;
+        } finally {
+            try {
+                ScriptableObject.deleteProperty(scope, "__xhh_lexical_paths");
+                ScriptableObject.deleteProperty(scope, "__xhh_lexical_out");
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static String rhinoImplementationVersion() {
+        try {
+            Package pkg = Context.class.getPackage();
+            if (pkg != null && pkg.getImplementationVersion() != null && !pkg.getImplementationVersion().isEmpty()) {
+                return pkg.getImplementationVersion();
+            }
+        } catch (Throwable ignored) {
+        }
+        return Context.class.getName();
+    }
+
+    private LinkedHashMap<String, Object> buildJsEngineInfo() {
+        LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+        boolean constLoopOk = Boolean.TRUE.equals(rhinoConstLoopLexicalBindingSupported);
+        out.put("engine", "rhino");
+        out.put("implementation", rhinoImplementationVersion());
+        out.put("languageVersion", "ES6-configured");
+        out.put("optimizationLevel", -1);
+        out.put("constLoopLexicalBinding", constLoopOk);
+        out.put("constLoopLexicalBindingStatus", rhinoConstLoopLexicalBindingStatus);
+        out.put("recommendedLoopBinding", constLoopOk ? "const-or-let" : "let");
+        out.put("stableIterationApi", "xhh.each(array, callback)");
+        out.put("requiresEngineSwapForNativeConstLoop", !constLoopOk);
+        return out;
     }
 
     private void logRhinoRegExpState(@NonNull String stage,
@@ -826,7 +935,7 @@ public final class JsHookRuntime {
                     : activeScriptSourceName;
             try {
                 Thread.currentThread().setContextClassLoader(appClassLoader);
-                cx.setOptimizationLevel(-1);
+                configureRhinoContext(cx, "callJs");
                 installRegExpProxy(cx);
                 logRhinoRegExpState("callJs.after-install", cx, scope, null);
                 if (isSoftDebuggerEnabled()) {
@@ -978,6 +1087,46 @@ public final class JsHookRuntime {
     }
 
 
+    private LinkedHashMap<String, Object> describeObjectKind(Object value) {
+        LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+        Object raw = value;
+        Object unwrapped = unwrap(value);
+        boolean isUndefined = raw == Undefined.instance || raw == Scriptable.NOT_FOUND;
+        boolean isNull = raw == null;
+        boolean isJsObject = raw instanceof Scriptable && !(raw instanceof Wrapper);
+        boolean isJavaObject = false;
+        boolean isPrimitive = false;
+        String kind;
+
+        if (isUndefined) {
+            kind = "undefined";
+        } else if (isNull) {
+            kind = "null";
+        } else if (raw instanceof Wrapper) {
+            isJavaObject = true;
+            kind = "java";
+        } else if (isJsObject) {
+            kind = raw instanceof Function ? "js-function" : "js-object";
+        } else if (raw instanceof CharSequence || raw instanceof Number || raw instanceof Boolean) {
+            isPrimitive = true;
+            kind = "primitive";
+        } else {
+            isJavaObject = true;
+            kind = "java";
+        }
+
+        out.put("kind", kind);
+        out.put("isJsObject", isJsObject);
+        out.put("isJavaObject", isJavaObject);
+        out.put("isPrimitive", isPrimitive);
+        out.put("isNull", isNull);
+        out.put("isUndefined", isUndefined);
+        out.put("rawClass", raw == null ? null : raw.getClass().getName());
+        out.put("javaClass", unwrapped == null ? null : unwrapped.getClass().getName());
+        out.put("text", isNull || isUndefined ? kind : String.valueOf(unwrapped));
+        return out;
+    }
+
     private Object jsToJavaValue(Object value) {
         Object unwrapped = unwrap(value);
         if (unwrapped == Undefined.instance || unwrapped == Scriptable.NOT_FOUND) return null;
@@ -1032,6 +1181,7 @@ public final class JsHookRuntime {
             out.put("jsApiVersion", XhhConstants.JS_API_VERSION);
             out.put("mcpBridgeVersion", XhhConstants.MCP_BRIDGE_VERSION);
             out.put("dexApiVersion", XhhConstants.DEX_API_VERSION);
+            out.put("jsEngine", buildJsEngineInfo());
             out.put("packageName", packageName);
             out.put("processName", processName);
             out.put("event", currentEvent);
@@ -1040,11 +1190,137 @@ public final class JsHookRuntime {
             out.put("internalDebug", internalDebugLoggingEnabled());
             out.put("mcpDebug", mcpDebugLoggingEnabled());
             out.put("dexDebug", dexDebugLoggingEnabled());
-            return out;
+            return JsApiValueNormalizer.toJs(out);
         }
 
         public boolean hasGrant(String grant) {
             return JsHookRuntime.this.hasGrant(grant);
+        }
+
+        /**
+         * Return JS engine capability information. In Rhino mode,
+         * const-loop lexical rebinding may be unsupported even when ES6 syntax parses.
+         */
+        public Object jsEngine() {
+            return JsApiValueNormalizer.toJs(buildJsEngineInfo());
+        }
+
+        /**
+         * Iterate an array-like value from Java, invoking a fresh JS callback frame for
+         * every item. This avoids relying on Rhino's broken per-iteration const binding.
+         * Returning false from the callback stops iteration.
+         */
+        public Object each(Object items, Function callback) {
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+            if (callback == null) {
+                result.put("ok", false);
+                result.put("error", "callback is required");
+                return JsApiValueNormalizer.toJs(result);
+            }
+            Context cx = Context.getCurrentContext();
+            if (cx == null) {
+                result.put("ok", false);
+                result.put("error", "no current Rhino Context");
+                return JsApiValueNormalizer.toJs(result);
+            }
+            Scriptable callbackScope = callback.getParentScope() == null ? scope : callback.getParentScope();
+            if (callbackScope == null) callbackScope = scope;
+            if (callbackScope == null) {
+                result.put("ok", false);
+                result.put("error", "JS scope is not initialized");
+                return JsApiValueNormalizer.toJs(result);
+            }
+
+            int count = 0;
+            boolean stopped = false;
+            Object raw = items instanceof Wrapper ? ((Wrapper) items).unwrap() : items;
+            if (raw == null || raw == Undefined.instance || raw == Scriptable.NOT_FOUND) {
+                result.put("ok", false);
+                result.put("error", "items is null or undefined");
+                return JsApiValueNormalizer.toJs(result);
+            }
+
+            if (raw instanceof Scriptable) {
+                Scriptable scriptable = (Scriptable) raw;
+                long length = scriptableLength(scriptable);
+                for (long i = 0; i < length; i++) {
+                    Object item = i <= Integer.MAX_VALUE
+                            ? ScriptableObject.getProperty(scriptable, (int) i)
+                            : Scriptable.NOT_FOUND;
+                    if (item == Scriptable.NOT_FOUND) item = Undefined.instance;
+                    Object callbackResult = callback.call(cx, callbackScope, callbackScope, new Object[]{item, (int) i, items});
+                    count++;
+                    if (Boolean.FALSE.equals(Context.jsToJava(callbackResult, Boolean.class))) {
+                        stopped = true;
+                        break;
+                    }
+                }
+            } else if (raw instanceof Iterable<?>) {
+                int index = 0;
+                for (Object item : (Iterable<?>) raw) {
+                    Object callbackResult = callback.call(cx, callbackScope, callbackScope, new Object[]{JsApiValueNormalizer.toJs(item), index, items});
+                    count++;
+                    index++;
+                    if (Boolean.FALSE.equals(Context.jsToJava(callbackResult, Boolean.class))) {
+                        stopped = true;
+                        break;
+                    }
+                }
+            } else if (raw.getClass().isArray()) {
+                int length = java.lang.reflect.Array.getLength(raw);
+                for (int i = 0; i < length; i++) {
+                    Object item = java.lang.reflect.Array.get(raw, i);
+                    Object callbackResult = callback.call(cx, callbackScope, callbackScope, new Object[]{JsApiValueNormalizer.toJs(item), i, items});
+                    count++;
+                    if (Boolean.FALSE.equals(Context.jsToJava(callbackResult, Boolean.class))) {
+                        stopped = true;
+                        break;
+                    }
+                }
+            } else {
+                result.put("ok", false);
+                result.put("error", "items is not array-like or iterable: " + raw.getClass().getName());
+                return JsApiValueNormalizer.toJs(result);
+            }
+
+            result.put("ok", true);
+            result.put("count", count);
+            result.put("stopped", stopped);
+            return JsApiValueNormalizer.toJs(result);
+        }
+
+        private long scriptableLength(Scriptable scriptable) {
+            Object lengthValue = ScriptableObject.getProperty(scriptable, "length");
+            if (lengthValue == Scriptable.NOT_FOUND || lengthValue == Undefined.instance || lengthValue == null) return 0;
+            try {
+                double n = Context.toNumber(lengthValue);
+                if (Double.isNaN(n) || n <= 0) return 0;
+                return Math.min((long) n, Integer.MAX_VALUE);
+            } catch (Throwable ignored) {
+                return 0;
+            }
+        }
+
+        /**
+         * Describe whether a value is a Rhino JavaScript object, a wrapped Java object,
+         * a primitive, null, or undefined. Use this when migrating scripts away from
+         * Java collection chains and toward plain JS object/array access.
+         */
+        public Object objectKind(Object value) {
+            return JsApiValueNormalizer.toJs(describeObjectKind(value));
+        }
+
+        public boolean isJsObject(Object value) {
+            Object raw = value;
+            return raw instanceof Scriptable && !(raw instanceof Wrapper);
+        }
+
+        public boolean isJavaObject(Object value) {
+            Object raw = value;
+            if (raw instanceof Wrapper) return true;
+            if (raw == null || raw == Undefined.instance || raw == Scriptable.NOT_FOUND) return false;
+            if (raw instanceof Scriptable) return false;
+            return !(raw instanceof CharSequence || raw instanceof Number || raw instanceof Boolean);
         }
     }
 
@@ -1060,13 +1336,13 @@ public final class JsHookRuntime {
                 result.put("ok", false);
                 result.put("ignored", true);
                 result.put("error", "methodName is empty");
-                return result;
+                return JsApiValueNormalizer.toJs(result);
             }
             if (handler == null) {
                 result.put("ok", false);
                 result.put("ignored", true);
                 result.put("error", "handler is required");
-                return result;
+                return JsApiValueNormalizer.toJs(result);
             }
             if (!mcpEnabled()) {
                 mcpLog(Log.INFO, "MCP register ignored because MCP is disabled package=" + packageName + " process=" + processName + " method=" + methodName);
@@ -1074,7 +1350,7 @@ public final class JsHookRuntime {
                 result.put("ignored", true);
                 result.put("reason", "mcp-disabled");
                 result.put("methodName", methodName);
-                return result;
+                return JsApiValueNormalizer.toJs(result);
             }
             String conflict = optionString(options, "conflict", McpBridgeProtocol.CONFLICT_OVERWRITE).toLowerCase(Locale.ROOT);
             if (!McpBridgeProtocol.CONFLICT_IGNORE.equals(conflict) && !McpBridgeProtocol.CONFLICT_ERROR.equals(conflict)) {
@@ -1102,14 +1378,14 @@ public final class JsHookRuntime {
                     result.put("action", "ignored");
                     result.put("methodName", methodName);
                     result.put("handlerId", oldHandlerId);
-                    return result;
+                    return JsApiValueNormalizer.toJs(result);
                 }
                 if (McpBridgeProtocol.CONFLICT_ERROR.equals(conflict)) {
                     result.put("ok", false);
                     result.put("ignored", true);
                     result.put("error", "Method already registered: " + methodName);
                     result.put("methodName", methodName);
-                    return result;
+                    return JsApiValueNormalizer.toJs(result);
                 }
                 mcpHandlers.remove(oldHandlerId);
                 mcpHandlerMethods.remove(oldHandlerId);
@@ -1144,7 +1420,7 @@ public final class JsHookRuntime {
                     result.put("handlerId", handlerId);
                     result.put("conflict", conflict);
                     mcpLog(Log.INFO, "MCP register deferred until target application context is ready package=" + packageName + " process=" + processName + " method=" + methodName + " handler=" + handlerId + " event=" + currentEvent);
-                    return result;
+                    return JsApiValueNormalizer.toJs(result);
                 }
                 mcpHandlers.remove(handlerId);
                 mcpHandlerMethods.remove(handlerId);
@@ -1157,7 +1433,7 @@ public final class JsHookRuntime {
                 result.put("reason", "mcp-bridge-unavailable");
                 result.put("methodName", methodName);
                 mcpLog(Log.WARN, "MCP register ignored because bridge is unavailable package=" + packageName + " process=" + processName + " method=" + methodName + " reason=" + mcpBridgeUnavailableReason);
-                return result;
+                return JsApiValueNormalizer.toJs(result);
             }
 
             mcpLog(Log.INFO, "MCP register accepted package=" + packageName + " process=" + processName + " method=" + methodName + " handler=" + handlerId);
@@ -1166,7 +1442,7 @@ public final class JsHookRuntime {
             result.put("methodName", methodName);
             result.put("handlerId", handlerId);
             result.put("conflict", conflict);
-            return result;
+            return JsApiValueNormalizer.toJs(result);
         }
 
         public Object unregister_method(String name) {
@@ -1175,7 +1451,7 @@ public final class JsHookRuntime {
             if (methodName.isEmpty()) {
                 result.put("ok", false);
                 result.put("error", "methodName is empty");
-                return result;
+                return JsApiValueNormalizer.toJs(result);
             }
             for (Map.Entry<String, String> entry : new ArrayList<>(mcpHandlerMethods.entrySet())) {
                 if (methodName.equals(entry.getValue())) {
@@ -1190,7 +1466,7 @@ public final class JsHookRuntime {
             closeMcpBridgeIfNoRegisteredMethods("unregister-method");
             result.put("ok", true);
             result.put("methodName", methodName);
-            return result;
+            return JsApiValueNormalizer.toJs(result);
         }
 
         public Object unregister_all_methods() {
@@ -1203,7 +1479,7 @@ public final class JsHookRuntime {
             closeMcpBridgeIfNoRegisteredMethods("unregister-all-methods");
             LinkedHashMap<String, Object> result = new LinkedHashMap<>();
             result.put("ok", true);
-            return result;
+            return JsApiValueNormalizer.toJs(result);
         }
     }
 
@@ -1881,19 +2157,19 @@ public final class JsHookRuntime {
         }
 
         public Object get(String key, Object defaultValue) {
-            if (key == null) return defaultValue;
+            if (key == null) return JsApiValueNormalizer.toJs(defaultValue);
             String clean = String.valueOf(key);
-            if (!values.containsKey(clean)) return unwrap(defaultValue);
+            if (!values.containsKey(clean)) return JsApiValueNormalizer.toJs(unwrap(defaultValue));
             Object value = values.get(clean);
-            return value == null ? null : value;
+            return JsApiValueNormalizer.toJs(value);
         }
 
         public boolean has(String key) {
             return key != null && values.containsKey(String.valueOf(key));
         }
 
-        public Map<String, Object> all() {
-            return new LinkedHashMap<>(values);
+        public Object all() {
+            return JsApiValueNormalizer.toJs(new LinkedHashMap<>(values));
         }
     }
 
@@ -2144,7 +2420,11 @@ public final class JsHookRuntime {
         }
 
         public void log(int priority, String tag, Object msg, Object throwable) {
-            JsHookRuntime.this.writeLog(priority, tag, String.valueOf(msg), toThrowable(throwable));
+            Object unwrapped = unwrap(throwable);
+            Throwable tr = unwrapped instanceof Throwable ? (Throwable) unwrapped : null;
+            String text = String.valueOf(msg);
+            if (tr == null && unwrapped != null) text = text + ": " + String.valueOf(unwrapped);
+            JsHookRuntime.this.writeLog(priority, tag, text, tr);
         }
 
         public void v(String tag, Object msg) { log(Log.VERBOSE, tag, msg); }
@@ -2200,13 +2480,13 @@ public final class JsHookRuntime {
         }
 
         /** Return the full Java stack as structured frames. */
-        public List<Map<String, Object>> getJavaStackTrace() {
-            return JsHookRuntime.this.collectStackTraceFrames(false, 120, false);
+        public Object getJavaStackTrace() {
+            return JsApiValueNormalizer.toJs(JsHookRuntime.this.collectStackTraceFrames(false, 120, false));
         }
 
         /** Return an app-focused Java stack as structured frames. */
-        public List<Map<String, Object>> getAppStackTrace() {
-            return JsHookRuntime.this.collectStackTraceFrames(true, 120, false);
+        public Object getAppStackTrace() {
+            return JsApiValueNormalizer.toJs(JsHookRuntime.this.collectStackTraceFrames(true, 120, false));
         }
 
         /**
@@ -2214,17 +2494,17 @@ public final class JsHookRuntime {
          * JS example:
          *   xposed.stackTrace({ appOnly: true, maxDepth: 40, skipNative: false })
          */
-        public List<Map<String, Object>> stackTrace() {
+        public Object stackTrace() {
             return stackTrace(null);
         }
 
-        public List<Map<String, Object>> stackTrace(Object options) {
+        public Object stackTrace(Object options) {
             boolean appOnly = optionBoolean(options, "appOnly", false);
             boolean skipNative = optionBoolean(options, "skipNative", false);
             int maxDepth = optionInt(options, "maxDepth", 120);
             if (maxDepth <= 0) maxDepth = 120;
             if (maxDepth > 512) maxDepth = 512;
-            return JsHookRuntime.this.collectStackTraceFrames(appOnly, maxDepth, skipNative);
+            return JsApiValueNormalizer.toJs(JsHookRuntime.this.collectStackTraceFrames(appOnly, maxDepth, skipNative));
         }
 
         private String safeStackTag(Object tag) {
@@ -2237,23 +2517,23 @@ public final class JsHookRuntime {
         public Object getFrameworkName() { return invokeNoArg(module, "getFrameworkName"); }
         public Object getFrameworkVersion() { return invokeNoArg(module, "getFrameworkVersion"); }
         public Object getFrameworkVersionCode() { return invokeNoArg(module, "getFrameworkVersionCode"); }
-        public Object getFrameworkProperties() { return invokeNoArg(module, "getFrameworkProperties"); }
-        public Object getModuleApplicationInfo() { return invokeNoArg(module, "getModuleApplicationInfo"); }
+        public Object getFrameworkProperties() { return JsApiValueNormalizer.toJs(invokeNoArg(module, "getFrameworkProperties")); }
+        public Object getModuleApplicationInfo() { return JsApiValueNormalizer.toJs(invokeNoArg(module, "getModuleApplicationInfo")); }
 
         public SharedPreferences getRemotePreferences(String group) {
             return module.getRemotePreferences(group);
         }
 
-        public String[] listRemoteFiles() throws Exception {
+        public Object listRemoteFiles() throws Exception {
             Object value = invokeNoArg(module, "listRemoteFiles");
-            if (value instanceof String[]) return (String[]) value;
+            if (value instanceof String[]) return JsApiValueNormalizer.toJs(value);
             if (value instanceof List<?>) {
                 List<?> list = (List<?>) value;
                 String[] result = new String[list.size()];
                 for (int i = 0; i < list.size(); i++) result[i] = String.valueOf(list.get(i));
-                return result;
+                return JsApiValueNormalizer.toJs(result);
             }
-            return new String[0];
+            return JsApiValueNormalizer.toJs(new String[0]);
         }
 
         public ParcelFileDescriptor openRemoteFile(String name) {
@@ -2309,7 +2589,7 @@ public final class JsHookRuntime {
             Object[] args = toObjectArray(argsObj);
             Method method = findCompatibleMethod(unwrappedTarget.getClass(), methodName, args.length, false);
             method.setAccessible(true);
-            return method.invoke(unwrappedTarget, args);
+            return JsApiValueNormalizer.toJs(method.invoke(unwrappedTarget, args));
         }
 
         public Field field(Object targetOrClass, String fieldName) throws Exception {
@@ -2409,7 +2689,7 @@ public final class JsHookRuntime {
             rememberLogContext(value);
             return value;
         }
-        public List<?> getArgs() { return chain.getArgs(); }
+        public Object getArgs() { return JsApiValueNormalizer.toJs(chain.getArgs()); }
         public Object getArg(int index) {
             Object value = chain.getArg(index);
             rememberLogContext(value);
@@ -3135,6 +3415,7 @@ public final class JsHookRuntime {
                     result.put("ok", false);
                     result.put("error", "当前断点没有可用的 Rhino Context/Scope");
                 } else {
+                    configureRhinoContext(cx, "debug-eval");
                     ensureRegExpObjects(cx, targetScope);
                     logRhinoRegExpState("debug-eval.before-evaluate", cx, targetScope, null);
                     Object value = cx.evaluateString(targetScope, expr, scriptName + ":debug-eval", 1, null);

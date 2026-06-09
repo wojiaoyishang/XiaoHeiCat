@@ -29,6 +29,7 @@ import org.mozilla.javascript.Wrapper;
 import android.util.Log;
 
 import top.lovepikachu.XiaoHeiHook.HookEntry;
+import top.lovepikachu.XiaoHeiHook.script.JsApiValueNormalizer;
 
 import java.io.File;
 import java.io.RandomAccessFile;
@@ -78,6 +79,51 @@ public final class DexApiFacade {
 
     private static final Pattern QUOTED_PATH = Pattern.compile("(?:zip|dex) file \"([^\"]+)\"");
 
+    private static Object js(Object value) {
+        return JsApiValueNormalizer.toJs(value);
+    }
+
+    private static ArrayList<String> pathsFromRows(@Nullable List<? extends Map<String, Object>> rows) {
+        ArrayList<String> paths = new ArrayList<>();
+        if (rows == null) return paths;
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        for (Map<String, Object> row : rows) {
+            if (row == null) continue;
+            Object pathObj = row.get("path");
+            if (pathObj == null) pathObj = row.get("scanPath");
+            if (pathObj == null) pathObj = row.get("repairedPath");
+            if (pathObj == null) continue;
+            String path = String.valueOf(pathObj);
+            if (!path.trim().isEmpty() && seen.add(path)) paths.add(path);
+        }
+        return paths;
+    }
+
+    private static ArrayList<Map<String, Object>> fileRowsFromFiles(@Nullable List<File> files) {
+        ArrayList<Map<String, Object>> out = new ArrayList<>();
+        if (files == null) return out;
+        for (File file : files) {
+            if (file == null) continue;
+            LinkedHashMap<String, Object> row = new LinkedHashMap<>();
+            row.put("path", file.getAbsolutePath());
+            row.put("name", file.getName());
+            row.put("size", file.length());
+            row.put("lastModified", file.lastModified());
+            row.put("type", sourceType(file));
+            out.add(row);
+        }
+        return out;
+    }
+
+    private static LinkedHashMap<String, Object> errorResult(@NonNull String reason, @NonNull String error) {
+        LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+        out.put("ok", false);
+        out.put("found", false);
+        out.put("reason", reason);
+        out.put("error", error);
+        return out;
+    }
+
     private final ClassLoader defaultLoader;
     @Nullable private final HookEntry module;
     private final String packageName;
@@ -104,7 +150,15 @@ public final class DexApiFacade {
     }
 
     public DexFileView fromLoader(Object loaderObject) throws Exception {
-        ClassLoader loader = loaderObject instanceof ClassLoader ? (ClassLoader) loaderObject : defaultLoader;
+        Object obj = unwrap(loaderObject);
+        ClassLoader loader;
+        if (obj == null || obj == Undefined.instance || obj == Scriptable.NOT_FOUND) {
+            loader = defaultLoader;
+        } else if (obj instanceof ClassLoader) {
+            loader = (ClassLoader) obj;
+        } else {
+            throw new IllegalArgumentException("fromLoader(loader) 需要传入 ClassLoader；无参数调用才会使用默认 ClassLoader");
+        }
         LinkedHashSet<DexSource> sources = new LinkedHashSet<>();
         sources.addAll(DexSourceResolver.fromLoader(loader));
         sources.addAll(DexRuntimeRegistry.sourcesForLoader(loader));
@@ -128,12 +182,16 @@ public final class DexApiFacade {
      * strings/invokes. It is used to distinguish "dump/locate succeeded" from
      * "method body feature search succeeded".
      */
-    public Map<String, Object> inspectMethodInFile(Object optionsObject) throws Exception {
+    public Object inspectMethodInFile(Object optionsObject) throws Exception {
+        return js(inspectMethodInFileRaw(optionsObject));
+    }
+
+    private Map<String, Object> inspectMethodInFileRaw(Object optionsObject) throws Exception {
         Object obj = unwrap(optionsObject);
         String path = null;
-        String className = "pc.a";
-        String methodName = "d";
-        String proto = "()Z";
+        String className = null;
+        String methodName = null;
+        String proto = null;
         List<String> expectedStrings = new ArrayList<>();
         List<String> expectedInvokeContains = new ArrayList<>();
         int smaliChars = 6000;
@@ -168,12 +226,16 @@ public final class DexApiFacade {
             verbose = asBoolean(mapGet(m, "verbose"), verbose);
         }
         if (path == null || path.trim().isEmpty()) {
-            if (packageName == null || packageName.trim().isEmpty()) {
-                throw new IllegalArgumentException("path 不能为空；inspectMethodInFile 请显式传入已导出的 dex 路径");
-            }
-            path = "/data/user/0/" + packageName + "/code_cache/xhh_unpacked_dex/pc_a_d_unpacked.dex";
+            return errorResult("missing-path", "inspectMethodInFile requires path, className and methodName; use dex.findMethods for feature search");
+        }
+        if (className == null || className.trim().isEmpty()) {
+            return errorResult("missing-className", "inspectMethodInFile requires path, className and methodName; use dex.findMethods for feature search");
+        }
+        if (methodName == null || methodName.trim().isEmpty()) {
+            return errorResult("missing-methodName", "inspectMethodInFile requires path, className and methodName; use dex.findMethods for feature search");
         }
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+        out.put("ok", false);
         out.put("path", path);
         out.put("className", className);
         out.put("methodName", methodName);
@@ -193,8 +255,8 @@ public final class DexApiFacade {
         try {
             df = fromFile(file.getAbsolutePath());
             out.put("opened", true);
-            out.put("sources", df.sources());
-            out.put("skipped", df.skippedSources());
+            out.put("sources", df.sourcesRaw());
+            out.put("skipped", df.skippedSourcesRaw());
         } catch (Throwable t) {
             out.put("opened", false);
             out.put("found", false);
@@ -217,7 +279,7 @@ public final class DexApiFacade {
         if (method == null && (proto == null || proto.trim().isEmpty())) method = cls.findMethod(methodName, null);
         if (method == null) {
             ArrayList<String> methods = new ArrayList<>();
-            for (DexMethodView m : cls.methods()) if (methodName.equals(m.name)) methods.add(m.name + m.descriptor);
+            for (DexMethodView m : cls.methodsRaw()) if (methodName.equals(m.name)) methods.add(m.name + m.descriptor);
             out.put("found", false);
             out.put("methodFound", false);
             out.put("reason", "method-not-found");
@@ -230,10 +292,10 @@ public final class DexApiFacade {
         out.put("methodFound", true);
         out.put("descriptor", method.descriptor);
         out.put("returnType", method.returnType);
-        out.put("parameters", method.parameters);
+        out.put("parameters", method.parametersRaw());
         out.put("static", method.isStatic());
-        List<String> strings = method.strings();
-        List<String> invokes = method.invokes();
+        List<String> strings = method.stringsRaw();
+        List<String> invokes = method.invokesRaw();
         out.put("strings", strings);
         out.put("invokes", invokes);
         ArrayList<String> missingStrings = new ArrayList<>();
@@ -246,6 +308,7 @@ public final class DexApiFacade {
         }
         out.put("missingStrings", missingStrings);
         out.put("missingInvokeContains", missingInvokes);
+        out.put("ok", true);
         out.put("featuresOk", missingStrings.isEmpty() && missingInvokes.isEmpty());
         String smali = method.smali();
         if (smali == null) smali = "";
@@ -265,18 +328,14 @@ public final class DexApiFacade {
     /**
      * Minimal locator for an already dumped cookie dex directory.
      * It does not dump, does not raw-scan business strings, and does not open all dex files at once.
-     * It simply walks cookie_*.dex one by one and returns the first dex that defines pc.a.d()Z.
+     * It simply walks cookie_*.dex one by one and returns the first dex that defines the requested method.
      */
-    public Map<String, Object> locateMethodInCookieDumps() { return locateMethodInCookieDumps(null); }
+    public Object locateMethodInCookieDumps() { return locateMethodInCookieDumps(null); }
 
-    public Map<String, Object> locateMethodInCookieDumps(Object optionsObject) {
-        LinkedHashMap<String, Object> out = new LinkedHashMap<>();
-        ArrayList<Map<String, Object>> scanned = new ArrayList<>();
-        ArrayList<Map<String, Object>> errors = new ArrayList<>();
-
-        String targetClassName = "pc.a";
-        String targetMethodName = "d";
-        String targetProto = "()Z";
+    public Object locateMethodInCookieDumps(Object optionsObject) {
+        String targetClassName = null;
+        String targetMethodName = null;
+        String targetProto = null;
         String dirPath = defaultCookieDumpDir(packageName);
         String prefix = "cookie_";
         int maxFiles = 300;
@@ -287,154 +346,36 @@ public final class DexApiFacade {
 
         Object opts = unwrap(optionsObject);
         if (opts instanceof Scriptable) {
-            Scriptable s = (Scriptable) opts;
+            Scriptable scriptable = (Scriptable) opts;
             String v;
-            v = asString(get(s, "dir")); if (v == null) v = asString(get(s, "path")); if (v != null) dirPath = v;
-            v = asString(get(s, "className")); if (v == null) v = asString(get(s, "class")); if (v != null) targetClassName = v;
-            v = asString(get(s, "methodName")); if (v == null) v = asString(get(s, "name")); if (v != null) targetMethodName = v;
-            v = asString(get(s, "proto")); if (v == null) v = asString(get(s, "descriptor")); if (v != null) targetProto = v;
-            v = asString(get(s, "prefix")); if (v != null) prefix = v;
-            maxFiles = asInt(get(s, "maxFiles"), maxFiles);
-            localMaxDexBytes = asLong(get(s, "maxDexBytes"), localMaxDexBytes);
-            includeSmali = asBoolean(get(s, "includeSmali"), includeSmali);
-            maxSmali = asInt(get(s, "maxSmaliChars"), maxSmali);
-            verbose = asBoolean(get(s, "verbose"), verbose);
+            v = asString(get(scriptable, "dir")); if (v == null) v = asString(get(scriptable, "path")); if (v != null) dirPath = v;
+            v = asString(get(scriptable, "className")); if (v == null) v = asString(get(scriptable, "class")); if (v != null) targetClassName = v;
+            v = asString(get(scriptable, "methodName")); if (v == null) v = asString(get(scriptable, "name")); if (v != null) targetMethodName = v;
+            v = asString(get(scriptable, "proto")); if (v == null) v = asString(get(scriptable, "descriptor")); if (v != null) targetProto = v;
+            v = asString(get(scriptable, "prefix")); if (v != null) prefix = v;
+            maxFiles = asInt(get(scriptable, "maxFiles"), maxFiles);
+            localMaxDexBytes = asLong(get(scriptable, "maxDexBytes"), localMaxDexBytes);
+            includeSmali = asBoolean(get(scriptable, "includeSmali"), includeSmali);
+            maxSmali = asInt(get(scriptable, "maxSmaliChars"), maxSmali);
+            verbose = asBoolean(get(scriptable, "verbose"), verbose);
+        } else if (opts instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) opts;
+            String v;
+            v = asString(mapGet(map, "dir")); if (v == null) v = asString(mapGet(map, "path")); if (v != null) dirPath = v;
+            v = asString(mapGet(map, "className")); if (v == null) v = asString(mapGet(map, "class")); if (v != null) targetClassName = v;
+            v = asString(mapGet(map, "methodName")); if (v == null) v = asString(mapGet(map, "name")); if (v != null) targetMethodName = v;
+            v = asString(mapGet(map, "proto")); if (v == null) v = asString(mapGet(map, "descriptor")); if (v != null) targetProto = v;
+            v = asString(mapGet(map, "prefix")); if (v != null) prefix = v;
+            maxFiles = asInt(mapGet(map, "maxFiles"), maxFiles);
+            localMaxDexBytes = asLong(mapGet(map, "maxDexBytes"), localMaxDexBytes);
+            includeSmali = asBoolean(mapGet(map, "includeSmali"), includeSmali);
+            maxSmali = asInt(mapGet(map, "maxSmaliChars"), maxSmali);
+            verbose = asBoolean(mapGet(map, "verbose"), verbose);
         }
-
-        String targetDescriptor = DexProtoUtils.toDescriptor(targetClassName);
-        long started = System.currentTimeMillis();
-        File dir = new File(dirPath);
-        out.put("dir", dirPath);
-        out.put("className", targetClassName);
-        out.put("classDescriptor", targetDescriptor);
-        out.put("methodName", targetMethodName);
-        out.put("proto", targetProto);
-        out.put("found", false);
-        out.put("scanned", scanned);
-        out.put("errors", errors);
-
-        if (verbose) Log.i(TAG, "locateMethodInCookieDumps start dir=" + dirPath
-                + " target=" + targetClassName + "." + targetMethodName + targetProto
-                + " prefix=" + prefix + " maxFiles=" + maxFiles);
-
-        if (!dir.exists() || !dir.isDirectory()) {
-            out.put("error", "目录不存在或不是目录: " + dirPath);
-            Log.w(TAG, "locateMethodInCookieDumps stop: dir missing " + dirPath);
-            return out;
-        }
-        File[] files = dir.listFiles();
-        if (files == null) {
-            out.put("error", "目录不可列举/listFiles 返回 null: " + dirPath);
-            Log.w(TAG, "locateMethodInCookieDumps stop: listFiles null " + dirPath);
-            return out;
-        }
-
-        ArrayList<File> dexFiles = new ArrayList<>();
-        for (File f : files) {
-            if (f == null || !f.isFile()) continue;
-            String name = f.getName();
-            if (prefix != null && !prefix.isEmpty() && !name.startsWith(prefix)) continue;
-            if (!name.endsWith(".dex")) continue;
-            long len = f.length();
-            if (len < 0x70) continue;
-            if (len > localMaxDexBytes) {
-                LinkedHashMap<String, Object> err = new LinkedHashMap<>();
-                err.put("path", f.getAbsolutePath());
-                err.put("stage", "filter-size");
-                err.put("size", len);
-                err.put("error", "dex too large, maxDexBytes=" + localMaxDexBytes);
-                errors.add(err);
-                continue;
-            }
-            dexFiles.add(f);
-        }
-        Collections.sort(dexFiles, new Comparator<File>() {
-            @Override public int compare(File a, File b) { return a.getName().compareTo(b.getName()); }
-        });
-        out.put("totalFiles", files.length);
-        out.put("candidateFiles", dexFiles.size());
-        if (verbose) Log.i(TAG, "locateMethodInCookieDumps files total=" + files.length + " candidates=" + dexFiles.size());
-
-        int limit = Math.min(maxFiles <= 0 ? dexFiles.size() : maxFiles, dexFiles.size());
-        int opened = 0;
-        for (int i = 0; i < limit; i++) {
-            File file = dexFiles.get(i);
-            long t0 = System.currentTimeMillis();
-            LinkedHashMap<String, Object> row = new LinkedHashMap<>();
-            row.put("index", i);
-            row.put("path", file.getAbsolutePath());
-            row.put("name", file.getName());
-            row.put("size", file.length());
-            scanned.add(row);
-            if (verbose) Log.i(TAG, "locateMethodInCookieDumps [" + (i + 1) + "/" + limit + "] open "
-                    + file.getName() + " size=" + file.length());
-            try {
-                DexBackedDexFile dexFile = DexFileFactory.loadDexFile(file, Opcodes.getDefault());
-                opened++;
-                int classCount = 0;
-                int methodCount = 0;
-                boolean classFound = false;
-                for (ClassDef classDef : dexFile.getClasses()) {
-                    classCount++;
-                    String type = classDef.getType();
-                    if (!targetDescriptor.equals(type)) continue;
-                    classFound = true;
-                    row.put("classFound", true);
-                    if (verbose) Log.i(TAG, "locateMethodInCookieDumps class found in " + file.getName() + " type=" + type);
-                    for (Method method : classDef.getMethods()) {
-                        methodCount++;
-                        String proto = DexProtoUtils.proto(method);
-                        if (targetMethodName.equals(method.getName()) && (targetProto == null || targetProto.equals(proto))) {
-                            long elapsed = System.currentTimeMillis() - t0;
-                            row.put("methodFound", true);
-                            row.put("elapsedMs", elapsed);
-                            out.put("found", true);
-                            out.put("path", file.getAbsolutePath());
-                            out.put("fileName", file.getName());
-                            out.put("size", file.length());
-                            out.put("classFound", true);
-                            out.put("methodFound", true);
-                            out.put("accessFlags", method.getAccessFlags());
-                            out.put("returnType", method.getReturnType());
-                            out.put("parameters", new ArrayList<CharSequence>(method.getParameterTypes()));
-                            out.put("elapsedMs", System.currentTimeMillis() - started);
-                            if (includeSmali) out.put("smali", DexSmaliPrinter.method(method, maxSmali));
-                            if (verbose) Log.i(TAG, "locateMethodInCookieDumps FOUND path=" + file.getAbsolutePath()
-                                    + " target=" + targetClassName + "." + targetMethodName + targetProto
-                                    + " elapsedMs=" + elapsed);
-                            return out;
-                        }
-                    }
-                    break;
-                }
-                row.put("classCount", classCount);
-                row.put("methodCountInTargetClass", methodCount);
-                row.put("classFound", classFound);
-                row.put("elapsedMs", System.currentTimeMillis() - t0);
-                if (verbose) Log.i(TAG, "locateMethodInCookieDumps [" + (i + 1) + "/" + limit + "] done "
-                        + file.getName() + " classFound=" + classFound + " elapsedMs=" + row.get("elapsedMs"));
-            } catch (Throwable t) {
-                row.put("error", String.valueOf(t));
-                row.put("elapsedMs", System.currentTimeMillis() - t0);
-                LinkedHashMap<String, Object> err = new LinkedHashMap<>();
-                err.put("path", file.getAbsolutePath());
-                err.put("stage", "open-or-scan");
-                err.put("error", String.valueOf(t));
-                errors.add(err);
-                Log.w(TAG, "locateMethodInCookieDumps skip " + file.getAbsolutePath(), t);
-            } finally {
-                if ((i + 1) % 8 == 0) {
-                    try { System.gc(); } catch (Throwable ignored) {}
-                }
-            }
-        }
-        out.put("opened", opened);
-        out.put("elapsedMs", System.currentTimeMillis() - started);
-        if (verbose) Log.w(TAG, "locateMethodInCookieDumps NOT_FOUND target=" + targetClassName + "." + targetMethodName + targetProto
-                + " candidates=" + dexFiles.size() + " scanned=" + limit + " opened=" + opened
-                + " elapsedMs=" + out.get("elapsedMs"));
-
-        return out;
+        return js(locateMethodInCookieDumpsInternal(
+                dirPath, prefix, targetClassName, targetMethodName, targetProto,
+                maxFiles, localMaxDexBytes, includeSmali, maxSmali, verbose
+        ));
     }
 
     /**
@@ -448,14 +389,19 @@ public final class DexApiFacade {
      * string search.  The goal is to produce the already-unpacked business dex that actually
      * defines the requested method.
      */
-    public Map<String, Object> dumpDecryptedDexForMethod() { return dumpDecryptedDexForMethod(null); }
+    public Object dumpDecryptedDexForMethod() { return dumpDecryptedDexForMethod(null); }
 
-    public Map<String, Object> dumpDecryptedDexForMethod(Object optionsObject) {
+    public Object dumpDecryptedDexForMethod(Object optionsObject) {
+        return js(dumpDecryptedDexForMethodRaw(optionsObject));
+    }
+
+    private Map<String, Object> dumpDecryptedDexForMethodRaw(Object optionsObject) {
         Map<String, Object> legacyCleanup = cleanupLegacyCookieDirs(packageName);
         DumpDecryptedTargetOptions options = DumpDecryptedTargetOptions.from(optionsObject, packageName);
         if (debugLogging) options.verbose = true;
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         long started = System.currentTimeMillis();
+        out.put("ok", false);
         out.put("strategy", "app-loader-cookie-dump-locate-export");
         out.put("className", options.className);
         out.put("methodName", options.methodName);
@@ -516,6 +462,8 @@ public final class DexApiFacade {
                     options.verbose
             );
             out.put("dumpCount", dumped.dumps.size());
+            out.put("paths", pathsFromRows(dumped.dumps));
+            out.put("dumpedPaths", pathsFromRows(dumped.dumps));
             out.put("cookieValueCount", dumped.cookieValueCount);
             out.put("dexFileObjectCount", dumped.dexFileObjectCount);
             out.put("dumpSources", dumped.dumps);
@@ -560,10 +508,12 @@ public final class DexApiFacade {
         File exported = new File(outDir, options.exportName);
         try {
             copyFile(source, exported);
+            out.put("ok", true);
             out.put("found", true);
             out.put("sourcePath", source == null ? null : source.getAbsolutePath());
             out.put("sourceSize", source == null ? null : source.length());
             out.put("exportedPath", exported.getAbsolutePath());
+            out.put("paths", Collections.singletonList(exported.getAbsolutePath()));
             out.put("exportedSize", exported.length());
             out.put("elapsedMs", System.currentTimeMillis() - started);
             if (options.verbose) Log.i(TAG, "dumpDecryptedDexForMethod EXPORTED targetDex=" + exported.getAbsolutePath()
@@ -580,47 +530,37 @@ public final class DexApiFacade {
         return out;
     }
 
-    public Map<String, Object> dumpUnpackedDexForMethod() { return dumpDecryptedDexForMethod(null); }
-    public Map<String, Object> dumpUnpackedDexForMethod(Object optionsObject) { return dumpDecryptedDexForMethod(optionsObject); }
-    public Map<String, Object> dumpTargetDex() { return dumpDecryptedDexForMethod(null); }
-    public Map<String, Object> dumpTargetDex(Object optionsObject) { return dumpDecryptedDexForMethod(optionsObject); }
-    public Map<String, Object> dumpDexForMethod() { return dumpDecryptedDexForMethod(null); }
-    public Map<String, Object> dumpDexForMethod(Object optionsObject) { return dumpDecryptedDexForMethod(optionsObject); }
 
     /**
      * One-call stable path: dump the unpacked dex containing target method, then inspect
      * that exact exported dex. No memory scan / raw salvage / broad search fallback is used.
      */
-    public Map<String, Object> dumpAndInspectMethod() { return dumpAndInspectMethod(null); }
+    public Object dumpAndInspectMethod() { return dumpAndInspectMethod(null); }
 
-    public Map<String, Object> dumpAndInspectMethod(Object optionsObject) {
+    public Object dumpAndInspectMethod(Object optionsObject) {
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
-        Map<String, Object> dump = dumpDecryptedDexForMethod(optionsObject);
+        Map<String, Object> dump = dumpDecryptedDexForMethodRaw(optionsObject);
         out.put("dump", dump);
         out.put("dumpFound", dump.get("found"));
         Object exportedPath = dump.get("exportedPath");
         if (!Boolean.TRUE.equals(dump.get("found")) || exportedPath == null) {
             out.put("inspect", null);
             out.put("featuresOk", false);
-            return out;
+            return js(out);
         }
         LinkedHashMap<String, Object> inspectOptions = optionMapForInspect(optionsObject);
         inspectOptions.put("path", exportedPath);
         try {
-            Map<String, Object> inspect = inspectMethodInFile(inspectOptions);
+            Map<String, Object> inspect = inspectMethodInFileRaw(inspectOptions);
             out.put("inspect", inspect);
             out.put("featuresOk", inspect.get("featuresOk"));
         } catch (Throwable t) {
             out.put("inspectError", brief(t));
             out.put("featuresOk", false);
         }
-        return out;
+        return js(out);
     }
 
-    public Map<String, Object> inspectDumpedMethod() throws Exception { return inspectMethodInFile(null); }
-    public Map<String, Object> inspectDumpedMethod(Object optionsObject) throws Exception { return inspectMethodInFile(optionsObject); }
-    public Map<String, Object> findMethodInCookieDumps() { return locateMethodInCookieDumps(null); }
-    public Map<String, Object> findMethodInCookieDumps(Object optionsObject) { return locateMethodInCookieDumps(optionsObject); }
 
     private LinkedHashMap<String, Object> optionMapForInspect(Object optionsObject) {
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
@@ -664,9 +604,17 @@ public final class DexApiFacade {
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         ArrayList<Map<String, Object>> scanned = new ArrayList<>();
         ArrayList<Map<String, Object>> errors = new ArrayList<>();
-        if (targetClassName == null || targetClassName.trim().isEmpty()) targetClassName = "pc.a";
-        if (targetMethodName == null || targetMethodName.trim().isEmpty()) targetMethodName = "d";
-        if (targetProto == null || targetProto.trim().isEmpty()) targetProto = "()Z";
+        if (targetClassName == null || targetClassName.trim().isEmpty()) {
+            out.put("error", "className 不能为空；locateMethodInCookieDumpsInternal 需要指定目标类");
+            out.put("reason", "missing-className");
+            return out;
+        }
+        if (targetMethodName == null || targetMethodName.trim().isEmpty()) {
+            out.put("error", "methodName 不能为空；locateMethodInCookieDumpsInternal 需要指定目标方法");
+            out.put("reason", "missing-methodName");
+            return out;
+        }
+        if (targetProto != null && targetProto.trim().isEmpty()) targetProto = null;
         if (dirPath == null || dirPath.trim().isEmpty() || isLegacyCookieDir(dirPath)) dirPath = defaultCookieDumpDir(packageName);
         if (prefix == null) prefix = "cookie_";
         if (maxFiles <= 0) maxFiles = 300;
@@ -682,6 +630,7 @@ public final class DexApiFacade {
         out.put("classDescriptor", targetDescriptor);
         out.put("methodName", targetMethodName);
         out.put("proto", targetProto);
+        out.put("ok", false);
         out.put("found", false);
         out.put("scanned", scanned);
         out.put("errors", errors);
@@ -761,6 +710,7 @@ public final class DexApiFacade {
                             long elapsed = System.currentTimeMillis() - t0;
                             row.put("methodFound", true);
                             row.put("elapsedMs", elapsed);
+                            out.put("ok", true);
                             out.put("found", true);
                             out.put("path", file.getAbsolutePath());
                             out.put("fileName", file.getName());
@@ -868,20 +818,21 @@ public final class DexApiFacade {
      * them as runtime sources.  This is intentionally explicit because memory scanning can be
      * expensive; scripts should call it only after the target app has finished unpacking/loading.
      */
-    public Map<String, Object> scanMemory() { return scanMemory(null); }
+    public Object scanMemory() { return scanMemory(null); }
 
-    public Map<String, Object> scanMemory(Object optionsObject) {
-        return scanMemoryInternal(optionsObject, true);
+    public Object scanMemory(Object optionsObject) {
+        return js(scanMemoryInternal(optionsObject, true));
     }
 
     /**
      * Dump-only variant. It does not require target-method hooks and does not register the dumped
-     * files into RuntimeRegistry by default. Use dex.fromDumpDir(...) or dex.scanDumpDir(...) later.
+     * files into RuntimeRegistry by default. Read returned paths directly or pass an exact path
+     * to dex.findMethods({ path: ... }).
      */
-    public Map<String, Object> dumpMemory() { return dumpMemory(null); }
+    public Object dumpMemory() { return dumpMemory(null); }
 
-    public Map<String, Object> dumpMemory(Object optionsObject) {
-        return scanMemoryInternal(optionsObject, false);
+    public Object dumpMemory(Object optionsObject) {
+        return js(scanMemoryInternal(optionsObject, false));
     }
 
     /**
@@ -889,26 +840,21 @@ public final class DexApiFacade {
      * even when section/map/string validation fails. Use this when external tools
      * show that the useful business dex came from an earlier "bad" dump.
      */
-    public Map<String, Object> dumpMemoryRaw() { return dumpMemoryRaw(null); }
+    public Object dumpMemoryRaw() { return dumpMemoryRaw(null); }
 
-    public Map<String, Object> dumpMemoryRaw(Object optionsObject) {
-        return scanMemoryRawInternal(optionsObject, false);
+    public Object dumpMemoryRaw(Object optionsObject) {
+        return js(scanMemoryRawInternal(optionsObject, false));
     }
 
-    public Map<String, Object> dumpRawDex() { return dumpMemoryRaw(null); }
-
-    public Map<String, Object> dumpRawDex(Object optionsObject) {
-        return dumpMemoryRaw(optionsObject);
-    }
 
     /**
      * BlackDex-style cookie dumper. It walks live ClassLoader DexPathList
      * elements, extracts dalvik.system.DexFile.mCookie values, then asks the
      * native layer to dump the ART DexFile begin_/size_ memory region.
      */
-    public Map<String, Object> dumpDexCookies() { return dumpDexCookies(null); }
+    public Object dumpDexCookies() { return dumpDexCookies(null); }
 
-    public Map<String, Object> dumpDexCookies(Object optionsObject) {
+    public Object dumpDexCookies(Object optionsObject) {
         Map<String, Object> legacyCleanup = cleanupLegacyCookieDirs(packageName);
         CookieDumpOptions options = CookieDumpOptions.from(optionsObject, packageName);
         if (debugLogging) options.verbose = true;
@@ -932,7 +878,11 @@ public final class DexApiFacade {
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         out.put("strategy", "dexfile-cookie");
         out.put("outputDir", options.outputDir);
+        out.put("ok", true);
         out.put("count", result.dumps.size());
+        ArrayList<String> dumpedPaths = pathsFromRows(result.dumps);
+        out.put("paths", dumpedPaths);
+        out.put("dumpedPaths", dumpedPaths);
         out.put("sources", result.dumps);
         out.put("loader", String.valueOf(cookieRootLoader));
         out.put("loaderId", cookieRootLoader == null ? null : System.identityHashCode(cookieRootLoader));
@@ -946,31 +896,27 @@ public final class DexApiFacade {
         out.put("includeParents", options.includeParents);
         out.put("includeThreadContext", options.includeThreadContext);
         out.put("registerSources", options.registerSources);
-        return out;
+        return js(out);
     }
 
-    public Map<String, Object> dumpCookieDex() { return dumpDexCookies(null); }
-    public Map<String, Object> dumpCookieDex(Object optionsObject) { return dumpDexCookies(optionsObject); }
-    public Map<String, Object> dumpFromCookies() { return dumpDexCookies(null); }
-    public Map<String, Object> dumpFromCookies(Object optionsObject) { return dumpDexCookies(optionsObject); }
 
     /** dumpDex-style Java layer status: class-load hooks dump Class.dexCache.getDex().getBytes(). */
-    public Map<String, Object> classLoadDumpStatus() { return DexClassLoadDumper.status(); }
-    public Map<String, Object> classDexDumpStatus() { return DexClassLoadDumper.status(); }
+    public Object classLoadDumpStatus() { return js(DexClassLoadDumper.status()); }
+    public Object classDexDumpStatus() { return js(DexClassLoadDumper.status()); }
     public String classDexDumpDir() { return DexClassLoadDumper.outputDir(); }
-    public List<Map<String, Object>> classDexDumpSources() { return DexClassLoadDumper.sources(); }
+    public Object classDexDumpSources() { return js(DexClassLoadDumper.sources()); }
 
     /** Force-load/probe known class names with the selected ClassLoader and dump their Class.dexCache dex if available. */
-    public Map<String, Object> dumpClassDex(Object classNameOrArray) {
-        return dumpClassDexInternal(classNameOrArray, null);
+    public Object dumpClassDex(Object classNameOrArray) {
+        return js(dumpClassDexInternal(classNameOrArray, null));
     }
 
-    /** Rhino-friendly overload: dex.dumpClassDex(["pc.a"], loader). */
-    public Map<String, Object> dumpClassDex(Object classNameOrArray, Object loaderObject) {
-        return dumpClassDexInternal(classNameOrArray, loaderObject);
+    /** Rhino-friendly overload: dex.dumpClassDex(["com.example.Target"], loader). */
+    public Object dumpClassDex(Object classNameOrArray, Object loaderObject) {
+        return js(dumpClassDexInternal(classNameOrArray, loaderObject));
     }
 
-    public Map<String, Object> dumpLoadedClassDex(Object classObject) {
+    public Object dumpLoadedClassDex(Object classObject) {
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         ArrayList<Map<String, Object>> rows = new ArrayList<>();
         int ok = 0;
@@ -997,15 +943,17 @@ public final class DexApiFacade {
             row.put("error", "参数不是 java.lang.Class: " + obj);
             rows.add(row);
         }
+        out.put("ok", ok > 0);
         out.put("count", ok);
+        out.put("paths", pathsFromRows(rows));
         out.put("requested", rows.size());
         out.put("results", rows);
         out.put("sources", DexClassLoadDumper.sources());
         out.put("status", DexClassLoadDumper.status());
-        return out;
+        return js(out);
     }
 
-    public Map<String, Object> rememberAppClassLoader(Object loaderObject) {
+    public Object rememberAppClassLoader(Object loaderObject) {
         ClassLoader loader = asClassLoader(loaderObject, null);
         DexClassLoadDumper.rememberAppClassLoader(loader, "dex.rememberAppClassLoader", module);
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
@@ -1013,10 +961,10 @@ public final class DexApiFacade {
         out.put("loader", String.valueOf(loader));
         out.put("loaderId", loader == null ? null : System.identityHashCode(loader));
         out.put("status", DexClassLoadDumper.status());
-        return out;
+        return js(out);
     }
 
-    public List<Map<String, Object>> appClassLoaders() {
+    public Object appClassLoaders() {
         ArrayList<Map<String, Object>> out = new ArrayList<>();
         for (ClassLoader loader : DexClassLoadDumper.appClassLoaders()) {
             LinkedHashMap<String, Object> row = new LinkedHashMap<>();
@@ -1025,7 +973,7 @@ public final class DexApiFacade {
             row.put("class", loader == null ? null : loader.getClass().getName());
             out.add(row);
         }
-        return out;
+        return js(out);
     }
 
     private Map<String, Object> dumpClassDexInternal(Object classNameOrArray, Object explicitLoaderObject) {
@@ -1084,7 +1032,16 @@ public final class DexApiFacade {
             }
             rows.add(row);
         }
+        out.put("ok", ok > 0);
         out.put("count", ok);
+        out.put("paths", pathsFromRows(rows));
+        ArrayList<Map<String, Object>> dumpedRows = new ArrayList<>();
+        ArrayList<Map<String, Object>> failedRows = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            if (Boolean.TRUE.equals(row.get("ok"))) dumpedRows.add(row); else failedRows.add(row);
+        }
+        out.put("dumped", dumpedRows);
+        out.put("failed", failedRows);
         out.put("requested", rows.size());
         out.put("loader", String.valueOf(loader));
         out.put("loaderId", loader == null ? null : System.identityHashCode(loader));
@@ -1124,7 +1081,7 @@ public final class DexApiFacade {
         catch (Throwable ignored) { return effective.loadClass(name.trim()); }
     }
 
-    public Map<String, Object> dumpClassDex() { return dumpClassDex(Collections.emptyList()); }
+    public Object dumpClassDex() { return dumpClassDex(Collections.emptyList()); }
 
     public DexFileView fromClassDumps() throws Exception { return fromClassDumps(null); }
     public DexFileView fromClassDumps(Object optionsObject) throws Exception {
@@ -1171,8 +1128,8 @@ public final class DexApiFacade {
         return openSources(sources);
     }
 
-    public Map<String, Object> classDumpDirStatus() { return classDumpDirStatus(null); }
-    public Map<String, Object> classDumpDirStatus(Object optionsObject) {
+    public Object classDumpDirStatus() { return classDumpDirStatus(null); }
+    public Object classDumpDirStatus(Object optionsObject) {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
         if (debugLogging) options.verbose = true;
         String configuredDir = DexClassLoadDumper.outputDir();
@@ -1201,7 +1158,7 @@ public final class DexApiFacade {
         out.put("sourceCount", tmp.size());
         out.put("diagnostics", diagnostics);
         out.put("memorySources", DexClassLoadDumper.sources());
-        return out;
+        return js(out);
     }
 
     /**
@@ -1209,9 +1166,9 @@ public final class DexApiFacade {
      * This is a diagnostic step for packers that decrypt strings/classes transiently but do
      * not leave a complete dex image in a readable mapping.
      */
-    public Map<String, Object> scanMemoryStrings() { return scanMemoryStrings(null); }
+    public Object scanMemoryStrings() { return scanMemoryStrings(null); }
 
-    public Map<String, Object> scanMemoryStrings(Object optionsObject) {
+    public Object scanMemoryStrings(Object optionsObject) {
         StringScanOptions options = StringScanOptions.from(optionsObject, packageName);
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         out.put("available", DexMemoryScanner.isAvailable());
@@ -1222,9 +1179,10 @@ public final class DexApiFacade {
         out.put("dumpWindows", options.dumpWindows);
         out.put("outputDir", options.outputDir);
         if (!DexMemoryScanner.isAvailable()) {
+            out.put("ok", false);
             out.put("count", 0);
             out.put("hits", Collections.emptyList());
-            return out;
+            return js(out);
         }
         List<Map<String, Object>> hits = DexMemoryScanner.scanStrings(
                 options.outputDir,
@@ -1238,6 +1196,7 @@ public final class DexApiFacade {
                 options.dumpWindows,
                 options.needles.toArray(new String[0])
         );
+        out.put("ok", true);
         out.put("count", hits.size());
         out.put("hits", hits);
         out.put("maxRegionBytes", options.maxRegionBytes);
@@ -1246,10 +1205,9 @@ public final class DexApiFacade {
         out.put("windowBytes", options.windowBytes);
         out.put("includeAnonymous", options.includeAnonymous);
         out.put("includeFileBacked", options.includeFileBacked);
-        return out;
+        return js(out);
     }
 
-    public Map<String, Object> traceStrings(Object optionsObject) { return scanMemoryStrings(optionsObject); }
 
     private Map<String, Object> scanMemoryInternal(Object optionsObject, boolean defaultRegisterSources) {
         MemoryScanOptions options = MemoryScanOptions.from(optionsObject, packageName);
@@ -1259,7 +1217,11 @@ public final class DexApiFacade {
         Throwable loadError = DexMemoryScanner.getLoadError();
         out.put("loadError", loadError == null ? null : String.valueOf(loadError));
         if (!DexMemoryScanner.isAvailable()) {
+            out.put("ok", false);
             out.put("count", 0);
+            out.put("paths", Collections.emptyList());
+            out.put("dumped", Collections.emptyList());
+            out.put("candidates", Collections.emptyList());
             out.put("sources", Collections.emptyList());
             return out;
         }
@@ -1280,7 +1242,11 @@ public final class DexApiFacade {
                 if (path != null) DexRuntimeRegistry.registerPath(defaultLoader, String.valueOf(path), "memory-scan");
             }
         }
+        out.put("ok", true);
         out.put("count", dumped.size());
+        out.put("paths", pathsFromRows(dumped));
+        out.put("dumped", dumped);
+        out.put("candidates", dumped);
         out.put("sources", dumped);
         out.put("outputDir", options.outputDir);
         out.put("maxRegionBytes", options.maxRegionBytes);
@@ -1305,7 +1271,11 @@ public final class DexApiFacade {
         out.put("loadError", loadError == null ? null : String.valueOf(loadError));
         out.put("rawSalvage", true);
         if (!DexMemoryScanner.isAvailable()) {
+            out.put("ok", false);
             out.put("count", 0);
+            out.put("paths", Collections.emptyList());
+            out.put("dumped", Collections.emptyList());
+            out.put("candidates", Collections.emptyList());
             out.put("sources", Collections.emptyList());
             return out;
         }
@@ -1327,7 +1297,11 @@ public final class DexApiFacade {
                 if (path != null) DexRuntimeRegistry.registerPath(defaultLoader, String.valueOf(path), "memory-raw-salvage");
             }
         }
+        out.put("ok", true);
         out.put("count", dumped.size());
+        out.put("paths", pathsFromRows(dumped));
+        out.put("dumped", dumped);
+        out.put("candidates", dumped);
         out.put("sources", dumped);
         out.put("outputDir", options.outputDir);
         out.put("maxRegionBytes", options.maxRegionBytes);
@@ -1343,117 +1317,11 @@ public final class DexApiFacade {
         return out;
     }
 
-    /** Scan an existing dump directory without running the native memory scanner again. */
-    public Map<String, Object> scanDumpDir() { return scanDumpDir(null); }
-
-    public Map<String, Object> scanDumpDir(Object optionsObject) {
-        DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
-        if (debugLogging) options.verbose = true;
-        ArrayList<Map<String, Object>> rows = new ArrayList<>();
-        int ok = 0;
-        int invalid = 0;
-        int rawHit = 0;
-        List<File> selectedFiles = dumpFiles(options);
-        List<File> allFiles = dumpFiles(options, false);
-        int scanIndex = 0;
-        for (File file : selectedFiles) {
-            scanIndex++;
-            File scanFile = file;
-            Map<String, Object> repair = null;
-            if (options.verbose && (scanIndex == 1 || scanIndex % options.progressEvery == 0 || scanIndex == selectedFiles.size())) {
-                Log.i(TAG, "scanDumpDir progress " + scanIndex + "/" + selectedFiles.size() + " file=" + file.getName() + " size=" + file.length());
-            }
-            if (options.repair) {
-                repair = repairDexFile(file, options);
-                Object repairedPath = repair.get("repairedPath");
-                if (Boolean.TRUE.equals(repair.get("ok")) && repairedPath != null) {
-                    File rp = new File(String.valueOf(repairedPath));
-                    if (rp.isFile()) scanFile = rp;
-                }
-            }
-            DexPreflight preflight = preflightDexFile(scanFile);
-            List<String> matches = rawContains(scanFile, options.contains, options.rawScanBytes);
-            if (preflight.ok) ok++; else invalid++;
-            boolean rawMatched = rawMatched(matches, options);
-            if (rawMatched) rawHit++;
-            if (options.verbose && rawMatched) {
-                Log.i(TAG, "scanDumpDir raw-hit file=" + file.getName() + " matches=" + matches + " preflight=" + preflight.reason);
-            }
-            LinkedHashMap<String, Object> row = new LinkedHashMap<>();
-            row.put("path", file.getAbsolutePath());
-            row.put("scanPath", scanFile.getAbsolutePath());
-            row.put("fileSize", scanFile.length());
-            row.put("preflightOk", preflight.ok);
-            row.put("preflight", preflight.reason);
-            row.put("matches", matches);
-            row.put("matchCount", matches.size());
-            row.put("rawMatched", rawMatched);
-            if (repair != null) row.put("repair", repair);
-            rows.add(row);
-        }
-        LinkedHashMap<String, Object> out = new LinkedHashMap<>();
-        out.put("dir", options.dir);
-        out.put("count", rows.size());
-        out.put("totalFiles", allFiles.size());
-        out.put("deduped", Math.max(0, allFiles.size() - selectedFiles.size()));
-        out.put("ok", ok);
-        out.put("invalid", invalid);
-        out.put("rawHit", rawHit);
-        out.put("contains", options.contains);
-        out.put("matchAllContains", options.matchAllContains);
-        out.put("dedupe", options.dedupe);
-        out.put("openOnlyRawMatched", options.openOnlyRawMatched);
-        out.put("verbose", options.verbose);
-        out.put("sources", rows);
-        return out;
-    }
-
-    /** Open all dex dumps from a directory. Optional { repair: true } runs light repair first. */
-    public DexFileView fromDumpDir() throws Exception { return fromDumpDir(null); }
-
-    public DexFileView fromDumpDir(Object optionsObject) throws Exception {
-        DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
-        if (debugLogging) options.verbose = true;
-        ArrayList<DexSource> sources = new ArrayList<>();
-        List<File> files = dumpFiles(options);
-        int openIndex = 0;
-        int rawSkipped = 0;
-        for (File file : files) {
-            openIndex++;
-            File openFile = file;
-            if (options.verbose && (openIndex == 1 || openIndex % options.progressEvery == 0 || openIndex == files.size())) {
-                Log.i(TAG, "fromDumpDir progress " + openIndex + "/" + files.size() + " file=" + file.getName() + " size=" + file.length());
-            }
-            if (options.repair) {
-                Map<String, Object> repair = repairDexFile(file, options);
-                Object repairedPath = repair.get("repairedPath");
-                if (Boolean.TRUE.equals(repair.get("ok")) && repairedPath != null) {
-                    File rp = new File(String.valueOf(repairedPath));
-                    if (rp.isFile()) openFile = rp;
-                }
-            }
-            if (options.openOnlyRawMatched) {
-                List<String> matches = rawContains(openFile, options.contains, options.rawScanBytes);
-                if (!rawMatched(matches, options)) {
-                    rawSkipped++;
-                    if (options.verbose) Log.i(TAG, "fromDumpDir skip raw-miss file=" + file.getName() + " matches=" + matches);
-                    continue;
-                }
-                if (options.verbose) Log.i(TAG, "fromDumpDir keep raw-hit file=" + file.getName() + " matches=" + matches);
-            }
-            sources.add(new DexSource(openFile.getAbsolutePath(), null, sourceType(openFile), defaultLoader, "dump-dir"));
-        }
-        if (options.verbose) Log.i(TAG, "fromDumpDir selected sources=" + sources.size() + " rawSkipped=" + rawSkipped + " total=" + files.size());
-        if (sources.isEmpty()) {
-            throw new IllegalStateException("dump 目录没有可打开 dex 文件: " + options.dir + " totalFiles=" + files.size() + " rawSkipped=" + rawSkipped + " openOnlyRawMatched=" + options.openOnlyRawMatched + " contains=" + options.contains);
-        }
-        return openSources(sources);
-    }
 
     /** Delete old memory-dex dump files so stale/duplicate invalid dumps do not affect a new scan. */
-    public Map<String, Object> clearDumpDir() { return clearDumpDir(null); }
+    public Object clearDumpDir() { return clearDumpDir(null); }
 
-    public Map<String, Object> clearDumpDir(Object optionsObject) {
+    public Object clearDumpDir(Object optionsObject) {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
         if (debugLogging) options.verbose = true;
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
@@ -1475,13 +1343,13 @@ public final class DexApiFacade {
         }
         out.put("deleted", deleted);
         out.put("failed", failed);
-        return out;
+        return js(out);
     }
 
     /** Returns dex-like files currently present in a dump directory. */
-    public List<Map<String, Object>> dumpSources() { return dumpSources(null); }
+    public Object dumpSources() { return dumpSources(null); }
 
-    public List<Map<String, Object>> dumpSources(Object optionsObject) {
+    public Object dumpSources(Object optionsObject) {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
         if (debugLogging) options.verbose = true;
         ArrayList<Map<String, Object>> out = new ArrayList<>();
@@ -1497,31 +1365,31 @@ public final class DexApiFacade {
             map.put("preflight", preflight.reason);
             out.add(map);
         }
-        return out;
+        return js(out);
     }
 
-    public Map<String, Object> repairDex(String path) { return repairDex(path, null); }
+    public Object repairDex(String path) { return repairDex(path, null); }
 
-    public Map<String, Object> repairDex(String path, Object optionsObject) {
+    public Object repairDex(String path, Object optionsObject) {
         if (path == null || path.trim().isEmpty()) throw new IllegalArgumentException("path 不能为空");
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
         if (debugLogging) options.verbose = true;
-        return repairDexFile(new File(path.trim()), options);
+        return js(repairDexFile(new File(path.trim()), options));
     }
 
-    public List<Map<String, Object>> repairDumpDir() { return repairDumpDir(null); }
+    public Object repairDumpDir() { return repairDumpDir(null); }
 
-    public List<Map<String, Object>> repairDumpDir(Object optionsObject) {
+    public Object repairDumpDir(Object optionsObject) {
         DumpDirOptions options = DumpDirOptions.from(optionsObject, packageName);
         if (debugLogging) options.verbose = true;
         ArrayList<Map<String, Object>> out = new ArrayList<>();
         for (File file : dumpFiles(options)) out.add(repairDexFile(file, options));
-        return out;
+        return js(out);
     }
 
     /** Returns dumped memory dex sources from the last dex.scanMemory(...) call. */
-    public List<Map<String, Object>> memorySources() {
-        return DexMemoryScanner.getLastSources();
+    public Object memorySources() {
+        return js(DexMemoryScanner.getLastSources());
     }
 
     /** Opens dumped memory dex images from the last dex.scanMemory(...) call. */
@@ -1559,15 +1427,15 @@ public final class DexApiFacade {
     }
 
     /** Returns captured runtime dex sources for diagnostics. */
-    public List<Map<String, Object>> runtimeSources() {
+    public Object runtimeSources() {
         ArrayList<Map<String, Object>> out = new ArrayList<>();
         for (DexSource source : DexRuntimeRegistry.allSources()) out.add(source.toMap());
-        return out;
+        return js(out);
     }
 
     /** Returns captured runtime class loaders for diagnostics. */
-    public List<Map<String, Object>> runtimeLoaders() {
-        return DexRuntimeRegistry.loaders();
+    public Object runtimeLoaders() {
+        return js(DexRuntimeRegistry.loaders());
     }
 
     /** Explicitly install dynamic class-loader capture hooks. The constructor already calls this; this method is a JS-visible no-op/diagnostic helper. */
@@ -1577,13 +1445,27 @@ public final class DexApiFacade {
     }
 
     /** Manual registration helper for scripts that discover a custom loader/path themselves. */
-    public boolean registerLoader(Object loaderObject, String path) {
-        ClassLoader loader = loaderObject instanceof ClassLoader ? (ClassLoader) loaderObject : defaultLoader;
-        return DexRuntimeRegistry.registerPath(loader, path, "manual-js-register");
+    public Object registerLoader(Object loaderObject, String path) {
+        Object obj = unwrap(loaderObject);
+        if (!(obj instanceof ClassLoader)) {
+            throw new IllegalArgumentException("registerLoader(loader, path) 需要显式传入 ClassLoader，不能静默使用默认 loader");
+        }
+        if (path == null || path.trim().isEmpty()) {
+            throw new IllegalArgumentException("registerLoader(loader, path) 的 path 不能为空");
+        }
+        ClassLoader loader = (ClassLoader) obj;
+        boolean registered = DexRuntimeRegistry.registerPath(loader, path, "manual-js-register");
+        LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+        out.put("ok", registered);
+        out.put("registered", registered);
+        out.put("loaderId", System.identityHashCode(loader));
+        out.put("loader", String.valueOf(loader));
+        out.put("path", path);
+        return js(out);
     }
 
     /** Configure safety limits used by dex.fromFile/fromLoader/fromRuntime/fromMemory and smali rendering. */
-    public Map<String, Object> setLimits(Object optionsObject) {
+    public Object setLimits(Object optionsObject) {
         Object obj = unwrap(optionsObject);
         if (obj instanceof Scriptable) {
             Scriptable s = (Scriptable) obj;
@@ -1592,17 +1474,28 @@ public final class DexApiFacade {
             maxMethods = clampInt(asInt(get(s, "maxMethods"), maxMethods), 10_000, HARD_MAX_METHODS);
             maxSmaliChars = clampInt(asInt(get(s, "maxSmaliChars"), maxSmaliChars), 10_000, HARD_MAX_SMALI_CHARS);
         }
-        return limits();
+        return js(limitsEnvelope(true));
     }
 
     /** Return current Dex API safety limits. */
-    public Map<String, Object> limits() {
+    public Object limits() {
+        return js(limitsEnvelope(true));
+    }
+
+    private static LinkedHashMap<String, Object> limitsMap() {
+        LinkedHashMap<String, Object> limits = new LinkedHashMap<>();
+        limits.put("maxDexBytes", maxDexBytes);
+        limits.put("maxClasses", maxClasses);
+        limits.put("maxMethods", maxMethods);
+        limits.put("maxSmaliChars", maxSmaliChars);
+        limits.put("defaultMaxDexBytes", DEFAULT_MAX_DEX_BYTES);
+        return limits;
+    }
+
+    private static LinkedHashMap<String, Object> limitsEnvelope(boolean ok) {
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
-        out.put("maxDexBytes", maxDexBytes);
-        out.put("maxClasses", maxClasses);
-        out.put("maxMethods", maxMethods);
-        out.put("maxSmaliChars", maxSmaliChars);
-        out.put("defaultMaxDexBytes", DEFAULT_MAX_DEX_BYTES);
+        out.put("ok", ok);
+        out.put("limits", limitsMap());
         return out;
     }
 
@@ -1611,16 +1504,39 @@ public final class DexApiFacade {
         throw new UnsupportedOperationException("dex.fromBytes(bytes, name) 已预留，第一版请使用 dex.fromFile(path) 或 dex.fromLoader(loader)");
     }
 
-    public DexSearchResult findMethods(Object queryObject) throws Exception {
+    public Object findMethods(Object queryObject) throws Exception {
         Query query = Query.from(queryObject);
         if (debugLogging) query.verbose = true;
-        DexFileView fileView = query.file != null ? query.file : fromLoader(query.loader == null ? defaultLoader : query.loader);
-        return fileView.findMethods(queryObject);
+        DexFileView fileView = sourceForQuery(query);
+        return js(fileView.findMethodsRaw(query).toListRaw());
     }
 
-    public DexMethodHit findMethod(Object queryObject) throws Exception {
-        DexSearchResult result = findMethods(queryObject);
-        return result.best();
+    private DexFileView sourceForQuery(Query query) throws Exception {
+        if (query != null && query.file != null) return query.file;
+        if (query != null && query.paths != null && !query.paths.isEmpty()) {
+            ArrayList<DexSource> sources = new ArrayList<>();
+            for (String rawPath : query.paths) {
+                String path = rawPath == null ? null : rawPath.trim();
+                if (path == null || path.isEmpty()) continue;
+                File file = new File(path);
+                if (!file.isFile()) throw new IllegalArgumentException("dex 文件不存在: " + file.getAbsolutePath());
+                sources.add(new DexSource(file.getAbsolutePath(), null, sourceType(file), null, "findMethods.path"));
+            }
+            if (sources.isEmpty()) throw new IllegalArgumentException("paths 为空或没有有效 dex/apk 文件");
+            return openSources(sources);
+        }
+        if (query != null && query.path != null && !query.path.trim().isEmpty()) {
+            return fromFile(query.path.trim());
+        }
+        return fromLoader(query == null ? null : query.loader);
+    }
+
+    public Object findMethod(Object queryObject) throws Exception {
+        Query query = Query.from(queryObject);
+        if (debugLogging) query.verbose = true;
+        DexFileView fileView = sourceForQuery(query);
+        DexMethodHit hit = fileView.findMethodsRaw(query).best();
+        return hit == null ? null : js(hit.toMapRaw());
     }
 
     public DexFileView fingerprint(Object queryObject) throws Exception {
@@ -1628,7 +1544,7 @@ public final class DexApiFacade {
         return query.file != null ? query.file : fromLoader(query.loader == null ? defaultLoader : query.loader);
     }
 
-    public Map<String, Object> findSource(Object methodOrClassOrLoader) {
+    public Object findSource(Object methodOrClassOrLoader) {
         Object value = unwrap(methodOrClassOrLoader);
         ClassLoader loader = defaultLoader;
         if (value instanceof ClassLoader) loader = (ClassLoader) value;
@@ -1640,7 +1556,8 @@ public final class DexApiFacade {
         LinkedHashMap<String, Object> out = new LinkedHashMap<>();
         out.put("loader", String.valueOf(loader));
         out.put("sources", list);
-        return out;
+        out.put("paths", pathsFromRows(list));
+        return js(out);
     }
 
     private DexFileView openSources(List<DexSource> sources) throws Exception {
@@ -2492,13 +2409,13 @@ public final class DexApiFacade {
 
 
     static final class DumpDecryptedTargetOptions {
-        String className = "pc.a";
-        String methodName = "d";
-        String proto = "()Z";
+        String className = null;
+        String methodName = null;
+        String proto = null;
         String cookieDir;
         String cookiePrefix = "cookie_";
         String outputDir;
-        String exportName = "pc_a_d_unpacked.dex";
+        String exportName = null;
         int maxDexBytes = 512 * 1024 * 1024;
         int maxDumpCount = 256;
         int maxFiles = 300;
@@ -2514,7 +2431,7 @@ public final class DexApiFacade {
             DumpDecryptedTargetOptions options = new DumpDecryptedTargetOptions();
             String pkg = packageName == null || packageName.trim().isEmpty() ? "unknown" : packageName.trim();
             options.cookieDir = defaultCookieDumpDir(pkg);
-            options.outputDir = "/data/user/0/" + pkg + "/code_cache/xhh_unpacked_dex";
+            options.outputDir = defaultCookieDumpDir(pkg);
             Object obj = unwrap(raw);
             if (obj instanceof Scriptable) {
                 Scriptable s = (Scriptable) obj;
@@ -2541,12 +2458,16 @@ public final class DexApiFacade {
                 if (options.loader == null) options.loader = asClassLoader(get(s, "classLoader"), null);
                 if (options.loader == null) options.loader = asClassLoader(get(s, "appClassLoader"), null);
             }
-            if (options.className == null || options.className.trim().isEmpty()) options.className = "pc.a";
-            if (options.methodName == null || options.methodName.trim().isEmpty()) options.methodName = "d";
-            if (options.proto == null || options.proto.trim().isEmpty()) options.proto = "()Z";
+            if (options.className == null || options.className.trim().isEmpty()) {
+                throw new IllegalArgumentException("className 不能为空；dumpDecryptedDexForMethod 需要指定目标类");
+            }
+            if (options.methodName == null || options.methodName.trim().isEmpty()) {
+                throw new IllegalArgumentException("methodName 不能为空；dumpDecryptedDexForMethod 需要指定目标方法");
+            }
+            if (options.proto != null && options.proto.trim().isEmpty()) options.proto = null;
             if (options.cookiePrefix == null) options.cookiePrefix = "cookie_";
             if (options.cookieDir == null || options.cookieDir.trim().isEmpty()) options.cookieDir = defaultCookieDumpDir(pkg);
-            if (options.outputDir == null || options.outputDir.trim().isEmpty()) options.outputDir = "/data/user/0/" + pkg + "/code_cache/xhh_unpacked_dex";
+            if (options.outputDir == null || options.outputDir.trim().isEmpty()) options.outputDir = defaultCookieDumpDir(pkg);
             if (options.exportName == null || options.exportName.trim().isEmpty()) {
                 options.exportName = options.className.replace('.', '_').replace('/', '_') + "_" + options.methodName + "_unpacked.dex";
             }
@@ -2768,11 +2689,15 @@ public final class DexApiFacade {
             if (skippedSources != null) this.skippedSources.addAll(skippedSources);
         }
 
-        public List<Map<String, Object>> skippedSources() {
+        public Object skippedSources() {
+            return js(skippedSourcesRaw());
+        }
+
+        List<Map<String, Object>> skippedSourcesRaw() {
             return new ArrayList<>(skippedSources);
         }
 
-        public List<Map<String, Object>> errors() {
+        public Object errors() {
             return skippedSources();
         }
 
@@ -2782,13 +2707,21 @@ public final class DexApiFacade {
             Log.w(TAG, "skip dex while " + stage + ": " + (source == null ? "null" : source.path), t);
         }
 
-        public List<Map<String, Object>> sources() {
+        public Object sources() {
+            return js(sourcesRaw());
+        }
+
+        List<Map<String, Object>> sourcesRaw() {
             ArrayList<Map<String, Object>> out = new ArrayList<>();
             for (DexUnit unit : units) out.add(unit.source.toMap());
             return out;
         }
 
-        public List<DexClassView> classes() {
+        public Object classes() {
+            return js(classesRaw());
+        }
+
+        List<DexClassView> classesRaw() {
             ArrayList<DexClassView> out = new ArrayList<>();
             int count = 0;
             for (DexUnit unit : units) {
@@ -2819,7 +2752,7 @@ public final class DexApiFacade {
         public DexClassView findClass(String descriptor) {
             if (descriptor == null) return null;
             String clean = descriptor.trim();
-            for (DexClassView view : classes()) {
+            for (DexClassView view : classesRaw()) {
                 if (clean.equals(view.descriptor)) return view;
             }
             return null;
@@ -2831,18 +2764,29 @@ public final class DexApiFacade {
             return findClass(descriptor);
         }
 
-        public List<String> strings() {
+        public Object strings() {
+            return js(stringsRaw());
+        }
+
+        List<String> stringsRaw() {
             LinkedHashSet<String> out = new LinkedHashSet<>();
-            for (DexClassView cls : classes()) out.addAll(cls.strings());
+            for (DexClassView cls : classesRaw()) out.addAll(cls.stringsRaw());
             return new ArrayList<>(out);
         }
 
-        public DexSearchResult findMethods(Object queryObject) {
-            Query query = Query.from(queryObject);
+        public Object findMethods(Object queryObject) {
+            return js(findMethodsRaw(queryObject).toListRaw());
+        }
+
+        DexSearchResult findMethodsRaw(Object queryObject) {
+            Query query = queryObject instanceof Query ? (Query) queryObject : Query.from(queryObject);
+            if (!query.hasAnyCondition()) {
+                throw new IllegalArgumentException("findMethods 至少需要一个搜索条件；例如 strings、containsString、smaliContains、proto、className、methodName 或 invokeContains");
+            }
             ArrayList<DexMethodHit> hits = new ArrayList<>();
             int visitedMethods = 0;
             int visitedClasses = 0;
-            List<DexClassView> classViews = classes();
+            List<DexClassView> classViews = classesRaw();
             if (query.verbose) {
                 Log.i(TAG, "findMethods start classes=" + classViews.size() + " sources=" + units.size() + " query={" + query.summary() + "}");
             }
@@ -2858,7 +2802,7 @@ public final class DexApiFacade {
                         }
                         continue;
                     }
-                    List<DexMethodView> methods = cls.methods();
+                    List<DexMethodView> methods = cls.methodsRaw();
                     if (query.verbose && (visitedClasses == 1 || visitedClasses % query.progressEveryClasses == 0 || visitedClasses == classViews.size())) {
                         Log.i(TAG, "findMethods scan class " + visitedClasses + "/" + classViews.size()
                                 + " methods=" + methods.size() + " class=" + cls.name
@@ -2875,7 +2819,7 @@ public final class DexApiFacade {
                             if (hit != null && hit.score >= query.minScore) {
                                 hits.add(hit);
                                 if (query.verbose) {
-                                    Log.i(TAG, "findMethods hit score=" + hit.score + " reasons=" + hit.reasons
+                                    Log.i(TAG, "findMethods hit score=" + hit.score + " reasons=" + hit.reasonList
                                             + " class=" + hit.className + " method=" + hit.methodName + hit.descriptor
                                             + " source=" + hit.sourcePath);
                                 }
@@ -2896,8 +2840,9 @@ public final class DexApiFacade {
             return new DexSearchResult(hits);
         }
 
-        public DexMethodHit findMethod(Object queryObject) {
-            return findMethods(queryObject).best();
+        public Object findMethod(Object queryObject) {
+            DexMethodHit hit = findMethodsRaw(queryObject).best();
+            return hit == null ? null : js(hit.toMapRaw());
         }
     }
 
@@ -2922,7 +2867,11 @@ public final class DexApiFacade {
             this.accessFlags = flags;
         }
 
-        public List<DexMethodView> methods() {
+        public Object methods() {
+            return js(methodsRaw());
+        }
+
+        List<DexMethodView> methodsRaw() {
             ArrayList<DexMethodView> out = new ArrayList<>();
             try {
                 Iterable<? extends Method> iterable = classDef.getMethods();
@@ -2942,11 +2891,11 @@ public final class DexApiFacade {
             return out;
         }
 
-        public List<Map<String, Object>> fields() {
+        public Object fields() {
             ArrayList<Map<String, Object>> out = new ArrayList<>();
             try {
                 Iterable<? extends Field> iterable = classDef.getFields();
-                if (iterable == null) return out;
+                if (iterable == null) return js(out);
                 Iterator<? extends Field> iterator = iterable.iterator();
                 while (true) {
                     Field field;
@@ -2965,19 +2914,23 @@ public final class DexApiFacade {
                 }
             } catch (Throwable ignored) {
             }
-            return out;
+            return js(out);
         }
 
-        public List<String> strings() {
+        public Object strings() {
+            return js(stringsRaw());
+        }
+
+        List<String> stringsRaw() {
             LinkedHashSet<String> out = new LinkedHashSet<>();
-            for (DexMethodView method : methods()) out.addAll(method.strings());
+            for (DexMethodView method : methodsRaw()) out.addAll(method.stringsRaw());
             return new ArrayList<>(out);
         }
 
         public DexMethodView findMethod(String name) { return findMethod(name, null); }
 
         public DexMethodView findMethod(String name, String proto) {
-            for (DexMethodView m : methods()) {
+            for (DexMethodView m : methodsRaw()) {
                 if (name != null && !name.equals(m.name)) continue;
                 if (proto != null && !proto.equals(m.descriptor)) continue;
                 return m;
@@ -2991,7 +2944,7 @@ public final class DexApiFacade {
             if (classDef.getSuperclass() != null) sb.append(".super ").append(classDef.getSuperclass()).append('\n');
             for (String iface : classDef.getInterfaces()) sb.append(".implements ").append(iface).append('\n');
             sb.append('\n');
-            for (DexMethodView method : methods()) {
+            for (DexMethodView method : methodsRaw()) {
                 sb.append(method.smali()).append('\n');
                 if (sb.length() > maxSmaliChars) {
                     sb.append("# ... truncated ...\n");
@@ -3012,7 +2965,8 @@ public final class DexApiFacade {
         public final String name;
         public final String descriptor;
         public final String returnType;
-        public final List<String> parameters;
+        private final List<String> parameterList;
+        public final Object parameters;
         public final int accessFlags;
 
         DexMethodView(DexUnit unit, ClassDef classDef, Method method, ClassLoader defaultLoader) {
@@ -3031,13 +2985,14 @@ public final class DexApiFacade {
             this.className = DexProtoUtils.toJavaName(classDescriptor);
             this.name = methodName;
             this.returnType = ret;
-            this.parameters = new ArrayList<>();
+            this.parameterList = new ArrayList<>();
             try {
-                for (CharSequence p : method.getParameterTypes()) this.parameters.add(String.valueOf(p));
+                for (CharSequence p : method.getParameterTypes()) this.parameterList.add(String.valueOf(p));
             } catch (Throwable ignored) {
             }
+            this.parameters = js(this.parameterList);
             String proto;
-            try { proto = DexProtoUtils.proto(method); } catch (Throwable t) { proto = "(" + this.parameters.size() + ")" + this.returnType; }
+            try { proto = DexProtoUtils.proto(method); } catch (Throwable t) { proto = "(" + this.parameterList.size() + ")" + this.returnType; }
             this.descriptor = proto;
             try { flags = method.getAccessFlags(); } catch (Throwable t) { flags = 0; }
             this.accessFlags = flags;
@@ -3046,8 +3001,13 @@ public final class DexApiFacade {
         public boolean isStatic() { return AccessFlags.STATIC.isSet(accessFlags); }
         public boolean isConstructor() { return "<init>".equals(name); }
         public ClassLoader loader() { return defaultLoader; }
+        List<String> parametersRaw() { return new ArrayList<>(parameterList); }
 
-        public List<String> strings() {
+        public Object strings() {
+            return js(stringsRaw());
+        }
+
+        List<String> stringsRaw() {
             LinkedHashSet<String> out = new LinkedHashSet<>();
             try {
                 MethodImplementation impl = method.getImplementation();
@@ -3071,7 +3031,11 @@ public final class DexApiFacade {
             return new ArrayList<>(out);
         }
 
-        public List<String> invokes() {
+        public Object invokes() {
+            return js(invokesRaw());
+        }
+
+        List<String> invokesRaw() {
             LinkedHashSet<String> out = new LinkedHashSet<>();
             try {
                 MethodImplementation impl = method.getImplementation();
@@ -3094,11 +3058,11 @@ public final class DexApiFacade {
             return new ArrayList<>(out);
         }
 
-        public List<Map<String, Object>> instructions() {
+        public Object instructions() {
             ArrayList<Map<String, Object>> out = new ArrayList<>();
             try {
                 MethodImplementation impl = method.getImplementation();
-                if (impl == null) return out;
+                if (impl == null) return js(out);
                 int offset = 0;
                 Iterator<? extends Instruction> iterator = impl.getInstructions().iterator();
                 while (true) {
@@ -3122,7 +3086,7 @@ public final class DexApiFacade {
                 }
             } catch (Throwable ignored) {
             }
-            return out;
+            return js(out);
         }
 
         public String smali() {
@@ -3136,7 +3100,7 @@ public final class DexApiFacade {
         public Executable toMethod(Object loaderObject) throws Exception {
             ClassLoader loader = loaderObject instanceof ClassLoader ? (ClassLoader) loaderObject : defaultLoader;
             Class<?> clazz = Class.forName(className, false, loader);
-            Class<?>[] params = DexProtoUtils.toClassArray(parameters, loader);
+            Class<?>[] params = DexProtoUtils.toClassArray(parameterList, loader);
             if ("<clinit>".equals(name)) throw new UnsupportedOperationException("<clinit> 不能转换为 Method/Constructor");
             if ("<init>".equals(name)) {
                 Constructor<?> c = clazz.getDeclaredConstructor(params);
@@ -3155,24 +3119,28 @@ public final class DexApiFacade {
                 if (!query.methodName.equals(name)) return null;
                 score += 20; reasons.add("name");
             }
+            if (query.proto != null) {
+                if (!query.proto.equals(descriptor)) return null;
+                score += 18; reasons.add("proto:" + query.proto);
+            }
             if (query.returnType != null) {
                 if (!query.returnType.equals(returnType)) return null;
                 score += 12; reasons.add("returnType");
             }
             if (query.parameterTypes != null) {
-                if (!query.parameterTypes.equals(parameters)) return null;
+                if (!query.parameterTypes.equals(parameterList)) return null;
                 score += 12; reasons.add("parameterTypes");
             }
             if (query.requireStatic != null) {
                 if (query.requireStatic.booleanValue() != isStatic()) return null;
                 score += 8; reasons.add(query.requireStatic ? "static" : "non-static");
             }
-            List<String> methodStrings = strings();
+            List<String> methodStrings = stringsRaw();
             for (String s : query.strings) {
                 if (!methodStrings.contains(s)) return null;
                 score += 16; reasons.add("string:" + s);
             }
-            List<String> methodInvokes = invokes();
+            List<String> methodInvokes = invokesRaw();
             for (String invoke : query.invokes) {
                 if (!methodInvokes.contains(invoke)) return null;
                 score += 14; reasons.add("invoke:" + invoke);
@@ -3191,19 +3159,33 @@ public final class DexApiFacade {
                 if (!matched) return null;
                 score += 10; reasons.add("containsString:" + query.containsString);
             }
-            if (score == 0) score = 1;
-            return new DexMethodHit(this, score, reasons);
+            if (!query.smaliContains.isEmpty()) {
+                String smali = smali();
+                if (smali == null) smali = "";
+                for (String keyword : query.smaliContains) {
+                    if (keyword == null || keyword.isEmpty()) continue;
+                    if (!smali.contains(keyword)) return null;
+                    score += 10; reasons.add("smaliContains:" + keyword);
+                }
+            }
+            return score <= 0 ? null : new DexMethodHit(this, score, reasons);
         }
     }
 
     public static final class DexSearchResult {
         private final List<DexMethodHit> hits;
         DexSearchResult(List<DexMethodHit> hits) { this.hits = hits == null ? Collections.<DexMethodHit>emptyList() : hits; }
-        public List<DexMethodHit> all() { return hits; }
-        public List<DexMethodHit> hits() { return hits; }
+        public Object all() { return js(toListRaw()); }
+        public Object hits() { return all(); }
         public DexMethodHit first() { return hits.isEmpty() ? null : hits.get(0); }
         public DexMethodHit best() { return first(); }
         public int size() { return hits.size(); }
+        public Object toList() { return js(toListRaw()); }
+        List<Map<String, Object>> toListRaw() {
+            ArrayList<Map<String, Object>> out = new ArrayList<>();
+            for (DexMethodHit hit : hits) out.add(hit.toMapRaw());
+            return out;
+        }
     }
 
     public static final class DexMethodHit {
@@ -3213,7 +3195,8 @@ public final class DexApiFacade {
         public final String methodName;
         public final String descriptor;
         public final int score;
-        public final List<String> reasons;
+        private final List<String> reasonList;
+        public final Object reasons;
         public final String sourcePath;
         public final String sourceEntry;
         public final String sourceOrigin;
@@ -3227,7 +3210,8 @@ public final class DexApiFacade {
             this.methodName = methodView.name;
             this.descriptor = methodView.descriptor;
             this.score = score;
-            this.reasons = reasons;
+            this.reasonList = reasons == null ? Collections.<String>emptyList() : new ArrayList<>(reasons);
+            this.reasons = js(this.reasonList);
             DexSource source = methodView.unit == null ? null : methodView.unit.source;
             this.sourcePath = source == null ? null : source.path;
             this.sourceEntry = source == null ? null : source.entry;
@@ -3236,9 +3220,35 @@ public final class DexApiFacade {
 
         public Executable toMethod(Object loader) throws Exception { return methodView.toMethod(loader); }
         public String smali() { return methodView.smali(); }
-        public List<Map<String, Object>> instructions() { return methodView.instructions(); }
-        public List<String> strings() { return methodView.strings(); }
-        public List<String> invokes() { return methodView.invokes(); }
+        public Object instructions() { return methodView.instructions(); }
+        public Object strings() { return js(methodView.stringsRaw()); }
+        public Object invokes() { return js(methodView.invokesRaw()); }
+
+        public Object toMap() {
+            return js(toMapRaw());
+        }
+
+        Map<String, Object> toMapRaw() {
+            LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+            out.put("className", className);
+            out.put("classDescriptor", classDescriptor);
+            out.put("methodName", methodName);
+            out.put("name", methodName);
+            out.put("proto", descriptor);
+            out.put("descriptor", descriptor);
+            out.put("path", sourcePath);
+            out.put("sourcePath", sourcePath);
+            out.put("sourceEntry", sourceEntry);
+            out.put("sourceOrigin", sourceOrigin);
+            out.put("score", score);
+            out.put("reasons", reasonList);
+            out.put("strings", methodView.stringsRaw());
+            out.put("invokes", methodView.invokesRaw());
+            String smali = methodView.smali();
+            if (smali != null && smali.length() > maxSmaliChars) smali = smali.substring(0, maxSmaliChars);
+            out.put("smaliHead", smali);
+            return out;
+        }
     }
 
     static final class DexUnit {
@@ -3377,9 +3387,12 @@ public final class DexApiFacade {
     static final class Query {
         ClassLoader loader;
         DexFileView file;
+        String path;
+        List<String> paths = new ArrayList<>();
         String classPrefix;
         String className;
         String methodName;
+        String proto;
         String returnType;
         List<String> parameterTypes;
         Boolean requireStatic;
@@ -3387,6 +3400,7 @@ public final class DexApiFacade {
         List<String> strings = new ArrayList<>();
         List<String> invokes = new ArrayList<>();
         List<String> invokeContains = new ArrayList<>();
+        List<String> smaliContains = new ArrayList<>();
         List<String> excludeClassPrefixes = new ArrayList<>();
         boolean verbose = false;
         int progressEveryClasses = 100;
@@ -3402,9 +3416,25 @@ public final class DexApiFacade {
             return false;
         }
 
+        boolean hasAnyCondition() {
+            return classPrefix != null
+                    || className != null
+                    || methodName != null
+                    || proto != null
+                    || returnType != null
+                    || parameterTypes != null
+                    || requireStatic != null
+                    || containsString != null
+                    || (strings != null && !strings.isEmpty())
+                    || (invokes != null && !invokes.isEmpty())
+                    || (invokeContains != null && !invokeContains.isEmpty())
+                    || (smaliContains != null && !smaliContains.isEmpty());
+        }
+
         String summary() {
-            return "strings=" + strings + " invokes=" + invokes + " invokeContains=" + invokeContains
-                    + " returnType=" + returnType + " params=" + parameterTypes + " static=" + requireStatic
+            return "path=" + path + " paths=" + paths + " strings=" + strings + " invokes=" + invokes
+                    + " invokeContains=" + invokeContains + " smaliContains=" + smaliContains
+                    + " proto=" + proto + " returnType=" + returnType + " params=" + parameterTypes + " static=" + requireStatic
                     + " classPrefix=" + classPrefix + " className=" + className + " exclude=" + excludeClassPrefixes
                     + " minScore=" + minScore + " limit=" + limit;
         }
@@ -3412,44 +3442,90 @@ public final class DexApiFacade {
         static Query from(Object raw) {
             Query q = new Query();
             Object obj = unwrap(raw);
+            if (obj instanceof Query) return (Query) obj;
             if (obj instanceof DexFileView) { q.file = (DexFileView) obj; return q; }
-            if (!(obj instanceof Scriptable)) return q;
-            Scriptable s = (Scriptable) obj;
-            Object loader = get(s, "loader");
-            if (loader instanceof ClassLoader) q.loader = (ClassLoader) loader;
-            Object file = get(s, "file");
-            if (!(file instanceof DexFileView)) file = get(s, "dexFile");
-            if (file instanceof DexFileView) q.file = (DexFileView) file;
-            q.classPrefix = asString(get(s, "classPrefix"));
-            q.className = asString(get(s, "className"));
-            q.methodName = asString(get(s, "name"));
-            if (q.methodName == null) q.methodName = asString(get(s, "methodName"));
-            String ret = asString(get(s, "returnType"));
-            if (ret != null) q.returnType = DexProtoUtils.toDescriptor(ret);
-            Object params = get(s, "parameterTypes");
-            if (params == null) params = get(s, "parameters");
-            if (params != null) q.parameterTypes = DexProtoUtils.toDescriptors(asStringList(params));
-            q.strings = asStringList(get(s, "strings"));
-            q.invokes = asStringList(get(s, "invokes"));
-            q.invokeContains = asStringList(get(s, "invokeContains"));
-            if (q.invokeContains.isEmpty()) q.invokeContains = asStringList(get(s, "invokesContains"));
-            q.containsString = asString(get(s, "containsString"));
-            q.excludeClassPrefixes = asStringList(get(s, "excludeClassPrefixes"));
-            if (q.excludeClassPrefixes.isEmpty()) q.excludeClassPrefixes = asStringList(get(s, "excludeClassPrefix"));
-            q.verbose = asBoolean(get(s, "verbose"), q.verbose);
-            q.progressEveryClasses = asInt(get(s, "progressEveryClasses"), q.progressEveryClasses);
-            q.progressEveryMethods = asInt(get(s, "progressEveryMethods"), q.progressEveryMethods);
-            Object minScore = get(s, "minScore");
-            if (minScore instanceof Number) q.minScore = ((Number) minScore).intValue();
-            Object limit = get(s, "limit");
-            if (limit instanceof Number) q.limit = ((Number) limit).intValue();
+            if (obj instanceof Scriptable) {
+                Scriptable s = (Scriptable) obj;
+                Object loader = get(s, "loader");
+                if (loader instanceof ClassLoader) q.loader = (ClassLoader) loader;
+                Object file = get(s, "file");
+                if (!(file instanceof DexFileView)) file = get(s, "dexFile");
+                if (file instanceof DexFileView) q.file = (DexFileView) file;
+                q.path = asString(get(s, "path"));
+                if (q.path == null) q.path = asString(get(s, "dexPath"));
+                if (q.path == null && !(file instanceof DexFileView)) q.path = asString(file);
+                q.paths = asStringList(get(s, "paths"));
+                if (q.paths.isEmpty()) q.paths = asStringList(get(s, "dexPaths"));
+                fillQueryFromAccessors(q, new QueryAccess() {
+                    @Override public Object get(String name) { return DexApiFacade.get(s, name); }
+                });
+                return normalizeQuery(q);
+            }
+            if (obj instanceof Map) {
+                final Map<?, ?> m = (Map<?, ?>) obj;
+                Object loader = mapGet(m, "loader");
+                if (loader instanceof ClassLoader) q.loader = (ClassLoader) loader;
+                Object file = mapGet(m, "file");
+                if (!(file instanceof DexFileView)) file = mapGet(m, "dexFile");
+                if (file instanceof DexFileView) q.file = (DexFileView) file;
+                q.path = asString(mapGet(m, "path"));
+                if (q.path == null) q.path = asString(mapGet(m, "dexPath"));
+                if (q.path == null && !(file instanceof DexFileView)) q.path = asString(file);
+                q.paths = asStringList(mapGet(m, "paths"));
+                if (q.paths.isEmpty()) q.paths = asStringList(mapGet(m, "dexPaths"));
+                fillQueryFromAccessors(q, new QueryAccess() {
+                    @Override public Object get(String name) { return mapGet(m, name); }
+                });
+                return normalizeQuery(q);
+            }
+            return normalizeQuery(q);
+        }
+
+        private static Query normalizeQuery(Query q) {
+            if (q.proto != null && q.proto.trim().isEmpty()) q.proto = null;
             if (q.progressEveryClasses <= 0) q.progressEveryClasses = 100;
             if (q.progressEveryMethods < 0) q.progressEveryMethods = 0;
-            List<String> modifiers = asStringList(get(s, "modifiers"));
-            for (String m : modifiers) if ("static".equalsIgnoreCase(m)) q.requireStatic = Boolean.TRUE;
-            Object staticValue = get(s, "static");
-            if (staticValue instanceof Boolean) q.requireStatic = (Boolean) staticValue;
             return q;
+        }
+
+        private interface QueryAccess { Object get(String name); }
+
+        private static void fillQueryFromAccessors(Query q, QueryAccess access) {
+            q.classPrefix = asString(access.get("classPrefix"));
+            q.className = asString(access.get("className"));
+            if (q.className == null) q.className = asString(access.get("class"));
+            q.methodName = asString(access.get("name"));
+            if (q.methodName == null) q.methodName = asString(access.get("methodName"));
+            q.proto = asString(access.get("proto"));
+            if (q.proto == null) q.proto = asString(access.get("descriptor"));
+            String ret = asString(access.get("returnType"));
+            if (ret != null) q.returnType = DexProtoUtils.toDescriptor(ret);
+            Object params = access.get("parameterTypes");
+            if (params == null) params = access.get("parameters");
+            if (params != null) q.parameterTypes = DexProtoUtils.toDescriptors(asStringList(params));
+            q.strings = asStringList(access.get("strings"));
+            q.invokes = asStringList(access.get("invokes"));
+            q.invokeContains = asStringList(access.get("invokeContains"));
+            if (q.invokeContains.isEmpty()) q.invokeContains = asStringList(access.get("invokesContains"));
+            q.smaliContains = asStringList(access.get("smaliContains"));
+            if (q.smaliContains.isEmpty()) q.smaliContains = asStringList(access.get("smaliKeywords"));
+            if (q.smaliContains.isEmpty()) q.smaliContains = asStringList(access.get("smaliKeyword"));
+            if (q.smaliContains.isEmpty()) q.smaliContains = asStringList(access.get("smali"));
+            q.containsString = asString(access.get("containsString"));
+            if (q.containsString == null) q.containsString = asString(access.get("stringContains"));
+            q.excludeClassPrefixes = asStringList(access.get("excludeClassPrefixes"));
+            if (q.excludeClassPrefixes.isEmpty()) q.excludeClassPrefixes = asStringList(access.get("excludeClassPrefix"));
+            q.verbose = asBoolean(access.get("verbose"), q.verbose);
+            q.progressEveryClasses = asInt(access.get("progressEveryClasses"), q.progressEveryClasses);
+            q.progressEveryMethods = asInt(access.get("progressEveryMethods"), q.progressEveryMethods);
+            Object minScore = access.get("minScore");
+            if (minScore instanceof Number) q.minScore = ((Number) minScore).intValue();
+            Object limit = access.get("limit");
+            if (limit instanceof Number) q.limit = ((Number) limit).intValue();
+            List<String> modifiers = asStringList(access.get("modifiers"));
+            for (String m : modifiers) if ("static".equalsIgnoreCase(m)) q.requireStatic = Boolean.TRUE;
+            Object staticValue = access.get("static");
+            if (staticValue instanceof Boolean) q.requireStatic = (Boolean) staticValue;
         }
     }
 

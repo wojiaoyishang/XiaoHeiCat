@@ -1,7 +1,7 @@
 // ==LSPosedScript==
 // @name         通用脱壳 DumpDex
 // @id           generic.dumpdex.only
-// @version      1.0.0
+// @version      1.1.0
 // @description  通用脱壳脚本：在 Application.attach 后使用真实 app ClassLoader dump 当前加载的全部 dex。
 // @target       *
 // @process      *
@@ -14,6 +14,39 @@
 const TAG = "DumpDexOnly";
 
 let executed = false;
+
+function stringify(value) {
+  try {
+    if (value === null) return "null";
+    if (typeof value === "undefined") return "undefined";
+    if (typeof value === "string") return value;
+    return JSON.stringify(value);
+  } catch (e) {
+    return String(value);
+  }
+}
+
+function logObjectKind(name, value) {
+  try {
+    const kind = xhh.objectKind(value);
+    xposed.d(
+      TAG,
+      name +
+        " kind=" +
+        kind.kind +
+        " isJsObject=" +
+        kind.isJsObject +
+        " isJavaObject=" +
+        kind.isJavaObject +
+        " rawClass=" +
+        kind.rawClass +
+        " javaClass=" +
+        kind.javaClass
+    );
+  } catch (e) {
+    xposed.d(TAG, name + " kind check failed: " + e);
+  }
+}
 
 xposed.onPackageLoaded(function (param) {
   const packageName = String(param.getPackageName());
@@ -49,17 +82,18 @@ xposed.onPackageLoaded(function (param) {
         const appPackage = String(context.getPackageName());
         const loader = context.getClassLoader();
 
-        xposed.i(TAG, "Application.attach after");
-        xposed.i(TAG, "package=" + appPackage);
-        xposed.i(TAG, "process=" + processName);
-        xposed.i(TAG, "appClassLoader=" + loader);
-
         const outputDir =
           "/data/user/0/" +
           appPackage +
           "/code_cache/xhh_dumpdex";
 
+        xposed.i(TAG, "Application.attach after");
+        xposed.i(TAG, "package=" + appPackage);
+        xposed.i(TAG, "process=" + processName);
+        xposed.i(TAG, "appClassLoader=" + loader);
         xposed.i(TAG, "dump all dex start outputDir=" + outputDir);
+
+        logObjectKind("loader", loader);
 
         const ret = dex.dumpDexCookies({
           loader: loader,
@@ -70,8 +104,32 @@ xposed.onPackageLoaded(function (param) {
           maxDexBytes: 512 * 1024 * 1024
         });
 
-        xposed.i(TAG, "dump all dex finished result=" + ret);
-        xposed.i(TAG, "dex output dir=" + outputDir);
+        logObjectKind("dumpDexCookies.ret", ret);
+
+        if (!xhh.isJsObject(ret)) {
+          xposed.w(TAG, "dumpDexCookies returned non-JS object: " + String(ret));
+          return result;
+        }
+
+        if (!ret.ok) {
+          xposed.e(TAG, "dump all dex failed ret=" + stringify(ret));
+          return result;
+        }
+
+        const paths = ret.paths;
+
+        xposed.i(TAG, "dump all dex finished");
+        xposed.i(TAG, "count=" + ret.count);
+        xposed.i(TAG, "outputDir=" + ret.outputDir);
+
+        if (!paths || paths.length === 0) {
+          xposed.w(TAG, "no dex dumped");
+          return result;
+        }
+
+        for (let i = 0; i < paths.length; i++) {
+          xposed.i(TAG, "dumped[" + i + "]=" + paths[i]);
+        }
       } catch (e) {
         xposed.e(TAG, "dump all dex failed", e);
       }

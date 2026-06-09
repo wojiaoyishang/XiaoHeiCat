@@ -645,8 +645,8 @@ MCP bridge 相关日志统一使用：
      - 定义 ``list_methods`` 与 ``invoke_method`` 的 schema。
    * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/mcp/McpMethodRegistry.kt``
      - 保存活跃 session、注册方法、pending 调用，并负责方法路由。
-   * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/mcp/McpBridgeTcpServer.kt``
-     - 动态 TCP bridge 服务端。
+   * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/mcp/McpBridgeSocketServer.kt``
+     - 动态 socket bridge 服务端。
    * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/mcp/McpBridgeDiscoveryReceiver.kt``
      - 响应目标 App 的 bridge 发现广播。
    * - ``app/src/main/java/top/lovepikachu/XiaoHeiHook/script/JsHookRuntime.java``
