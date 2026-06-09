@@ -1014,7 +1014,7 @@ class WebIdeApi(private val context: Context) {
 // @author       XiaoHeiHook
 // @description  WebIDE 创建的脚本
 // @target       $targetPackage
-// @process      $targetPackage
+// @process      *
 // @run-at       package-loaded
 // @grant        java.full
 // @grant        xposed.full
