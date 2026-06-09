@@ -11,6 +11,7 @@
     <string name="common_cancel">取消</string>
     <string name="common_confirm">确认</string>
     <string name="common_save">保存</string>
+    <string name="common_saving">保存中…</string>
     <string name="common_delete">删除</string>
     <string name="common_expand">展开</string>
     <string name="common_collapse">折叠</string>
@@ -39,17 +40,29 @@
     <!-- About -->
     <string name="settings_title">设置</string>
     <string name="about_module_title">关于本模块</string>
-    <string name="about_module_body">皮卡丘 ~ 罗小黑 ~ Niko ~ 
-
-在梦中，一切事都散漫着，
-都压着我，但这不过是一个梦呀。
-当我醒来时，
-我便将觉得这些事都已聚集在你那里，
-我也便将自由了。
-
-Pika Pika Meow Meow Meow ~</string>
+    <string name="about_module_body" formatted="false">"皮卡丘 ~ 罗小黑 ~ Niko ~\n\n在梦中，一切事都散漫着，\n都压着我，但这不过是一个梦呀。\n当我醒来时，\n我便将觉得这些事都已聚集在你那里，\n我也便将自由了。\n\nPika Pika Meow Meow Meow ~"</string>
     <string name="about_website">My Website</string>
+    <string name="about_open_source_repository">开源仓库</string>
+    <string name="about_open_documentation">开发文档</string>
     <string name="about_niko_caption">Niko 在干什么呢 ~</string>
+
+
+    <!-- Script root -->
+    <string name="script_root_title">脚本文件夹位置</string>
+    <string name="script_root_hint">修改后，脚本扫描、WebIDE 文件列表和 xhh.fs.scriptRoot() 会使用这个目录。请重新扫描并同步脚本使目标应用使用新目录。</string>
+    <string name="script_root_inactive_hint">模块尚未激活或 Remote Preferences 未连接，当前只能查看路径，暂不能保存修改。</string>
+    <string name="script_root_change">修改位置</string>
+    <string name="script_root_reset_default">恢复默认</string>
+    <string name="script_root_reset_done">已恢复默认脚本文件夹</string>
+    <string name="script_root_edit_title">修改脚本文件夹</string>
+    <string name="script_root_edit_message">请输入脚本根目录的绝对路径。单文件脚本直接放在该目录下；多文件脚本放在子目录中，并使用 index.js 作为入口。</string>
+    <string name="script_root_path_label">脚本根目录</string>
+    <string name="script_root_empty">脚本根目录不能为空</string>
+    <string name="script_root_must_be_absolute">请填写绝对路径，例如 /storage/emulated/0/Documents/XiaoHeiHook</string>
+    <string name="script_root_not_directory">路径已经存在，但不是文件夹：%1$s</string>
+    <string name="script_root_saved">脚本文件夹已保存，请重新扫描并同步脚本</string>
+    <string name="script_root_save_failed">保存脚本文件夹失败：%1$s</string>
+    <string name="script_root_remote_prefs_disconnected">LSPosed Remote Preferences 未连接</string>
 
     <!-- WebIDE -->
     <string name="webide_title">WebIDE</string>
@@ -166,9 +179,9 @@ Pika Pika Meow Meow Meow ~</string>
 
     <!-- Scripts -->
     <string name="script_location_title">脚本保存位置</string>
-    <string name="script_location_message">脚本保存在 /Documents/XiaoHeiHook 下。
+    <string name="script_location_message">当前脚本文件夹：%1$s
 
-单文件脚本放在根目录，例如 qidian.js；多文件脚本放在文件夹中，并使用 index.js 作为入口。</string>
+单文件脚本放在根目录，例如 qidian.js；多文件脚本放在文件夹中，并使用 index.js 作为入口。可以在“设置 - 脚本文件夹位置”中修改该目录。</string>
     <string name="script_sync_restart">同步重启</string>
     <string name="terminal_title">终端</string>
     <string name="script_scanning">扫描中</string>

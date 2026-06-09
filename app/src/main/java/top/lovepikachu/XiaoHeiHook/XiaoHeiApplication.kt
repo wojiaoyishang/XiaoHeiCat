@@ -8,6 +8,7 @@ import io.github.libxposed.service.XposedServiceHelper
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
 import top.lovepikachu.XiaoHeiHook.mcp.McpManager
 import top.lovepikachu.XiaoHeiHook.webide.ProcessUtil
 import top.lovepikachu.XiaoHeiHook.webide.WebIdeManager
@@ -64,6 +65,7 @@ class XiaoHeiApplication : Application() {
 
                 xposedService = service
                 remotePreferences = getRemotePreferences()
+                ScriptRepository.applyScriptRootFromPrefs(remotePreferences)
                 if (resetVolatileServicesOnBind) {
                     resetVolatileServicesOnBind = false
                     Log.i(TAG, "xposed service bound in main process; refresh remote MCP disabled state")

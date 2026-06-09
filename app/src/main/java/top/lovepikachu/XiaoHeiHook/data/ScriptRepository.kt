@@ -43,7 +43,13 @@ object ScriptRepository {
         val dir = File(path.trim()).absoluteFile
         require(dir.path.isNotBlank()) { "脚本根目录不能为空" }
         configuredScriptsDir = dir
-        prefs?.edit()?.putString(ScriptPrefs.SCRIPT_ROOT, dir.absolutePath)?.commit()
+        prefs?.edit()
+            ?.putString(ScriptPrefs.SCRIPT_ROOT, dir.absolutePath)
+            ?.putString(ScriptPrefs.SCRIPT_ROOT_LEGACY, dir.absolutePath)
+            ?.remove(ScriptPrefs.SCRIPT_METADATA_CACHE_JSON)
+            ?.remove(ScriptPrefs.SCRIPT_METADATA_CACHE_UPDATED_AT)
+            ?.remove(ScriptPrefs.SYNC_MANIFEST_JSON)
+            ?.commit()
         return dir
     }
 

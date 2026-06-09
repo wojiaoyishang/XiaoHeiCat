@@ -29,6 +29,7 @@ import top.lovepikachu.XiaoHeiHook.R
 import top.lovepikachu.XiaoHeiHook.composables.AnimatedPressIcon
 import top.lovepikachu.XiaoHeiHook.composables.FullWidthTextButton
 import top.lovepikachu.XiaoHeiHook.composables.McpSettingsCard
+import top.lovepikachu.XiaoHeiHook.composables.ScriptRootSettingsCard
 import top.lovepikachu.XiaoHeiHook.composables.WebIdeSettingsCard
 import top.lovepikachu.XiaoHeiHook.composables.WebIdeLogMaintenanceCard
 import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
@@ -48,6 +49,8 @@ fun AboutScreen(modifier: Modifier = Modifier) {
         item { WebIdeSettingsCard() }
 
         item { McpSettingsCard() }
+
+        item { ScriptRootSettingsCard() }
 
         item { WebIdeLogMaintenanceCard() }
 
@@ -72,6 +75,32 @@ fun AboutScreen(modifier: Modifier = Modifier) {
                     FullWidthTextButton(
                         text = stringResource(R.string.about_website),
                         onClick = { uriHandler.openUri("https://lovepikachu.top") },
+                        modifier = Modifier.fillMaxWidth(),
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.Link,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    FullWidthTextButton(
+                        text = stringResource(R.string.about_open_source_repository),
+                        onClick = { uriHandler.openUri("https://github.com/wojiaoyishang/XiaoHeiCat") },
+                        modifier = Modifier.fillMaxWidth(),
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Filled.Link,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    FullWidthTextButton(
+                        text = stringResource(R.string.about_open_documentation),
+                        onClick = { uriHandler.openUri("https://lab.lovepikachu.top/document/xiaoheihook") },
                         modifier = Modifier.fillMaxWidth(),
                         leadingIcon = {
                             Icon(

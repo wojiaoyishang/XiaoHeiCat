@@ -854,7 +854,7 @@ private fun ScriptEnableScreen(
         AlertDialog(
             onDismissRequest = { showScriptHelpDialog = false },
             title = { Text(stringResource(R.string.script_location_title)) },
-            text = { Text(stringResource(R.string.script_location_message)) },
+            text = { Text(stringResource(R.string.script_location_message, ScriptRepository.publicScriptsDir.absolutePath)) },
             confirmButton = {
                 TextButton(onClick = { showScriptHelpDialog = false }) {
                     Text(stringResource(R.string.common_got_it))
