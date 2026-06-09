@@ -679,3 +679,241 @@ DumpDex 后进行 Smali 特征查找
    });
 
    xposed.i(TAG, 'featuresOk=' + inspected.featuresOk);
+
+
+远程调用目标 App 方法
+----------------------------
+
+下面的示例演示如何在目标 App 进程中获取 ``ClassLoader``，解析目标静态方法，并注册一个 MCP/RPC 方法供远程调用。
+
+这个示例适用于以下场景：
+
+* 目标方法必须使用目标 App 的 ``ClassLoader`` 加载。
+* 目标方法参数包含 Java 基础类型，例如 ``int``。
+* 远程调用时希望通过 ``params.data``、``params.key`` 这类点访问读取参数。
+* 目标 App 存在多进程时，需要通过 ``@process`` 固定脚本运行进程。
+
+.. note::
+
+   ``Method``、``ClassLoader``、``thisObject`` 等 Java 运行期对象只能在当前 Android 进程内有效，不能跨进程共享。
+   如果 Hook 生效进程和 MCP 调用进程不同，应优先使用 ``@process`` 指定正确进程，或等待后续多进程 MCP 路由支持。
+
+.. code-block:: javascript
+
+   // ==LSPosedScript==
+   // @name         RPC 调用目标方法示例
+   // @id           demo.rpc.invoke.method
+   // @version      1.0.0
+   // @description  在目标进程中解析方法，并注册 MCP/RPC 工具远程调用。
+   // @target       com.example.app
+   // @process      com.example.app
+   // @run-at       package-loaded
+   // @grant        java.full
+   // @grant        xposed.full
+   // @grant        rpc.register
+   // ==/LSPosedScript==
+
+   const TAG = "RpcInvokeDemo";
+
+   let hookInstalled = false;
+   let appClassLoader = null;
+
+   const TARGET_META = {
+     className: "com.example.crypto.CryptoBox",
+     methodName: "decryptFromBase64",
+     paramTypes: [
+       "java.lang.String",
+       "java.lang.String",
+       "java.lang.String",
+       "int"
+     ],
+     isStatic: true
+   };
+
+   function javaClassOfWithLoader(loader, name) {
+     if (name === "int") return Java.type("java.lang.Integer").TYPE;
+     if (name === "long") return Java.type("java.lang.Long").TYPE;
+     if (name === "boolean") return Java.type("java.lang.Boolean").TYPE;
+     if (name === "byte") return Java.type("java.lang.Byte").TYPE;
+     if (name === "char") return Java.type("java.lang.Character").TYPE;
+     if (name === "short") return Java.type("java.lang.Short").TYPE;
+     if (name === "float") return Java.type("java.lang.Float").TYPE;
+     if (name === "double") return Java.type("java.lang.Double").TYPE;
+
+     if (loader) {
+       return loader.loadClass(name);
+     }
+
+     return Java.type(name);
+   }
+
+   function toJavaInt(value, fallback) {
+     const Integer = Java.type("java.lang.Integer");
+
+     if (value == null || value === "") {
+       return Integer.valueOf(fallback == null ? 0 : fallback);
+     }
+
+     const parsed = parseInt(value, 10);
+
+     if (isNaN(parsed)) {
+       return Integer.valueOf(fallback == null ? 0 : fallback);
+     }
+
+     return Integer.valueOf(parsed);
+   }
+
+   function resolveTargetMethod() {
+     if (appClassLoader == null) {
+       throw new Error("appClassLoader is not ready");
+     }
+
+     const TargetClass = appClassLoader.loadClass(TARGET_META.className);
+
+     const method = TargetClass.getDeclaredMethod(
+       TARGET_META.methodName,
+       javaClassOfWithLoader(appClassLoader, TARGET_META.paramTypes[0]),
+       javaClassOfWithLoader(appClassLoader, TARGET_META.paramTypes[1]),
+       javaClassOfWithLoader(appClassLoader, TARGET_META.paramTypes[2]),
+       javaClassOfWithLoader(appClassLoader, TARGET_META.paramTypes[3])
+     );
+
+     method.setAccessible(true);
+     return method;
+   }
+
+   function installTargetHook(loader) {
+     if (hookInstalled) {
+       xposed.d(TAG, "hook already installed, skip");
+       return;
+     }
+
+     appClassLoader = loader;
+
+     const method = resolveTargetMethod();
+
+     xposed
+       .hook(method)
+       .setPriority(xposed.PRIORITY_DEFAULT)
+       .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
+       .intercept(function (chain) {
+         const args = chain.getArgs();
+
+         xposed.d(TAG, "target method called");
+         xposed.d(TAG, "arg0=" + args[0]);
+         xposed.d(TAG, "arg1=" + args[1]);
+         xposed.d(TAG, "arg2=" + args[2]);
+         xposed.d(TAG, "arg3=" + args[3]);
+
+         return chain.proceed();
+       });
+
+     hookInstalled = true;
+     xposed.i(TAG, "Hook installed: " + TARGET_META.className + "." + TARGET_META.methodName);
+   }
+
+   xhh.rpc.register_method("demo_decrypt", function (params) {
+     try {
+       if (appClassLoader == null) {
+         return {
+           ok: false,
+           error: "appClassLoader not ready, please launch target app first",
+           process: env.processName
+         };
+       }
+
+       const method = resolveTargetMethod();
+
+       const data = params.data == null ? "" : String(params.data);
+       const key = params.key == null ? "" : String(params.key);
+       const iv = params.iv == null ? "" : String(params.iv);
+
+       // 目标参数是 int 时，不要直接依赖 JS number。
+       const mode = toJavaInt(params.mode, 0);
+
+       const result = method.invoke(
+         null,
+         data,
+         key,
+         iv,
+         mode
+       );
+
+       return {
+         ok: true,
+         result: result == null ? null : String(result),
+         process: env.processName
+       };
+     } catch (e) {
+       xposed.e(TAG, "demo_decrypt failed", e);
+
+       return {
+         ok: false,
+         error: String(e),
+         process: env.processName,
+         meta: TARGET_META
+       };
+     }
+   });
+
+   xhh.rpc.register_method("demo_decrypt_status", function () {
+     return {
+       ok: true,
+       process: env.processName,
+       hookInstalled: hookInstalled,
+       appClassLoaderReady: appClassLoader != null,
+       meta: TARGET_META
+     };
+   });
+
+   xposed.onPackageLoaded(function (param) {
+     xposed.i(TAG, "package=" + param.getPackageName());
+     xposed.i(TAG, "process=" + env.processName);
+
+     const Application = Java.type("android.app.Application");
+     const ContextClass = Java.type("android.content.Context");
+
+     const attach = Application.getDeclaredMethod("attach", ContextClass);
+     attach.setAccessible(true);
+
+     xposed
+       .hook(attach)
+       .setPriority(xposed.PRIORITY_DEFAULT)
+       .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
+       .intercept(function (chain) {
+         const context = chain.getArg(0);
+         const result = chain.proceed();
+
+         try {
+           const loader = context.getClassLoader();
+           appClassLoader = loader;
+
+           installTargetHook(loader);
+         } catch (e) {
+           xposed.e(TAG, "install hook from Application.attach failed", e);
+         }
+
+         return result;
+       });
+   });
+
+远程调用参数示例：
+
+.. code-block:: json
+
+   {
+     "data": "base64 text",
+     "key": "key text",
+     "iv": "iv text",
+     "mode": 0
+   }
+
+.. tip::
+
+   如果目标方法参数是 ``int.class``，解析方法签名时应使用 ``Java.type("java.lang.Integer").TYPE``。
+   实际调用时可以使用 ``Integer.valueOf(...)`` 显式构造 Java ``Integer``，避免 JS number 被映射成 ``Double``。
+
+.. warning::
+
+   如果目标方法内部依赖 native 库，MCP 调用必须发生在已经加载该 native 库的进程中。
+   否则即使反射方法解析成功，也可能抛出 ``UnsatisfiedLinkError``。
