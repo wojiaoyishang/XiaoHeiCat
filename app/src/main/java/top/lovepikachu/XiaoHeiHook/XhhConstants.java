@@ -8,8 +8,8 @@ public final class XhhConstants {
     private XhhConstants() {}
 
     public static final String APP_NAME = "XiaoHeiHook";
-    public static final String VERSION_NAME = "1.30";
-    public static final int VERSION_CODE = 107;
+    public static final String VERSION_NAME = "1.31";
+    public static final int VERSION_CODE = 108;
     public static final String VERSION_LABEL = VERSION_NAME + " (" + VERSION_CODE + ")";
 
     public static final int JS_API_VERSION = 2;

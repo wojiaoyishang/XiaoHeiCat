@@ -131,6 +131,8 @@ public final class JsHookRuntime {
     private final String scriptRootRelativePath;
     private final String settingsJson;
     private SettingsFacade settingsFacade;
+    @Nullable
+    private JavaBridge javaBridge;
     private final Map<String, Object> commonJsModuleCache = new ConcurrentHashMap<>();
     private final Object jsLock = new Object();
     private final ThreadLocal<Integer> debugFrameDepth = new ThreadLocal<>();
@@ -348,25 +350,12 @@ public final class JsHookRuntime {
                             + " sourceName=" + canonicalSourceName);
                 }
 
-                scope = cx.initStandardObjects();
+                ensureRuntimeScope(cx, scriptName, canonicalSourceName);
                 ensureRegExpObjects(cx, scope);
                 logRhinoRegExpState("evaluate.after-init-standard-objects", cx, scope, null);
                 selfTestRegExp(cx, scope, canonicalSourceName);
                 selfTestLexicalBindings(cx, scope, canonicalSourceName);
                 logRhinoRegExpState("evaluate.after-regexp-self-test", cx, scope, null);
-                settingsFacade = new SettingsFacade();
-
-                ScriptableObject.putProperty(scope, "settings", Context.javaToJS(settingsFacade, scope));
-                ScriptableObject.putProperty(scope, "env", Context.javaToJS(new Env(scriptName, canonicalSourceName), scope));
-                ScriptableObject.putProperty(scope, "console", Context.javaToJS(new Console(), scope));
-                ScriptableObject.putProperty(scope, "Java", Context.javaToJS(new top.lovepikachu.XiaoHeiHook.script.JavaBridge(appClassLoader, scope, jsLock), scope));
-                if (dexApiEnabled()) {
-                    ScriptableObject.putProperty(scope, "dex", Context.javaToJS(new DexApiFacade(module, appClassLoader, packageName, processName, dexDebugLoggingEnabled()), scope));
-                }
-                ScriptableObject.putProperty(scope, "require", createRequireFunction(canonicalSourceName));
-                ScriptableObject.putProperty(scope, "xposed", Context.javaToJS(new XposedFacade(), scope));
-                ScriptableObject.putProperty(scope, "debuggerx", Context.javaToJS(new DebuggerFacade(canonicalSourceName, scriptName), scope));
-                ScriptableObject.putProperty(scope, "xhh", Context.javaToJS(new XhhFacade(scriptName, canonicalSourceName), scope));
 
                 try {
                     cx.evaluateString(scope, source, canonicalSourceName, 1, null);
@@ -949,6 +938,35 @@ public final class JsHookRuntime {
         }
     }
 
+    /**
+     * A JsHookRuntime owns exactly one Rhino global scope.  Scripts, hook callbacks,
+     * RPC callbacks and Java proxy callbacks must keep using this scope instead of
+     * creating fresh standard objects for every callback; otherwise top-level JS
+     * variables behave differently from normal JavaScript.
+     */
+    private void ensureRuntimeScope(@NonNull Context cx, @NonNull String scriptName, @NonNull String sourceName) {
+        if (scope != null) return;
+        scope = cx.initStandardObjects();
+        ScriptableObject.putProperty(scope, "globalThis", scope);
+        ScriptableObject.putProperty(scope, "global", scope);
+        ScriptableObject.putProperty(scope, "self", scope);
+
+        settingsFacade = new SettingsFacade();
+        javaBridge = new JavaBridge(appClassLoader, scope, jsLock);
+
+        ScriptableObject.putProperty(scope, "settings", Context.javaToJS(settingsFacade, scope));
+        ScriptableObject.putProperty(scope, "env", Context.javaToJS(new Env(scriptName, sourceName), scope));
+        ScriptableObject.putProperty(scope, "console", Context.javaToJS(new Console(), scope));
+        ScriptableObject.putProperty(scope, "Java", Context.javaToJS(javaBridge, scope));
+        if (dexApiEnabled()) {
+            ScriptableObject.putProperty(scope, "dex", Context.javaToJS(new DexApiFacade(module, appClassLoader, packageName, processName, dexDebugLoggingEnabled()), scope));
+        }
+        ScriptableObject.putProperty(scope, "require", createRequireFunction(sourceName));
+        ScriptableObject.putProperty(scope, "xposed", Context.javaToJS(new XposedFacade(), scope));
+        ScriptableObject.putProperty(scope, "debuggerx", Context.javaToJS(new DebuggerFacade(sourceName, scriptName), scope));
+        ScriptableObject.putProperty(scope, "xhh", Context.javaToJS(new XhhFacade(scriptName, sourceName), scope));
+    }
+
     private static String priorityName(int priority) {
         switch (priority) {
             case Log.VERBOSE: return "V";
@@ -972,7 +990,9 @@ public final class JsHookRuntime {
                 Thread.currentThread().setContextClassLoader(appClassLoader);
                 configureRhinoContext(cx, "callJs");
                 installRegExpProxy(cx);
-                logRhinoRegExpState("callJs.after-install", cx, scope, null);
+                Scriptable callbackScope = callbackScope(function);
+                ensureRegExpObjects(cx, callbackScope);
+                logRhinoRegExpState("callJs.after-install", cx, callbackScope, null);
                 if (isSoftDebuggerEnabled()) {
                     cx.setGeneratingDebug(true);
                     cx.setGeneratingSource(true);
@@ -981,19 +1001,30 @@ public final class JsHookRuntime {
                             + " package=" + packageName
                             + " process=" + processName
                             + " sourceName=" + callbackSourceName
-                            + " function=" + JsDebugTrace.safe(function));
+                            + " function=" + JsDebugTrace.safe(function)
+                            + " callbackScope=" + identity(callbackScope)
+                            + " runtimeScope=" + identity(scope));
                 }
 
                 Object[] wrappedArgs = new Object[args == null ? 0 : args.length];
                 for (int i = 0; i < wrappedArgs.length; i++) {
-                    wrappedArgs[i] = Context.javaToJS(args[i], scope);
+                    wrappedArgs[i] = wrapJavaForJs(args[i], callbackScope);
                 }
-                return function.call(cx, scope, scope, wrappedArgs);
+                return function.call(cx, callbackScope, callbackScope, wrappedArgs);
             } finally {
                 Thread.currentThread().setContextClassLoader(oldClassLoader);
                 Context.exit();
             }
         }
+    }
+
+    private Scriptable callbackScope(@NonNull Function function) {
+        Scriptable callbackScope = function.getParentScope();
+        if (callbackScope == null) callbackScope = scope;
+        if (callbackScope == null) {
+            throw new IllegalStateException("JS scope 尚未初始化，无法执行回调");
+        }
+        return callbackScope;
     }
 
     private BaseFunction createRequireFunction(@NonNull String baseScriptPath) {
@@ -1165,7 +1196,79 @@ public final class JsHookRuntime {
     private Object jsToJavaValue(Object value) {
         Object unwrapped = unwrap(value);
         if (unwrapped == Undefined.instance || unwrapped == Scriptable.NOT_FOUND) return null;
+        if (!shouldAutoConvertJsValue(value)) return unwrapped;
         return Context.jsToJava(unwrapped, Object.class);
+    }
+
+    private boolean shouldAutoConvertJsValue(Object value) {
+        if (value == null || value == Undefined.instance || value == Scriptable.NOT_FOUND || value == Context.getUndefinedValue()) {
+            return true;
+        }
+        if (value instanceof top.lovepikachu.XiaoHeiHook.script.JavaClassWrapper
+                || value instanceof top.lovepikachu.XiaoHeiHook.script.JavaObjectWrapper) {
+            return false;
+        }
+        if (value instanceof Wrapper) {
+            Object wrapped = ((Wrapper) value).unwrap();
+            if (wrapped != null && wrapped != Undefined.instance && wrapped != Scriptable.NOT_FOUND
+                    && !(wrapped instanceof Scriptable)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Object wrapJavaForJs(Object value, Scriptable targetScope) {
+        if (value == null || value == Undefined.instance || value == Scriptable.NOT_FOUND) return null;
+        if (value instanceof Scriptable) return value;
+
+        // XiaoHeiHook's own Java facades (for example JsChain) are part of the
+        // JS API surface, not ordinary application Java objects.  Keep them on
+        // Rhino's native Java bridge so methods such as chain.proceed() are
+        // invoked directly instead of being routed through JavaObjectWrapper and
+        // JavaReflectionInvoker.
+        if (isRuntimeFacadeValue(value)) {
+            return Context.javaToJS(value, targetScope);
+        }
+
+        if (javaBridge != null) {
+            Object wrapped = javaBridge.getInvoker().wrapReturn(value);
+            if (wrapped == null || wrapped instanceof Scriptable) return wrapped;
+            return Context.javaToJS(wrapped, targetScope);
+        }
+        return Context.javaToJS(value, targetScope);
+    }
+
+    private boolean isRuntimeFacadeValue(Object value) {
+        return value instanceof XposedFacade
+                || value instanceof JsHookBuilder
+                || value instanceof JsHookHandle
+                || value instanceof JsChain
+                || value instanceof JsInvoker
+                || value instanceof RpcCallContext
+                || value instanceof XhhFacade
+                || value instanceof XhhGlobalFacade
+                || value instanceof RpcFacade
+                || value instanceof SettingsFacade
+                || value instanceof Env
+                || value instanceof Console
+                || value instanceof DebuggerFacade
+                || value instanceof RawFacade;
+    }
+
+    private Object wrapJavaArrayForJs(Object[] values) {
+        Object[] wrapped = new Object[values == null ? 0 : values.length];
+        Scriptable targetScope = scope;
+        for (int i = 0; i < wrapped.length; i++) {
+            wrapped[i] = wrapJavaForJs(values[i], targetScope);
+        }
+        NativeArray array = new NativeArray(wrapped);
+        if (targetScope != null) {
+            array.setParentScope(targetScope);
+            Object proto = ScriptableObject.getArrayPrototype(targetScope);
+            if (proto instanceof Scriptable) array.setPrototype((Scriptable) proto);
+        }
+        return array;
     }
 
 
@@ -1199,6 +1302,7 @@ public final class JsHookRuntime {
 
     public final class XhhFacade {
         public final RpcFacade rpc = new RpcFacade();
+        public final XhhGlobalFacade global = new XhhGlobalFacade();
         public final FileJsApi fs;
         public final String name = XhhConstants.APP_NAME;
         public final String version = XhhConstants.VERSION_NAME;
@@ -1373,6 +1477,82 @@ public final class JsHookRuntime {
             if (raw == null || raw == Undefined.instance || raw == Scriptable.NOT_FOUND) return false;
             if (raw instanceof Scriptable) return false;
             return !(raw instanceof CharSequence || raw instanceof Number || raw instanceof Boolean);
+        }
+    }
+
+    public final class XhhGlobalFacade {
+        public Object set(String key, Object value) {
+            String safeKey = requireGlobalKey(key);
+            ScriptGlobalState.set(safeKey, JavaReflectionInvoker.unwrap(value));
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("key", safeKey);
+            return JsApiValueNormalizer.toJs(result);
+        }
+
+        public Object get(String key) {
+            String safeKey = requireGlobalKey(key);
+            return wrapGlobalValue(ScriptGlobalState.get(safeKey));
+        }
+
+        public boolean has(String key) {
+            return ScriptGlobalState.has(requireGlobalKey(key));
+        }
+
+        public Object remove(String key) {
+            String safeKey = requireGlobalKey(key);
+            boolean existed = ScriptGlobalState.has(safeKey);
+            Object removed = ScriptGlobalState.remove(safeKey);
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("key", safeKey);
+            result.put("removed", existed);
+            result.put("value", wrapGlobalValue(removed));
+            return JsApiValueNormalizer.toJs(result);
+        }
+
+        public Object clear() {
+            int count = ScriptGlobalState.clear();
+            LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("count", count);
+            return JsApiValueNormalizer.toJs(result);
+        }
+
+        public Object keys() {
+            return JsApiValueNormalizer.toJs(ScriptGlobalState.keys());
+        }
+
+        public int size() {
+            return ScriptGlobalState.size();
+        }
+
+        public Object snapshot() {
+            org.mozilla.javascript.NativeObject out = new org.mozilla.javascript.NativeObject();
+            if (scope != null) {
+                out.setParentScope(scope);
+                Object proto = ScriptableObject.getObjectPrototype(scope);
+                if (proto instanceof Scriptable) out.setPrototype((Scriptable) proto);
+            }
+            for (Map.Entry<String, Object> entry : ScriptGlobalState.snapshot().entrySet()) {
+                out.put(entry.getKey(), out, wrapGlobalValue(entry.getValue()));
+            }
+            return out;
+        }
+
+        private String requireGlobalKey(String key) {
+            String safeKey = key == null ? "" : key.trim();
+            if (safeKey.isEmpty()) throw new IllegalArgumentException("xhh.global key is empty");
+            return safeKey;
+        }
+
+        private Object wrapGlobalValue(Object value) {
+            Object raw = JavaReflectionInvoker.unwrap(value);
+            if (raw == null || raw == Undefined.instance || raw == Scriptable.NOT_FOUND) return null;
+            if (raw instanceof Scriptable) return raw;
+            if (javaBridge != null) return javaBridge.getInvoker().wrapReturn(raw);
+            if (scope != null) return Context.javaToJS(raw, scope);
+            return raw;
         }
     }
 
@@ -2615,7 +2795,8 @@ public final class JsHookRuntime {
             Object[] args = toObjectArray(argsObj);
             Method method = findCompatibleMethod(unwrappedTarget.getClass(), methodName, args.length, false);
             method.setAccessible(true);
-            return JsApiValueNormalizer.toJs(method.invoke(unwrappedTarget, args));
+            Object[] converted = convertArguments(method.getParameterTypes(), args);
+            return wrapJavaForJs(method.invoke(unwrappedTarget, converted), scope);
         }
 
         public Field field(Object targetOrClass, String fieldName) throws Exception {
@@ -2709,23 +2890,32 @@ public final class JsHookRuntime {
             }
         }
 
-        public Executable getExecutable() { return chain.getExecutable(); }
+        public Object getExecutable() { return wrapJavaForJs(chain.getExecutable(), scope); }
         public Object getThisObject() {
             Object value = chain.getThisObject();
             rememberLogContext(value);
-            return value;
+            return wrapJavaForJs(value, scope);
         }
-        public Object getArgs() { return JsApiValueNormalizer.toJs(chain.getArgs()); }
+        public Object getArgs() { return wrapJavaArrayForJs(chain.getArgs().toArray(new Object[0])); }
         public Object getArg(int index) {
             Object value = chain.getArg(index);
             rememberLogContext(value);
-            return value;
+            return wrapJavaForJs(value, scope);
         }
-        public Object[] getArgsMutable() { return chain.getArgs().toArray(new Object[0]); }
-        public Object proceed() throws Throwable { return chain.proceed(); }
-        public Object proceed(Object argsObj) throws Throwable { return chain.proceed(toObjectArray(argsObj)); }
-        public Object proceedWith(Object thisObject) throws Throwable { return chain.proceedWith(unwrap(thisObject)); }
-        public Object proceedWith(Object thisObject, Object argsObj) throws Throwable { return chain.proceedWith(unwrap(thisObject), toObjectArray(argsObj)); }
+        public Object getArgsMutable() { return wrapJavaArrayForJs(chain.getArgs().toArray(new Object[0])); }
+        public Object proceed() throws Throwable { return wrapJavaForJs(chain.proceed(), scope); }
+        public Object proceed(Object argsObj) throws Throwable { return wrapJavaForJs(chain.proceed(toExecutableArguments(argsObj)), scope); }
+        public Object proceedWith(Object thisObject) throws Throwable { return wrapJavaForJs(chain.proceedWith(unwrap(thisObject)), scope); }
+        public Object proceedWith(Object thisObject, Object argsObj) throws Throwable { return wrapJavaForJs(chain.proceedWith(unwrap(thisObject), toExecutableArguments(argsObj)), scope); }
+
+        private Object[] toExecutableArguments(Object argsObj) {
+            Object[] args = toObjectArray(argsObj);
+            Executable executable = chain.getExecutable();
+            if (javaBridge != null && executable != null) {
+                return javaBridge.getInvoker().convertArguments(executable.getParameterTypes(), executable.isVarArgs(), args);
+            }
+            return convertArguments(executable.getParameterTypes(), args);
+        }
     }
 
     public final class JsInvoker {
@@ -4306,6 +4496,14 @@ public final class JsHookRuntime {
         if (value == Undefined.instance || value == Scriptable.NOT_FOUND) value = null;
         if (value == null) return null;
         Class<?> boxed = boxType(targetType);
+
+        if (!shouldAutoConvertJsValue(arg)) {
+            if (boxed.isInstance(value)) return value;
+            if (!targetType.isPrimitive() && targetType.isInstance(value)) return value;
+            if (targetType == Object.class) return value;
+            return value;
+        }
+
         if (boxed.isInstance(value)) return value;
         if (boxed == Integer.class && value instanceof Number) return ((Number) value).intValue();
         if (boxed == Long.class && value instanceof Number) return ((Number) value).longValue();
