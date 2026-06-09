@@ -16,3 +16,11 @@ html_static_path = ['_static']
 suppress_warnings = [
     'misc.highlighting_failure'
 ]
+
+html_js_files = [
+    'chinese_search_stemmer_fallback.js',
+]
+
+suppress_warnings = [
+    'misc.highlighting_failure'
+]
