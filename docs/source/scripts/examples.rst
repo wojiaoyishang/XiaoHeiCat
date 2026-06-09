@@ -368,6 +368,97 @@ Hook 某个方法
    });
 
 
+作用域与全局状态测试
+-------------------------------
+
+下面的脚本用于验证 ``1.31 (108)`` 的 JS 作用域修复：顶层 ``let``、``var``、普通对象字段
+应能在 Hook 回调、Java SAM 回调和 RPC 回调之间持续递增；``xhh.global`` 应能跨回调保存状态。
+
+.. code-block:: javascript
+
+   // ==LSPosedScript==
+   // @name         作用域与全局状态测试
+   // @id           demo.scope.state.test
+   // @version      1.0.0
+   // @target       *
+   // @process      *
+   // @run-at       package-loaded
+   // @grant        java.full
+   // @grant        xposed.full
+   // @grant        rpc.register
+   // ==/LSPosedScript==
+
+   const TAG = 'ScopeStateTest';
+
+   let topLetCounter = 0;
+   var topVarCounter = 0;
+   const state = {
+       objectCounter: 0,
+       lastPackage: null
+   };
+
+   function bump(where) {
+       topLetCounter++;
+       topVarCounter++;
+       state.objectCounter++;
+
+       xhh.global.set('scope.test.lastWhere', where);
+       xhh.global.set('scope.test.objectCounter', state.objectCounter);
+
+       xposed.i(TAG,
+           where +
+           ' let=' + topLetCounter +
+           ' var=' + topVarCounter +
+           ' object=' + state.objectCounter +
+           ' globalSize=' + xhh.global.size()
+       );
+   }
+
+   xhh.rpc.register_method('scope_state_snapshot', function () {
+       return {
+           ok: true,
+           topLetCounter: topLetCounter,
+           topVarCounter: topVarCounter,
+           state: state,
+           global: {
+               keys: xhh.global.keys(),
+               lastWhere: xhh.global.get('scope.test.lastWhere'),
+               objectCounter: xhh.global.get('scope.test.objectCounter')
+           }
+       };
+   });
+
+   xposed.onPackageLoaded(function () {
+       bump('onPackageLoaded');
+
+       const Application = Java.type('android.app.Application');
+       const ContextClass = Java.type('android.content.Context');
+       const attach = Application.getDeclaredMethod('attach', ContextClass);
+       attach.setAccessible(true);
+
+       xposed.hook(attach).intercept(function (chain) {
+           const context = chain.getArg(0);
+           state.lastPackage = '' + context.getPackageName();
+
+           bump('Application.attach.before');
+           const result = chain.proceed();
+
+           const Handler = Java.type('android.os.Handler');
+           const Looper = Java.type('android.os.Looper');
+           const handler = new Handler(Looper.getMainLooper());
+
+           handler.post(function () {
+               bump('Handler.post');
+           });
+
+           bump('Application.attach.after');
+           return result;
+       });
+   });
+
+通过 MCP 调用 ``scope_state_snapshot``，如果返回的计数值和日志中的计数值连续递增，就说明
+Hook 回调、SAM 回调和 RPC 回调都回到了同一份脚本作用域。
+
 .. _动态DEX:
 
 动态 DEX 脱壳

@@ -3,7 +3,7 @@
 project = 'XiaoHeiHook'
 copyright = '2026, XiaoHeiHook'
 author = 'XiaoHeiHook'
-release = 'v1.30 (107)'
+release = 'v1.31 (108)'
 
 extensions = ['sphinx.ext.intersphinx']
 templates_path = ['_templates']

@@ -197,3 +197,21 @@ run-at
 
 这是一次版本跨越：新脚本应使用 JS 对象和数组，不再为 Java ``List<Map>`` 的旧访问链编写兜底逻辑。
 Dex 旧别名与目录扫描过渡入口已收紧或移除，详见 :doc:`dynamic_dex_scan/source_api`。需要判断一个值是 JS 对象还是 Java bridge 对象时，使用 ``xhh.objectKind(value)``。
+
+
+1.31 (108) 作用域修复与全局状态
+--------------------------------------
+
+``1.31 (108)`` 修复 JS Runtime 中 Hook 回调、Java SAM 回调和 RPC 回调的作用域复用问题。
+同一脚本内的顶层 ``let``、``var`` 和普通对象字段可以在这些回调之间保持状态。
+
+同时新增 ``xhh.global``，用于在同一目标 App 进程内跨脚本、跨回调保存运行期对象和值。
+它适合保存 Java ``Method``、``thisObject``、``ClassLoader`` 等不能简单序列化的对象。
+
+本版本还明确了 JS 与 Java 之间的参数传递规则：Java / LSPosed 传入 JS 的对象保持现有脚本 API 行为；
+脚本主动调用 Java 方法时，只有普通 JS 值会按目标 Java 签名自动转换，已经是 Java 对象或 Java wrapper 的值会直接传递。
+这避免了显式构造的 ``Integer``、``Method``、``Class`` 等对象被误转换为 JS 基础类型。
+
+.. warning::
+
+   ``xhh.global`` 不会跨进程持久化。目标 App 被终止或重启后，需要重新通过 Hook 捕获并写入。

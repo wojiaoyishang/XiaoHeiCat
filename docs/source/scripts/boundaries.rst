@@ -116,6 +116,23 @@ Grant 权限边界
           console.log("rpc register grant declared");
       }
 
+``xhh.global``
+   进程内全局状态表。从 ``1.31 (108)`` 起提供，用于跨脚本、跨 Hook/RPC 回调保存运行期对象和值。
+
+   常用能力：
+
+   - ``xhh.global.set(key, value)``
+   - ``xhh.global.get(key)``
+   - ``xhh.global.has(key)``
+   - ``xhh.global.remove(key)``
+   - ``xhh.global.keys()``
+   - ``xhh.global.size()``
+
+   示例::
+
+      xhh.global.set("demo.method", chain.getExecutable());
+      const method = xhh.global.get("demo.method");
+
 ``xhh.fs``
    文件与资源桥接接口。从 ``1.30 (107)`` 起提供目标 App 私有目录查询、普通文件读写、
    当前脚本 ``assets/`` 读取和资源复制能力。
@@ -171,6 +188,52 @@ Grant 权限边界
    - ``dex.inspectMethodInFile(options)``
    - ``dex.locateMethodInCookieDumps(options)``
 
+
+JS 全局作用域与 xhh.global 边界
+--------------------------------------
+
+``1.31 (108)`` 后，普通脚本里的顶层变量会更接近正常 JavaScript 语义。Hook 回调、Java SAM
+回调和 MCP/RPC 回调会回到函数创建时的脚本作用域中执行，因此同一脚本内可以这样保存状态：
+
+.. code-block:: javascript
+
+   let installed = false;
+   var counter = 0;
+   const state = { lastArgs: null };
+
+   xposed.hook(method).intercept(function (chain) {
+       counter++;
+       state.lastArgs = chain.getArgs();
+       return chain.proceed();
+   });
+
+但是，普通 JS 全局变量只属于当前脚本 runtime，不适合当作跨脚本共享表。需要跨脚本、跨回调
+保存运行期对象时，使用 ``xhh.global``：
+
+.. code-block:: javascript
+
+   xhh.global.set("decrypt.method", chain.getExecutable());
+   xhh.global.set("decrypt.this", chain.getThisObject());
+
+   const method = xhh.global.get("decrypt.method");
+   const thisObject = xhh.global.get("decrypt.this");
+
+.. note::
+
+   ``xhh.global`` 可以保存 Java ``Method``、``Constructor``、``ClassLoader``、``thisObject`` 等
+   Java bridge 对象。它不做持久化，目标进程结束后会清空。
+
+.. warning::
+
+   ``xhh.global.clear()`` 会清空同一目标进程内所有脚本共享的状态。为避免误删其他脚本数据，
+   建议使用带命名空间的 key，例如 ``demo.scope.method``，并用 ``remove`` 精确删除。
+
+常见坑：
+
+* 不要把 ``xhh.global`` 当作设置系统使用；持久配置应使用脚本设置或文件。
+* 不要保存 Activity、View 等生命周期很短的对象后长期复用；对象失效后远程调用可能抛异常。
+* 不要用过于通用的 key，例如 ``method``、``context``；多个脚本之间容易覆盖。
+* 目标 App 重启后，``xhh.global`` 里的值需要重新通过 Hook 捕获。
 
 文件路径与 assets 边界
 --------------------------------------
@@ -1074,6 +1137,18 @@ Inspect / 搜索 Dex 方法体
    // @grant dex.dump
 
 或者按需添加 ``dex.read`` / ``dex.search`` / ``dex.full``。
+
+``RPC 读取不到 Hook 中保存的变量``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+原因：旧版本中 Hook 回调、Java callback 或 RPC callback 可能没有回到同一个 JS 作用域执行。
+
+解决：
+
+- 升级到 ``1.31 (108)`` 或更新版本。
+- 同一脚本内部状态可以使用顶层 ``let``、``var`` 或普通对象字段。
+- 跨脚本或需要保存 Java ``Method`` / ``thisObject`` 时，使用 ``xhh.global``。
+- 如果值来自某次 Hook，目标 App 重启后需要重新触发 Hook 才能再次捕获。
 
 ``OutOfMemoryError``
 ~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -9,6 +9,10 @@ JS 对象、JS 数组和对象字面量参数。
 ``1.30 (107)`` 新增 ``xhh.fs`` 文件与资源桥接接口，用于脚本文件读写、当前脚本
 ``assets/`` 读取，以及资源复制到目标 App 私有目录。
 
+``1.31 (108)`` 修复 JS Runtime 作用域复用问题：Hook 回调、Java SAM proxy 回调与
+MCP/RPC 回调会回到同一个脚本全局作用域执行；同时新增 ``xhh.global``，用于在同一
+目标进程内跨脚本、跨回调保存运行期状态。
+
 .. module:: XiaoHeiHook.js
 
 源码位置
@@ -39,6 +43,9 @@ JS 对象、JS 数组和对象字面量参数。
    * - ``xhh``
      - ``JsHookRuntime.XhhFacade`` / ``RpcFacade``
      - XiaoHeiHook 版本、grant、JS 引擎能力、对象类型、稳定遍历和 RPC。
+   * - ``xhh.global``
+     - ``ScriptGlobalState`` / ``JsHookRuntime.GlobalStateFacade``
+     - Java-backed 全局状态表，用于跨脚本、跨 Hook/RPC 回调保存运行期对象和值。
    * - ``xhh.fs``
      - ``FileJsApi`` / ``ScriptAssetManager`` / ``TargetAppPathHelper``
      - 文件读写、脚本 assets 读取、资源复制到目标 App 私有目录。
@@ -93,7 +100,9 @@ JS 脚本语法边界说明
 
 * 全局常量、固定配置可以继续使用 ``const TAG = 'Demo'``。
 * 循环内会随下标变化的临时变量推荐使用 ``let``。
+* 顶层 ``let`` / ``var`` / 普通对象字段可以在 Hook 回调、SAM 回调和 RPC 回调之间保持状态。
 * 遍历 ``paths``、``results``、``methods`` 等 JS 数组时，推荐使用 ``xhh.each(array, callback)``。
+* 需要跨脚本或跨回调保存 Java ``Method``、``ClassLoader``、``thisObject`` 等运行期对象时，使用 ``xhh.global``。
 * 需要确认当前引擎能力时使用 ``xhh.jsEngine()``。
 * 需要确认一个值是 JS 对象还是 Java bridge 对象时使用 ``xhh.objectKind(value)``。
 
@@ -809,6 +818,119 @@ Java Bridge 低层反射 fallback
 .. function:: xhh.isJavaObject(value)
 
    判断值是否为 Java bridge 对象。
+
+
+``xhh.global`` 全局状态接口
+--------------------------------------------------------------------------------
+
+源码定义：``top.lovepikachu.XiaoHeiHook.script.ScriptGlobalState``，并由
+``JsHookRuntime.GlobalStateFacade`` 挂载到 ``xhh.global``。
+
+``xhh.global`` 是 ``1.31 (108)`` 新增的 Java-backed 全局状态表。它和普通 JS 全局变量不同：
+
+* 普通 JS 顶层变量属于当前脚本 runtime，适合脚本内部状态。
+* ``xhh.global`` 保存在 Java 层，同一目标进程内的多个脚本 runtime 可以共享。
+* ``xhh.global`` 可以保存 Java bridge 对象，例如 ``Method``、``ClassLoader``、``thisObject``。
+* 目标 App 进程被杀死后，``xhh.global`` 会随进程一起清空。
+
+.. note::
+
+   ``xhh.global`` 是运行期状态表，不是持久化配置。需要跨进程重启保存的数据，应使用
+   ``settings``、脚本配置或 ``xhh.fs.writeText`` 写入文件。
+
+.. function:: xhh.global.set(key, value)
+
+   保存一个全局值。
+
+   :param string key: 状态键。建议使用带命名空间的键，例如 ``decrypt.method``。
+   :param value: 任意 JS 值或 Java bridge 对象。
+   :return: 保存后的值。
+
+.. function:: xhh.global.get(key)
+
+   读取一个全局值。
+
+   :param string key: 状态键。
+   :return: 已保存的值；不存在时返回 ``null``。
+
+.. function:: xhh.global.has(key)
+
+   判断指定键是否存在。
+
+   :param string key: 状态键。
+   :return: 布尔值。
+
+.. function:: xhh.global.remove(key)
+
+   移除指定键。
+
+   :param string key: 状态键。
+   :return: 被移除的旧值；不存在时返回 ``null``。
+
+.. function:: xhh.global.clear()
+
+   清空当前进程内的全局状态表。
+
+   :return: ``true``。
+
+.. warning::
+
+   ``clear`` 会清空同一目标进程内所有脚本共享的 ``xhh.global`` 状态。普通脚本更推荐
+   使用 ``remove`` 删除自己的命名空间键。
+
+.. function:: xhh.global.keys()
+
+   返回当前全局状态表中的全部键名。
+
+   :return: JS 字符串数组。
+
+.. function:: xhh.global.size()
+
+   返回当前全局状态表中的键数量。
+
+   :return: 数字。
+
+.. function:: xhh.global.snapshot()
+
+   返回一个 JS 对象快照，便于日志排查。
+
+   :return: JS 对象。保存的 Java 对象会以 Java bridge 对象形式返回，不会被序列化成字符串。
+
+**示例：Hook 中保存 Method，RPC 中远程调用：**
+
+.. code-block:: javascript
+
+   xposed.hook(targetMethod).intercept(function (chain) {
+       const method = chain.getExecutable();
+       method.setAccessible(true);
+
+       xhh.global.set('decrypt.method', method);
+       xhh.global.set('decrypt.this', chain.getThisObject());
+
+       return chain.proceed();
+   });
+
+   xhh.rpc.register_method('decrypt_cbc', function (params) {
+       const method = xhh.global.get('decrypt.method');
+       const thisObject = xhh.global.get('decrypt.this');
+
+       if (!method) {
+           return { ok: false, error: 'method not captured yet' };
+       }
+
+       const result = method.invoke(
+           thisObject,
+           params.data,
+           params.key,
+           params.iv,
+           params.mode || 0
+       );
+
+       return {
+           ok: true,
+           result: result == null ? null : '' + result
+       };
+   });
 
 
 ``xhh.fs`` 文件与资源接口

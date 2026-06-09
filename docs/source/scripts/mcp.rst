@@ -154,6 +154,39 @@ JS 注册方法
      }
    })
 
+RPC 回调作用域
+----------------------------------------------------------
+
+从 ``1.31 (108)`` 起，``xhh.rpc.register_method`` 注册的 handler 会回到创建它时所属的
+脚本作用域执行。也就是说，RPC 回调可以读取和修改同一脚本里的顶层变量：
+
+.. code-block:: javascript
+
+   let rpcCount = 0;
+   const state = { lastParams: null };
+
+   xhh.rpc.register_method("counter", function (params) {
+       rpcCount++;
+       state.lastParams = params;
+       return {
+           ok: true,
+           count: rpcCount,
+           lastParams: state.lastParams
+       };
+   });
+
+如果需要让其他脚本也读取该值，或需要保存 Java ``Method``、``thisObject`` 等运行期对象，
+请使用 ``xhh.global``。
+
+.. code-block:: javascript
+
+   xhh.global.set("rpc.demo.method", method);
+   const method = xhh.global.get("rpc.demo.method");
+
+.. note::
+
+   ``xhh.global`` 是进程内状态表，不是持久化数据库。目标 App 被杀死或重启后需要重新写入。
+
 ``register_method`` 参数
 ----------------------------------------------------------
 
@@ -299,6 +332,21 @@ handler 形式为：
    }
 
 ``params`` 来自外部 MCP ``invoke_method`` 的 ``params`` 字段。建议只传递 JSON 可表示的数据，例如对象、数组、字符串、数字、布尔值或 ``null``。
+
+.. important::
+
+   MCP 入参来自外部 JSON。为了兼容脚本里的自然写法，``params`` 会以 JS 友好的对象形式交给
+   handler，推荐继续使用 ``params.data``、``params.key``、``params.items[0]`` 这类写法。
+
+   当这些值继续传给 Java Bridge 时，仍遵循统一的 JS → Java 规则：普通 JS 字符串、数字、布尔值、
+   数组或对象会根据目标 Java 参数类型自动转换；已经是 Java 对象或 Java wrapper 的值会解包后原样传递。
+   因此调用 ``java.lang.reflect.Method.invoke`` 时，如果目标方法第 4 个参数是 ``int``，
+   ``params.mode`` 这类 JS number 会按真实方法签名转换为 Java ``int``；如果脚本显式构造了
+   ``Integer.valueOf(...)``，则不会被二次转换。
+
+   需要特别注意，MCP 是按目标 App 进程调用的。``Method``、``thisObject``、``ClassLoader`` 等
+   Java 运行期对象不能跨进程保存后直接复用。跨进程远程调用时，应保存类名、方法名、参数签名、进程名
+   等可重建信息，并在实际执行的目标进程内重新解析。
 
 ``ctx`` 包含：
 

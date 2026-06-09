@@ -3,6 +3,18 @@
 
 XiaoHeiHook 的 JS API 是对现代 LSPosed/libxposed API 的一层脚本化封装。理解这层映射关系，有助于判断某个 JS 方法背后实际调用的是哪个 libxposed 能力。
 
+.. important::
+
+   从 ``1.31 (108)`` 起，XiaoHeiHook 明确 JS 与 Java 之间的变量传递边界：
+   **从 LSPosed / 目标 App Java 层传入 JS 的对象，保持现有 JS API 行为**，例如
+   ``chain``、``chain.getArg(index)``、``chain.getArgs()``、``chain.getThisObject()`` 和
+   ``chain.proceed()`` 仍按 XiaoHeiHook 原有封装方式交给脚本使用。
+
+   只有当脚本主动把值传回 Java 方法、构造器、字段写入或 ``Method.invoke(...)`` 时，Bridge
+   才执行 JS → Java 参数转换：如果传入值已经是 Java 对象、Java wrapper、``NativeJavaObject``
+   或其他非 JS 对象，则会解包后原样传递；如果传入值是 JS 字符串、数字、布尔值、数组或普通对象，
+   才会根据目标 Java 参数类型自动转换。
+
 .. tip::
 
 	虽然代码是通过 JS 脚本进行编写的，但是对于处理一些来自 Java 层的对象（如 Java 的 String），不建议直接使用：
@@ -66,6 +78,74 @@ XiaoHeiHook 当前默认 JS 引擎是 Rhino。它不是浏览器、Node.js 或 Q
 ``const`` 仍可用于模块级常量、函数外固定配置、不会在循环中重新绑定的值，例如
 ``const TAG = "Demo"``。但在 Hook 回调、Dex 文件遍历、方法搜索结果遍历等场景中，
 建议优先使用上面的通用语法。
+
+JS Runtime 作用域与回调
+--------------------------------------
+
+从 ``1.31 (108)`` 起，XiaoHeiHook 调整了 Rhino Runtime 的作用域管理方式，使脚本更接近
+普通 JavaScript 的全局变量语义。
+
+每个脚本 Runtime 会持有一个长期存在的 global scope。脚本首次执行时创建该 scope，之后
+``xposed.hook(...).intercept``、``Java.proxy``、自动 SAM proxy、``Handler.post(function () {})``
+以及 ``xhh.rpc.register_method`` 的回调，都会优先回到 JS 函数创建时所属的 scope 执行。
+
+这意味着下面这些状态可以在同一个脚本内跨回调递增：
+
+.. code-block:: javascript
+
+   const TAG = 'ScopeDemo';
+
+   let topLetCounter = 0;
+   var topVarCounter = 0;
+   const state = { count: 0 };
+
+   xposed.hook(method).intercept(function (chain) {
+       topLetCounter++;
+       topVarCounter++;
+       state.count++;
+       xposed.i(TAG, 'count=' + state.count);
+       return chain.proceed();
+   });
+
+.. tip::
+
+   ``1.31 (108)`` 修复的是 Hook / Java callback / RPC callback 回到同一脚本作用域的问题。
+   Rhino 在 ``for`` 循环体内 ``const`` 的每轮重新绑定限制仍然存在；循环内变化值仍推荐使用
+   ``let`` 或 ``xhh.each``。
+
+跨脚本或跨多个回调共享运行期对象时，可以使用 ``xhh.global``。它是 Java-backed 状态表，
+适合保存 Java ``Method``、``thisObject``、``ClassLoader`` 这类不能简单序列化的对象。
+
+.. code-block:: javascript
+
+   xposed.hook(targetMethod).intercept(function (chain) {
+       const method = chain.getExecutable();
+       method.setAccessible(true);
+
+       xhh.global.set('demo.method', method);
+       xhh.global.set('demo.this', chain.getThisObject());
+
+       return chain.proceed();
+   });
+
+   xhh.rpc.register_method('call_demo_method', function (params) {
+       const method = xhh.global.get('demo.method');
+       const thisObject = xhh.global.get('demo.this');
+
+       if (!method) {
+           return { ok: false, error: 'method not captured yet' };
+       }
+
+       return {
+           ok: true,
+           result: '' + method.invoke(thisObject, params.value)
+       };
+   });
+
+.. warning::
+
+   ``xhh.global`` 只在当前目标 App 进程内有效。目标 App 被强制停止、进程崩溃或重新启动后，
+   里面保存的值会丢失。需要持久化的数据应写入文件或配置。
 
 整体调用链
 ------------------
@@ -210,6 +290,17 @@ Java Bridge wrapper 的定位
 当脚本调用 ``Application.getDeclaredMethod('attach', ContextClass)`` 这类
 ``java.lang.Class`` 方法时，Bridge 会把 ``JavaClassWrapper`` 参数自动解包为原始
 ``Class``，并处理 ``Class<?>...`` 这类 varargs 参数。
+
+.. important::
+
+   ``JavaClassWrapper``、``JavaObjectWrapper`` 和通过 ``Java.type``、``Java.proxy``、
+   ``chain.getExecutable()`` 等获得的 Java 侧对象，在再次传给 Java 方法时不会被当作普通 JS 对象重建。
+   Bridge 会先识别它们是否已经是 Java 值；已经是 Java 值时直接传递，只有普通 JS 值才进入自动转换流程。
+
+   例如反射调用 ``Method.invoke`` 时，Bridge 会按被调用的真实方法签名转换 JS 参数：目标参数是
+   ``int`` 时，JS number 可以自动转换为 Java ``int``。如果脚本已经显式传入
+   ``Java.type('java.lang.Integer').valueOf(0)``，该 ``Integer`` 会保持为 Java 对象，不会再被转换成
+   Rhino 的 ``Double``。
 
 ``Java.call``、``Java.callStatic``、``Java.newInstance`` 等低层反射接口仍然保留，
 但普通脚本优先使用 wrapper 写法；只有动态类名、动态方法名、复杂重载或兼容旧脚本时再使用低层接口。
