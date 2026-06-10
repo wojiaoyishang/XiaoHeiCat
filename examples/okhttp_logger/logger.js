@@ -1,7 +1,8 @@
-const config = require("./config.js")
+var config = require("./config.js")
 
 function toText(value) {
   if (value === null || value === undefined) return "null"
+
   try {
     return String(value)
   } catch (e) {
@@ -30,9 +31,9 @@ function error(message, throwable) {
 }
 
 module.exports = {
-  debug,
-  info,
-  warn,
-  error,
-  toText
+  debug: debug,
+  info: info,
+  warn: warn,
+  error: error,
+  toText: toText
 }

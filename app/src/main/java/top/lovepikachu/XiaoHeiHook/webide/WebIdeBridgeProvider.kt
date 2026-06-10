@@ -13,6 +13,7 @@ import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 import top.lovepikachu.XiaoHeiHook.data.ScriptPrefs
 import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
 import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol
+import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -26,9 +27,13 @@ import java.util.UUID
  */
 class WebIdeBridgeProvider : ContentProvider() {
 
-    override fun onCreate(): Boolean = true
+    override fun onCreate(): Boolean {
+        context?.let { MainProcessKeepAliveService.startIfNeeded(it, MainProcessKeepAliveService.REASON_BRIDGE) }
+        return true
+    }
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
+        context?.let { MainProcessKeepAliveService.startIfNeeded(it, MainProcessKeepAliveService.REASON_BRIDGE) }
         return try {
             when (method) {
                 METHOD_STATUS -> status()

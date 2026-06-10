@@ -200,6 +200,217 @@ Grant 与返回值规则
    :param object query: 同 ``findMethods``。
    :return: 命中对象；未找到返回 ``null``。
 
+
+.. function:: dex.scanSmali(options)
+
+   ``1.32 (109)`` 新增。按 smali 文本关键词搜索方法。过滤过程在 Java 层完成，
+   只有命中的方法会返回到 JS 层，适合在 dump 后的多个 dex 中快速查找加密、签名、
+   VIP 判断、接口路径、常量字符串等特征。
+
+   .. tip::
+
+      需要完整脚本模板时，可以参考 GitHub 仓库中的 `examples/qidian_dex_search.js <https://github.com/wojiaoyishang/XiaoHeiCat/blob/master/examples/qidian_dex_search.js>`_。
+
+   :param object options: 扫描配置。
+   :return: JS 数组。每项是命中方法对象，常用字段包括 ``className``、``methodName``、
+            ``proto``、``descriptor``、``path``、``sourceEntry``、``score``、
+            ``matchedKeywords``、``smaliHead``；当 ``includeSmali: true`` 时还包含 ``smali``。
+
+   常用字段：
+
+   .. list-table:: scanSmali options
+      :header-rows: 1
+      :widths: 28 72
+
+      * - 字段
+        - 说明
+      * - ``loader``
+        - 从指定 ClassLoader 解析 dex/apk 来源。推荐在 ``Application.attach`` 后传入 ``context.getClassLoader()``。
+      * - ``path`` / ``paths``
+        - 扫描指定 dex/apk 文件或文件列表。常见来源是 ``dex.dumpDexCookies(...).paths``。
+      * - ``keywords`` / ``contains``
+        - smali 文本关键词数组。命中判断只看文本包含关系。
+      * - ``smaliContains`` / ``smaliKeywords``
+        - ``keywords`` 的同义写法，便于从 ``dex.findMethods`` 迁移。
+      * - ``mode``
+        - ``"any"`` 或 ``"all"``。默认 ``"any"``；也可以使用 ``matchAll: true``。
+      * - ``classPrefix``
+        - 只扫描指定 Java 包名前缀，例如 ``"com.example."``。不知道包名时可以不填。
+      * - ``excludeClassPrefixes``
+        - 排除包名前缀数组，例如 ``["android.", "androidx.", "kotlin."]``。
+      * - ``methodName`` / ``proto``
+        - 可选方法名或方法原型过滤。未知目标方法时不要填写。
+      * - ``includeSmali``
+        - 是否返回 smali 文本。默认 ``false``；只需要定位时可保持关闭。
+      * - ``maxSmaliChars`` / ``smaliChars``
+        - 返回 smali 的最大字符数，避免日志和内存过大。
+      * - ``limit``
+        - 最大命中数。默认 ``50``。
+      * - ``verbose``
+        - 是否打印扫描进度。
+
+   **示例：在当前 ClassLoader 中搜索 AES 特征**
+
+   .. code-block:: javascript
+
+      var hits = dex.scanSmali({
+        loader: appClassLoader,
+        keywords: [
+          'Ljavax/crypto/Cipher;',
+          'Ljavax/crypto/spec/SecretKeySpec;',
+          'AES/CBC/PKCS5Padding'
+        ],
+        mode: 'any',
+        excludeClassPrefixes: ['android.', 'androidx.', 'kotlin.', 'java.'],
+        includeSmali: true,
+        maxSmaliChars: 12000,
+        limit: 20
+      });
+
+      for (var i = 0; i < hits.length; i++) {
+        var h = hits[i];
+        xposed.i('DexScan', h.className + '.' + h.methodName + h.proto);
+        xposed.d('DexScan', String(h.smaliHead || ''));
+      }
+
+   **示例：先 dump，再逐个 dex 搜索并输出当前 dex**
+
+   .. code-block:: javascript
+
+      var dump = dex.dumpDexCookies({
+        loader: appClassLoader,
+        outputDir: '/data/user/0/pkg/code_cache/xhh_dumpdex',
+        registerSources: true
+      });
+
+      var paths = dump.paths || [];
+
+      for (var i = 0; i < paths.length; i++) {
+        var path = String(paths[i]);
+        xposed.i('DexScan', 'searching dex [' + (i + 1) + '/' + paths.length + '] ' + path);
+
+        var hits = dex.scanSmali({
+          path: path,
+          keywords: ['am7_dev_vip_override', 'Ljava/lang/System;->currentTimeMillis('],
+          mode: 'all',
+          includeSmali: true,
+          maxSmaliChars: 16000,
+          limit: 3
+        });
+
+        if (hits.length > 0) {
+          xposed.i('DexScan', 'first hit=' + hits[0].className + '.' + hits[0].methodName + hits[0].proto);
+          break;
+        }
+      }
+
+.. function:: dex.forEachMethod(options, callback)
+
+   ``1.32 (109)`` 新增。由 Java 层遍历方法，并对每个符合过滤条件的方法调用 JS 回调。
+   当脚本不知道类名、方法名、proto，或者需要用多组关键词、正则、评分等自定义逻辑判断时，
+   使用这个接口比在 JS 中全量 ``view.classes()`` / ``method.smali()`` 更合适。
+
+   .. tip::
+
+      ``Smali echo`` 是该接口的典型用法：先 dump，再逐个 dex 输出搜索进度，
+      并在回调里用字符串方法给候选方法打分。完整示例见 GitHub 仓库中的 `examples/qidian_dex_search.js <https://github.com/wojiaoyishang/XiaoHeiCat/blob/master/examples/qidian_dex_search.js>`_。
+
+   :param object options: 遍历配置。字段与 ``scanSmali`` 类似，另支持 ``includeStrings``、
+                          ``includeInvokes``、``stopOnCallbackError``。
+   :param function callback: 回调函数。参数是方法信息对象。返回 ``true`` 会收集该方法到
+                             ``ret.results``；返回 ``"stop"`` / ``"break"`` 会停止遍历；
+                             其他返回值表示继续遍历。
+   :return: JS 对象，常用字段 ``ok``、``visitedClasses``、``visitedMethods``、``results``、
+            ``count``、``callbackErrors``、``errorCount``、``stopped``。
+
+   回调收到的 ``method`` 对象常用字段：
+
+   .. list-table:: forEachMethod method 字段
+      :header-rows: 1
+      :widths: 28 72
+
+      * - 字段
+        - 说明
+      * - ``className`` / ``classDescriptor``
+        - Java 类名和 Dex 描述符。
+      * - ``methodName`` / ``name``
+        - 方法名。
+      * - ``proto`` / ``descriptor``
+        - 方法原型。
+      * - ``returnType`` / ``parameters``
+        - 返回值和参数描述符。
+      * - ``path`` / ``sourceEntry``
+        - 来源文件和 apk 内 dex entry。
+      * - ``static`` / ``isStatic``
+        - 是否静态方法。
+      * - ``strings`` / ``invokes``
+        - 当 ``includeStrings`` / ``includeInvokes`` 为 ``true`` 时返回。
+      * - ``smali`` / ``smaliHead``
+        - 当 ``includeSmali: true`` 时返回。
+
+   **示例：不知道类名和方法名时按特征定位**
+
+   .. code-block:: javascript
+
+      var features = [
+        'am7_dev_vip_override',
+        'vip',
+        'nonvip'
+      ];
+
+      var found = null;
+
+      var ret = dex.forEachMethod({
+        path: dexPath,
+        includeSmali: true,
+        includeStrings: true,
+        includeInvokes: true,
+        maxSmaliChars: 160000,
+        limit: 0,
+        stopOnCallbackError: false
+      }, function (m) {
+        var body = String(m.smali || '') + '\n' + String(m.strings || '') + '\n' + String(m.invokes || '');
+
+        for (var i = 0; i < features.length; i++) {
+          if (body.indexOf(features[i]) < 0) return false;
+        }
+
+        found = m;
+        return 'stop';
+      });
+
+      xposed.i('DexScan', 'visitedMethods=' + ret.visitedMethods);
+
+      if (found) {
+        xposed.i('DexScan', 'found=' + found.className + '.' + found.methodName + found.proto);
+      }
+
+   **示例：回调返回 true 收集多个候选方法**
+
+   .. code-block:: javascript
+
+      var ret = dex.forEachMethod({
+        loader: appClassLoader,
+        excludeClassPrefixes: ['android.', 'androidx.', 'kotlin.', 'java.'],
+        includeSmali: true,
+        maxSmaliChars: 8000,
+        limit: 10
+      }, function (m) {
+        var smali = String(m.smali || '');
+
+        if (smali.indexOf('Ljavax/crypto/Cipher;') >= 0 ||
+            smali.indexOf('AES/GCM/NoPadding') >= 0) {
+          return true;
+        }
+
+        return false;
+      });
+
+      for (var i = 0; i < ret.results.length; i++) {
+        var m = ret.results[i];
+        xposed.i('DexScan', 'candidate=' + m.className + '.' + m.methodName + m.proto);
+      }
+
 .. function:: dex.inspectMethodInFile(options)
 
    精确检查指定文件中的指定方法，不负责搜索。
@@ -447,6 +658,46 @@ DexFileView 方法
 .. function:: view.findMethod(query)
 
    在当前 view 内搜索方法。
+
+.. function:: view.scanSmali(options)
+.. function:: view.forEachMethod(options, callback)
+
+   ``1.32 (109)`` 新增。在当前 ``DexFileView`` 内执行 smali 扫描或方法遍历。
+   参数和返回值与全局 ``dex.scanSmali``、``dex.forEachMethod`` 相同，但不会重新解析 source。
+   当脚本已经通过 ``dex.fromFile(path)``、``dex.fromLoader(loader)`` 或 ``dex.fromRuntime()``
+   打开 view 时，优先使用 view 级方法。
+
+   **示例：在单个 dump dex view 中搜索**
+
+   .. code-block:: javascript
+
+      var view = dex.fromFile(path);
+
+      var hits = view.scanSmali({
+        keywords: ['Ljavax/crypto/Cipher;', 'SecretKeySpec'],
+        mode: 'any',
+        includeSmali: false,
+        limit: 10
+      });
+
+      xposed.i('DexScan', 'hits=' + hits.length);
+
+   **示例：在已打开 view 中遍历方法**
+
+   .. code-block:: javascript
+
+      var ret = view.forEachMethod({
+        includeSmali: true,
+        maxSmaliChars: 6000,
+        limit: 5
+      }, function (m) {
+        if (String(m.smali || '').indexOf('currentTimeMillis') >= 0) {
+          return true;
+        }
+        return false;
+      });
+
+      xposed.i('DexScan', 'visited=' + ret.visitedMethods + ', hits=' + ret.count);
 
 DexClassView 方法
 --------------------------------------------------------------------------------

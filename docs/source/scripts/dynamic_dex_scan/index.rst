@@ -36,6 +36,5 @@
    runtime_capture
    memory_scan
    method_search
-   examples
    troubleshooting
    limits

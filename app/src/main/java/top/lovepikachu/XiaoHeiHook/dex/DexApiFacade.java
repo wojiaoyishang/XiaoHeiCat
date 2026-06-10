@@ -20,6 +20,7 @@ import org.jf.dexlib2.iface.reference.Reference;
 import org.jf.dexlib2.iface.reference.StringReference;
 import org.jf.dexlib2.util.ReferenceUtil;
 import org.mozilla.javascript.Context;
+import org.mozilla.javascript.Function;
 import org.mozilla.javascript.NativeArray;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
@@ -1539,6 +1540,28 @@ public final class DexApiFacade {
         return hit == null ? null : js(hit.toMapRaw());
     }
 
+    /**
+     * Scan method smali on the Java side and return only matched rows to JS.
+     * Added in XiaoHeiHook 1.32 (109). Prefer this over JS-side full dex traversal
+     * when the script only needs string-feature matching.
+     */
+    public Object scanSmali(Object optionsObject) throws Exception {
+        ScanOptions options = ScanOptions.from(optionsObject, debugLogging);
+        DexFileView fileView = sourceForQuery(options.query);
+        return js(fileView.scanSmaliRaw(options));
+    }
+
+    /**
+     * Iterate methods on the Java side and invoke a JS callback with lightweight method rows.
+     * The callback may return true to collect the row, "stop" to stop scanning, or false/null
+     * to continue without collecting. Added in XiaoHeiHook 1.32 (109).
+     */
+    public Object forEachMethod(Object optionsObject, Object callbackObject) throws Exception {
+        ScanOptions options = ScanOptions.from(optionsObject, debugLogging);
+        DexFileView fileView = sourceForQuery(options.query);
+        return js(fileView.forEachMethodRaw(options, callbackObject));
+    }
+
     public DexFileView fingerprint(Object queryObject) throws Exception {
         Query query = Query.from(queryObject);
         return query.file != null ? query.file : fromLoader(query.loader == null ? defaultLoader : query.loader);
@@ -2844,6 +2867,168 @@ public final class DexApiFacade {
             DexMethodHit hit = findMethodsRaw(queryObject).best();
             return hit == null ? null : js(hit.toMapRaw());
         }
+
+        public Object scanSmali(Object optionsObject) {
+            ScanOptions options = ScanOptions.from(optionsObject, false);
+            return js(scanSmaliRaw(options));
+        }
+
+        List<Map<String, Object>> scanSmaliRaw(ScanOptions options) {
+            if (options == null) options = new ScanOptions();
+            options.applyScanDefaults();
+            if (!options.hasScanCondition()) {
+                throw new IllegalArgumentException("scanSmali 至少需要 keywords / smaliContains / contains / classPrefix / className / methodName 之一");
+            }
+
+            ArrayList<Map<String, Object>> hits = new ArrayList<>();
+            int visitedClasses = 0;
+            int visitedMethods = 0;
+            List<DexClassView> classViews = classesRaw();
+
+            if (options.verbose) {
+                Log.i(TAG, "scanSmali start classes=" + classViews.size() + " sources=" + units.size() + " options={" + options.summary() + "}");
+            }
+
+            outer:
+            for (DexClassView cls : classViews) {
+                visitedClasses++;
+                try {
+                    if (!options.acceptClass(cls)) continue;
+                    List<DexMethodView> methods = cls.methodsRaw();
+                    if (options.verbose && (visitedClasses == 1 || visitedClasses % options.progressEveryClasses == 0 || visitedClasses == classViews.size())) {
+                        Log.i(TAG, "scanSmali class " + visitedClasses + "/" + classViews.size()
+                                + " methods=" + methods.size() + " class=" + cls.name
+                                + " source=" + (cls.unit == null || cls.unit.source == null ? null : cls.unit.source.path));
+                    }
+                    for (DexMethodView method : methods) {
+                        visitedMethods++;
+                        if (visitedMethods > maxMethods) break outer;
+                        if (options.verbose && options.progressEveryMethods > 0 && visitedMethods % options.progressEveryMethods == 0) {
+                            Log.i(TAG, "scanSmali progress methods=" + visitedMethods + " class=" + cls.name + " method=" + method.name + method.descriptor);
+                        }
+                        try {
+                            if (!options.acceptMethod(method)) continue;
+                            String smali = method.smali();
+                            ScanMatch match = options.matchSmali(smali);
+                            if (!match.matched) continue;
+                            hits.add(methodRow(method, options, smali, match, true));
+                            if (options.verbose) {
+                                Log.i(TAG, "scanSmali hit score=" + match.score + " matched=" + match.matchedKeywords
+                                        + " class=" + method.className + " method=" + method.name + method.descriptor);
+                            }
+                            if (options.limit > 0 && hits.size() >= options.limit) break outer;
+                        } catch (Throwable methodError) {
+                            recordSkip(method.unit.source, "scan-smali-method", methodError);
+                        }
+                    }
+                } catch (Throwable classError) {
+                    recordSkip(cls.unit.source, "scan-smali-class", classError);
+                }
+            }
+
+            if (options.verbose) {
+                Log.i(TAG, "scanSmali done classes=" + visitedClasses + " methods=" + visitedMethods + " hits=" + hits.size());
+            }
+            return hits;
+        }
+
+        public Object forEachMethod(Object optionsObject, Object callbackObject) {
+            ScanOptions options = ScanOptions.from(optionsObject, false);
+            return js(forEachMethodRaw(options, callbackObject));
+        }
+
+        Map<String, Object> forEachMethodRaw(ScanOptions options, Object callbackObject) {
+            if (options == null) options = new ScanOptions();
+            options.applyForEachDefaults();
+            Function callback = asFunction(callbackObject);
+            ArrayList<Map<String, Object>> collected = new ArrayList<>();
+            ArrayList<Map<String, Object>> callbackErrors = new ArrayList<>();
+            int visitedClasses = 0;
+            int visitedMethods = 0;
+            boolean stopped = false;
+            List<DexClassView> classViews = classesRaw();
+
+            if (options.verbose) {
+                Log.i(TAG, "forEachMethod start classes=" + classViews.size() + " sources=" + units.size() + " options={" + options.summary() + "}");
+            }
+
+            outer:
+            for (DexClassView cls : classViews) {
+                visitedClasses++;
+                try {
+                    if (!options.acceptClass(cls)) continue;
+                    List<DexMethodView> methods = cls.methodsRaw();
+                    if (options.verbose && (visitedClasses == 1 || visitedClasses % options.progressEveryClasses == 0 || visitedClasses == classViews.size())) {
+                        Log.i(TAG, "forEachMethod class " + visitedClasses + "/" + classViews.size()
+                                + " methods=" + methods.size() + " class=" + cls.name
+                                + " source=" + (cls.unit == null || cls.unit.source == null ? null : cls.unit.source.path));
+                    }
+                    for (DexMethodView method : methods) {
+                        visitedMethods++;
+                        if (visitedMethods > maxMethods) break outer;
+                        if (options.verbose && options.progressEveryMethods > 0 && visitedMethods % options.progressEveryMethods == 0) {
+                            Log.i(TAG, "forEachMethod progress methods=" + visitedMethods + " class=" + cls.name + " method=" + method.name + method.descriptor);
+                        }
+                        try {
+                            if (!options.acceptMethod(method)) continue;
+                            String smali = options.includeSmali ? method.smali() : null;
+                            Map<String, Object> row = methodRow(method, options, smali, null, false);
+                            Object callbackResult = callMethodCallback(callback, row);
+                            Object unwrapped = unwrap(callbackResult);
+                            if (unwrapped instanceof Boolean && ((Boolean) unwrapped).booleanValue()) {
+                                collected.add(row);
+                            } else if (unwrapped instanceof Map) {
+                                @SuppressWarnings("unchecked") Map<String, Object> returned = (Map<String, Object>) unwrapped;
+                                collected.add(returned);
+                            } else if (unwrapped != null) {
+                                String text = String.valueOf(unwrapped);
+                                if ("stop".equalsIgnoreCase(text) || "break".equalsIgnoreCase(text)) {
+                                    stopped = true;
+                                    break outer;
+                                }
+                            }
+                            if (options.limit > 0 && collected.size() >= options.limit) {
+                                stopped = true;
+                                break outer;
+                            }
+                        } catch (Throwable callbackError) {
+                            LinkedHashMap<String, Object> err = new LinkedHashMap<>();
+                            err.put("className", method.className);
+                            err.put("methodName", method.name);
+                            err.put("descriptor", method.descriptor);
+                            err.put("error", brief(callbackError));
+                            callbackErrors.add(err);
+                            if (options.stopOnCallbackError) {
+                                stopped = true;
+                                break outer;
+                            }
+                            if (options.verbose) {
+                                Log.w(TAG, "forEachMethod callback failed class=" + method.className + " method=" + method.name + method.descriptor, callbackError);
+                            }
+                        }
+                    }
+                } catch (Throwable classError) {
+                    recordSkip(cls.unit.source, "foreach-method-class", classError);
+                }
+            }
+
+            LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+            out.put("ok", true);
+            out.put("visitedClasses", visitedClasses);
+            out.put("visitedMethods", visitedMethods);
+            out.put("collected", collected);
+            out.put("results", collected);
+            out.put("count", collected.size());
+            out.put("callbackErrors", callbackErrors);
+            out.put("errorCount", callbackErrors.size());
+            out.put("stopped", stopped);
+            out.put("skippedSources", skippedSourcesRaw());
+            if (options.verbose) {
+                Log.i(TAG, "forEachMethod done classes=" + visitedClasses + " methods=" + visitedMethods
+                        + " collected=" + collected.size() + " errors=" + callbackErrors.size() + " stopped=" + stopped);
+            }
+            return out;
+        }
     }
 
     public static final class DexClassView {
@@ -3381,6 +3566,223 @@ public final class DexApiFacade {
             if (path == null) return false;
             String clean = path.trim().toLowerCase(Locale.ROOT);
             return clean.endsWith(".apk") || clean.endsWith(".dex") || clean.endsWith(".jar") || clean.endsWith(".zip");
+        }
+    }
+
+    static final class ScanMatch {
+        final boolean matched;
+        final ArrayList<String> matchedKeywords;
+        final int score;
+
+        ScanMatch(boolean matched, ArrayList<String> matchedKeywords, int score) {
+            this.matched = matched;
+            this.matchedKeywords = matchedKeywords == null ? new ArrayList<String>() : matchedKeywords;
+            this.score = score;
+        }
+    }
+
+    static final class ScanOptions {
+        Query query = new Query();
+        List<String> keywords = new ArrayList<>();
+        boolean matchAll = false;
+        boolean includeSmali = false;
+        boolean includeStrings = false;
+        boolean includeInvokes = false;
+        boolean includeMetadata = true;
+        boolean stopOnCallbackError = false;
+        boolean verbose = false;
+        int maxSmaliCharsForResult = 12000;
+        int progressEveryClasses = 500;
+        int progressEveryMethods = 5000;
+        int limit = 0;
+
+        static ScanOptions from(Object raw, boolean debugLogging) {
+            ScanOptions options = new ScanOptions();
+            options.query = Query.from(raw);
+            options.verbose = debugLogging || (options.query != null && options.query.verbose);
+            options.progressEveryClasses = options.query == null ? options.progressEveryClasses : options.query.progressEveryClasses;
+            options.progressEveryMethods = options.query == null ? options.progressEveryMethods : options.query.progressEveryMethods;
+            options.limit = options.query == null ? 0 : options.query.limit;
+            if (raw == null || raw == Undefined.instance || raw == Scriptable.NOT_FOUND) return options;
+            Object obj = unwrap(raw);
+            if (obj instanceof Scriptable) {
+                final Scriptable s = (Scriptable) obj;
+                fill(options, new ScanAccess() { @Override public Object get(String key) { return DexApiFacade.get(s, key); } });
+            } else if (obj instanceof Map) {
+                final Map<?, ?> m = (Map<?, ?>) obj;
+                fill(options, new ScanAccess() { @Override public Object get(String key) { return mapGet(m, key); } });
+            }
+            if (debugLogging) options.verbose = true;
+            options.normalize();
+            return options;
+        }
+
+        private interface ScanAccess { Object get(String key); }
+
+        private static void fill(ScanOptions options, ScanAccess access) {
+            options.keywords = asStringList(access.get("keywords"));
+            if (options.keywords.isEmpty()) options.keywords = asStringList(access.get("keyword"));
+            if (options.keywords.isEmpty()) options.keywords = asStringList(access.get("contains"));
+            if (options.keywords.isEmpty()) options.keywords = asStringList(access.get("smaliContains"));
+            if (options.keywords.isEmpty()) options.keywords = asStringList(access.get("smaliKeywords"));
+            if (options.keywords.isEmpty()) options.keywords = asStringList(access.get("smaliKeyword"));
+            if (options.keywords.isEmpty()) options.keywords = asStringList(access.get("smali"));
+
+            String mode = asString(access.get("mode"));
+            if ("all".equalsIgnoreCase(mode) || "and".equalsIgnoreCase(mode)) options.matchAll = true;
+            if ("any".equalsIgnoreCase(mode) || "or".equalsIgnoreCase(mode)) options.matchAll = false;
+            options.matchAll = asBoolean(access.get("matchAll"), options.matchAll);
+            options.matchAll = asBoolean(access.get("requireAll"), options.matchAll);
+
+            options.includeSmali = asBoolean(access.get("includeSmali"), options.includeSmali);
+            options.includeSmali = asBoolean(access.get("includeSmaliHead"), options.includeSmali);
+            options.includeStrings = asBoolean(access.get("includeStrings"), options.includeStrings);
+            options.includeInvokes = asBoolean(access.get("includeInvokes"), options.includeInvokes);
+            options.includeMetadata = asBoolean(access.get("includeMetadata"), options.includeMetadata);
+            options.stopOnCallbackError = asBoolean(access.get("stopOnCallbackError"), options.stopOnCallbackError);
+            options.verbose = asBoolean(access.get("verbose"), options.verbose);
+            options.maxSmaliCharsForResult = asInt(access.get("maxSmaliChars"), options.maxSmaliCharsForResult);
+            options.maxSmaliCharsForResult = asInt(access.get("smaliChars"), options.maxSmaliCharsForResult);
+            options.progressEveryClasses = asInt(access.get("progressEveryClasses"), options.progressEveryClasses);
+            options.progressEveryMethods = asInt(access.get("progressEveryMethods"), options.progressEveryMethods);
+            options.limit = asInt(access.get("limit"), options.limit);
+        }
+
+        private void normalize() {
+            if (keywords == null) keywords = new ArrayList<>();
+            ArrayList<String> clean = new ArrayList<>();
+            LinkedHashSet<String> seen = new LinkedHashSet<>();
+            for (String keyword : keywords) {
+                if (keyword == null) continue;
+                String value = keyword.trim();
+                if (value.isEmpty()) continue;
+                if (seen.add(value)) clean.add(value);
+            }
+            keywords = clean;
+            maxSmaliCharsForResult = clampInt(maxSmaliCharsForResult, 0, maxSmaliChars);
+            progressEveryClasses = progressEveryClasses <= 0 ? 500 : progressEveryClasses;
+            progressEveryMethods = progressEveryMethods < 0 ? 0 : progressEveryMethods;
+            if (limit < 0) limit = 0;
+        }
+
+        void applyScanDefaults() {
+            normalize();
+            if (limit <= 0) limit = 50;
+        }
+
+        void applyForEachDefaults() {
+            normalize();
+        }
+
+        boolean hasScanCondition() {
+            return !keywords.isEmpty()
+                    || (query != null && (query.classPrefix != null || query.className != null || query.methodName != null || query.proto != null));
+        }
+
+        boolean acceptClass(DexClassView cls) {
+            if (cls == null) return false;
+            if (query != null) {
+                if (query.classPrefix != null && !cls.name.startsWith(query.classPrefix)) return false;
+                if (query.className != null && !cls.name.equals(query.className) && !cls.descriptor.equals(query.className)) return false;
+                if (query.excludedClass(cls.name)) return false;
+            }
+            return true;
+        }
+
+        boolean acceptMethod(DexMethodView method) {
+            if (method == null) return false;
+            if (query == null) return true;
+            if (query.methodName != null && !query.methodName.equals(method.name)) return false;
+            if (query.proto != null && !query.proto.equals(method.descriptor)) return false;
+            if (query.returnType != null && !query.returnType.equals(method.returnType)) return false;
+            if (query.parameterTypes != null && !query.parameterTypes.equals(method.parameterList)) return false;
+            if (query.requireStatic != null && query.requireStatic.booleanValue() != method.isStatic()) return false;
+            return true;
+        }
+
+        ScanMatch matchSmali(String smali) {
+            ArrayList<String> matched = new ArrayList<>();
+            if (keywords == null || keywords.isEmpty()) return new ScanMatch(true, matched, 0);
+            String text = smali == null ? "" : smali;
+            for (String keyword : keywords) {
+                if (keyword == null || keyword.isEmpty()) continue;
+                boolean ok = text.contains(keyword);
+                if (ok) {
+                    matched.add(keyword);
+                } else if (matchAll) {
+                    return new ScanMatch(false, matched, matched.size() * 10);
+                }
+            }
+            if (matchAll) return new ScanMatch(matched.size() == keywords.size(), matched, matched.size() * 10);
+            return new ScanMatch(!matched.isEmpty(), matched, matched.size() * 10);
+        }
+
+        String summary() {
+            return "keywords=" + keywords + " mode=" + (matchAll ? "all" : "any")
+                    + " includeSmali=" + includeSmali + " includeStrings=" + includeStrings + " includeInvokes=" + includeInvokes
+                    + " maxSmaliChars=" + maxSmaliCharsForResult + " limit=" + limit
+                    + " query={" + (query == null ? "" : query.summary()) + "}";
+        }
+    }
+
+    private static Map<String, Object> methodRow(DexMethodView method, ScanOptions options, @Nullable String smali, @Nullable ScanMatch match, boolean includeScanFields) {
+        LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+        out.put("className", method.className);
+        out.put("classDescriptor", method.classDescriptor);
+        out.put("methodName", method.name);
+        out.put("name", method.name);
+        out.put("proto", method.descriptor);
+        out.put("descriptor", method.descriptor);
+        out.put("returnType", method.returnType);
+        out.put("parameters", method.parametersRaw());
+        out.put("accessFlags", method.accessFlags);
+        out.put("static", method.isStatic());
+        out.put("isStatic", method.isStatic());
+        out.put("constructor", method.isConstructor());
+        out.put("isConstructor", method.isConstructor());
+        DexSource source = method.unit == null ? null : method.unit.source;
+        out.put("path", source == null ? null : source.path);
+        out.put("sourcePath", source == null ? null : source.path);
+        out.put("sourceEntry", source == null ? null : source.entry);
+        out.put("sourceOrigin", source == null ? null : source.origin);
+        if (options != null && options.includeStrings) out.put("strings", method.stringsRaw());
+        if (options != null && options.includeInvokes) out.put("invokes", method.invokesRaw());
+        if (options != null && options.includeSmali) {
+            String body = smali == null ? method.smali() : smali;
+            if (body != null && options.maxSmaliCharsForResult > 0 && body.length() > options.maxSmaliCharsForResult) {
+                body = body.substring(0, options.maxSmaliCharsForResult);
+            }
+            out.put("smali", body);
+            out.put("smaliHead", body);
+        }
+        if (includeScanFields) {
+            out.put("score", match == null ? 0 : match.score);
+            out.put("matchedKeywords", match == null ? Collections.<String>emptyList() : match.matchedKeywords);
+            out.put("matchMode", options != null && options.matchAll ? "all" : "any");
+        }
+        return out;
+    }
+
+    private static Function asFunction(Object callbackObject) {
+        Object callback = unwrap(callbackObject);
+        if (callback instanceof Function) return (Function) callback;
+        throw new IllegalArgumentException("forEachMethod(options, callback) 第二个参数必须是 JS function");
+    }
+
+    private static Object callMethodCallback(Function callback, Map<String, Object> row) {
+        Context cx = Context.getCurrentContext();
+        boolean entered = false;
+        if (cx == null) {
+            cx = Context.enter();
+            entered = true;
+        }
+        try {
+            Scriptable scope = callback.getParentScope();
+            if (scope == null) scope = cx.initStandardObjects();
+            Object arg = js(row);
+            return callback.call(cx, scope, scope, new Object[]{arg});
+        } finally {
+            if (entered) Context.exit();
         }
     }
 

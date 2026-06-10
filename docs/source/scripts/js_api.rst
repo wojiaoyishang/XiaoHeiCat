@@ -13,6 +13,11 @@ JS 对象、JS 数组和对象字面量参数。
 MCP/RPC 回调会回到同一个脚本全局作用域执行；同时新增 ``xhh.global``，用于在同一
 目标进程内跨脚本、跨回调保存运行期状态。
 
+``1.32 (109)`` 新增 ``Java.to(...)`` 显式类型构造，并强化 Java Bridge 包装方法：
+``getDeclaredMethod``、``getMethod``、``getDeclaredConstructor``、``getConstructor``
+的签名参数支持类名字符串和基础类型名称；已经是 Java 对象或 Java wrapper 的值传回
+Java 时只解包，不会再被当作 JS 原生值二次自动转换。
+
 .. module:: XiaoHeiHook.js
 
 源码位置
@@ -59,34 +64,6 @@ MCP/RPC 回调会回到同一个脚本全局作用域执行；同时新增 ``xhh
      - ``JsHookRuntime.CommonJsRequire``
      - CommonJS 风格相对路径模块加载。
 
-返回值稳定化规则
---------------------------------------------------------------------------------
-
-``1.30 (106)`` 后，面向脚本逻辑的复杂返回值会通过
-``JsApiValueNormalizer.toJs(value)`` 转换。脚本应使用 ``obj.field``、``arr[i]``、
-``arr.length``，不要再写 ``map.get('x')`` 或 ``list.get(i)``。
-
-.. list-table:: Java 到 JS 转换规则
-   :header-rows: 1
-   :widths: 32 68
-
-   * - Java 侧值
-     - JS 侧结果
-   * - ``Map`` / ``JSONObject``
-     - JS 普通对象，例如 ``ret.ok``、``ret.paths``。
-   * - ``List`` / ``Iterable`` / Java 数组 / ``JSONArray``
-     - JS 数组，例如 ``arr.length``、``arr[i]``。
-   * - ``Throwable``
-     - 调试对象 ``{ type, message, text }``；日志接口仍能识别真正的 Java ``Throwable``。
-   * - ``File``
-     - 文件绝对路径字符串。
-   * - ``Class``
-     - 返回 ``JavaClassWrapper``；可直接读静态字段、调静态方法、执行 ``new``，也可通过 ``classObject`` / ``getRawClass()`` 取得原始 ``Class``。
-   * - ``ClassLoader`` / ``Method`` / ``Constructor`` / ``Field`` / 普通 Java 对象
-     - 返回 Java bridge 对象，供 Hook 或反射继续使用；传回 Java API 时会自动解包。
-   * - 字符串、数字、布尔值、``null``
-     - 原样返回。
-
 JS 脚本语法边界说明
 --------------------------------------------------------------------------------
 
@@ -98,6 +75,7 @@ JS 脚本语法边界说明
 
 推荐通用语法：
 
+* Rhino 官方语法兼容性参考页：`Rhino engine compatibility table <https://mozilla.github.io/rhino/compat/engines.html>`_。
 * 全局常量、固定配置可以继续使用 ``const TAG = 'Demo'``。
 * 循环内会随下标变化的临时变量推荐使用 ``let``。
 * 顶层 ``let`` / ``var`` / 普通对象字段可以在 Hook 回调、SAM 回调和 RPC 回调之间保持状态。
@@ -106,7 +84,7 @@ JS 脚本语法边界说明
 * 需要确认当前引擎能力时使用 ``xhh.jsEngine()``。
 * 需要确认一个值是 JS 对象还是 Java bridge 对象时使用 ``xhh.objectKind(value)``。
 
-**推荐写法：**
+**1.32 (109) 推荐写法：**
 
 .. code-block:: javascript
 
@@ -247,7 +225,7 @@ JS 脚本语法边界说明
 
 .. function:: Java.classForName(className)
 
-   使用默认 ClassLoader 加载类。
+   使用默认 ClassLoader 加载类。``className`` 也可以是 ``int``、``long``、``boolean`` 等基础类型名称。
 
 .. function:: Java.classForName(className, initialize, loader)
    :no-index:
@@ -265,7 +243,7 @@ JS 脚本语法边界说明
 
    :param clazzOrName: Java ``Class`` 对象、``JavaClassWrapper`` 或类名字符串。
    :param string methodName: 方法名。
-   :param parameterTypes: JS 数组、Java Class 数组、``JavaClassWrapper`` 数组或类名数组。
+   :param parameterTypes: JS 数组、Java Class 数组、``JavaClassWrapper`` 数组或类名数组；类名数组中可直接写 ``"java.lang.String"``、``"int"`` 等。
    :return: Java ``Method`` 对象。
 
 .. function:: Java.constructor(clazzOrName)
@@ -343,6 +321,15 @@ JS 脚本语法边界说明
 
    创建 Java 数组。
 
+.. function:: Java.to(type, value[, options])
+
+   从 ``1.32 (109)`` 起提供。将 JS 值显式转换为指定 Java 类型，并返回可直接传给
+   Java 方法、构造函数、``Method.invoke`` 或 ``chain.proceed`` 的 Java 值或 Java wrapper。
+
+   常见用途包括构造 ``Integer`` / ``Long`` / ``BigInteger`` / ``byte[]`` / ``ArrayList`` /
+   ``HashMap``，以及在目标参数是 ``Object`` 时指定真实 Java 类型。完整规则见
+   :doc:`type_conversion`。
+
 .. function:: Java.proxy(interfaceName, implementation)
 
    创建 Java 接口代理。``implementation`` 可以是 JS 函数，也可以是包含同名方法的 JS 对象。
@@ -354,17 +341,17 @@ JS 脚本语法边界说明
 Java Bridge wrapper 语法
 --------------------------------------------------------------------------------
 
-``Java.type(className)`` 返回的是 ``JavaClassWrapper``。它内部持有原始
+``Java.use(className)`` / ``Java.type(className)`` 返回的是 ``JavaClassWrapper``。它内部持有原始
 ``java.lang.Class``，但脚本侧可以直接使用更接近 Frida / Rhino 的写法读取静态字段、
 调用静态方法、调用构造函数和实例方法。
 
-**推荐写法：**
+**1.32 (109) 推荐写法：**
 
 .. code-block:: javascript
 
-   const Toast = Java.type("android.widget.Toast");
-   const Looper = Java.type("android.os.Looper");
-   const Handler = Java.type("android.os.Handler");
+   const Toast = Java.use("android.widget.Toast");
+   const Looper = Java.use("android.os.Looper");
+   const Handler = Java.use("android.os.Handler");
 
    const mainHandler = new Handler(Looper.getMainLooper());
 
@@ -386,8 +373,6 @@ Java Bridge wrapper 语法
      - 调用 Java 构造函数，返回 ``JavaObjectWrapper``。
    * - ``handler.post(function () {})``
      - 调用 Java 实例方法；当目标参数是 ``Runnable`` 等 SAM 接口时自动创建代理。
-   * - ``Application.getDeclaredMethod("attach", ContextClass)``
-     - 兼容 ``java.lang.Class`` 实例方法，并自动把 ``JavaClassWrapper`` 参数解包为原始 ``Class``。
    * - ``clazz.classObject`` / ``clazz.getRawClass()``
      - 获取原始 ``java.lang.Class``。
 
@@ -396,7 +381,7 @@ Java Bridge wrapper 语法
 
 .. code-block:: javascript
 
-   const StringBuilder = Java.type("java.lang.StringBuilder");
+   const StringBuilder = Java.use("java.lang.StringBuilder");
 
    const sb = new StringBuilder();
    sb.append("bridge").append("-").append(106);
@@ -404,6 +389,110 @@ Java Bridge wrapper 语法
    xposed.i("XHH", String(sb.toString()));
 
 如果需要原始对象，可以使用 ``obj.raw`` 或 ``obj.getRawObject()``。普通脚本通常不需要手动解包。
+
+Java Bridge 特殊包装方法
+--------------------------------------------------------------------------------
+
+本节只列出 XiaoHeiHook 在 Java Bridge wrapper 上做过特殊适配的方法。普通 Java 静态方法、
+实例方法和字段仍按上一节的 wrapper 规则直接访问。以下能力从 ``1.32 (109)`` 起可用。
+
+.. note::
+
+   如果参数已经是 Java 对象、Java bridge wrapper 或 Rhino ``NativeJavaObject``，
+   Bridge 只会解包并传回 Java，不会再把它当成 JS 原生值做数字、字符串、数组
+   或 Map 的自动转换。需要精确构造 ``Integer``、``Long``、``BigInteger``、
+   ``byte[]`` 等 Java 值时，请使用 ``Java.to(...)``。
+
+.. function:: JavaClassWrapper.getDeclaredMethod(name, ...parameterTypes)
+
+   调用原生 ``java.lang.Class#getDeclaredMethod``，但签名参数经过 Bridge 适配。
+
+   :param string name: 方法名。
+   :param parameterTypes: 可传多个签名参数，也可传一个数组。元素可以是类名字符串、基础类型名称、
+      ``JavaClassWrapper``、原始 ``java.lang.Class`` 或 ``loader.loadClass(name)`` 的返回值。
+   :return: ``java.lang.reflect.Method`` 的 Java wrapper。
+
+   **示例：**
+
+   .. code-block:: javascript
+
+      const method = TargetClass.getDeclaredMethod(
+          "decrypt",
+          "java.lang.String",
+          "java.lang.String",
+          "int"
+      );
+
+      const method2 = TargetClass.getDeclaredMethod("decrypt", [
+          "java.lang.String",
+          "java.lang.String",
+          "int"
+      ]);
+
+   ``"int"``、``"long"``、``"boolean"``、``"byte"``、``"char"``、``"short"``、
+   ``"float"``、``"double"``、``"void"`` 会解析为对应基础类型 ``Class``。
+
+   .. tip::
+
+      完整反射能力检查脚本见仓库 ``examples/java_reflection_smoke_test.js``。
+
+.. function:: JavaClassWrapper.getMethod(name, ...parameterTypes)
+
+   调用原生 ``java.lang.Class#getMethod``，用于查找 public 方法。签名参数支持规则与
+   ``getDeclaredMethod`` 相同。
+
+   :param string name: 方法名。
+   :param parameterTypes: 可变签名参数或签名参数数组。
+   :return: ``java.lang.reflect.Method`` 的 Java wrapper。
+
+.. function:: JavaClassWrapper.getDeclaredConstructor(...parameterTypes)
+
+   调用原生 ``java.lang.Class#getDeclaredConstructor``，但构造函数签名参数支持字符串快捷写法。
+
+   :param parameterTypes: 可变签名参数或签名参数数组。
+   :return: ``java.lang.reflect.Constructor`` 的 Java wrapper。
+
+   **示例：**
+
+   .. code-block:: javascript
+
+      const ctor = TargetClass.getDeclaredConstructor(
+          "java.lang.String",
+          "int"
+      );
+
+.. function:: JavaClassWrapper.getConstructor(...parameterTypes)
+
+   调用原生 ``java.lang.Class#getConstructor``，用于查找 public 构造函数。签名参数支持规则与
+   ``getDeclaredConstructor`` 相同。
+
+   :param parameterTypes: 可变签名参数或签名参数数组。
+   :return: ``java.lang.reflect.Constructor`` 的 Java wrapper。
+
+.. function:: Method.invoke(receiver, ...args)
+
+   当 ``Method`` 是通过 Java Bridge 取得的 ``java.lang.reflect.Method`` wrapper 时，
+   ``invoke`` 会按该 ``Method`` 代表的真实目标方法签名转换 ``args``，而不是只按
+   ``Method.invoke(Object, Object...)`` 的 ``Object`` 参数处理。
+
+   :param receiver: 实例方法的 ``this`` 对象；静态方法传 ``null``。
+   :param args: 目标方法参数。普通 JS 值会按真实目标参数类型自动转换；已经是 Java 对象
+      或 Java wrapper 的值只会解包并原样传回 Java。
+   :return: 目标方法返回值；``void`` 返回 ``undefined``。
+
+   **示例：**
+
+   .. code-block:: javascript
+
+      const result = method.invoke(
+          null,
+          Java.to("java.lang.String", params.data),
+          Java.to("java.lang.String", params.key),
+          Java.to("int", params.mode || 0)
+      );
+
+   当目标参数类型是 ``Object``，或需要 ``Long``、``BigInteger`` 等精确 Java 类型时，
+   仍建议显式使用 ``Java.to(...)``。
 
 Java Bridge 自动代理
 --------------------------------------------------------------------------------
@@ -413,8 +502,8 @@ Bridge 会自动创建 Java ``Proxy``，并在 Java 回调进入时重新进入 
 
 .. code-block:: javascript
 
-   const Handler = Java.type("android.os.Handler");
-   const Looper = Java.type("android.os.Looper");
+   const Handler = Java.use("android.os.Handler");
+   const Looper = Java.use("android.os.Looper");
 
    const handler = new Handler(Looper.getMainLooper());
 
@@ -444,6 +533,11 @@ Bridge 会自动创建 Java ``Proxy``，并在 Java 回调进入时重新进入 
 
 ``equals``、``hashCode``、``toString`` 会由代理默认处理。接口方法返回值会按目标 Java
 返回类型转换；JS 异常会沿 Java 调用链抛出。
+
+.. tip::
+
+   完整代理能力检查脚本见仓库 ``examples/java_proxy_smoke_test.js``；综合 Bridge 检查脚本见
+   ``examples/java_bridge_smoke_test.js``。
 
 Java Bridge 低层反射 fallback
 --------------------------------------------------------------------------------

@@ -5,7 +5,7 @@ function installActivityDialog(prepared, tag) {
   if (hookInstalled) return;
   hookInstalled = true;
 
-  const Activity = Java.type("android.app.Activity");
+  const Activity = Java.use("android.app.Activity");
   const onResume = Activity.getDeclaredMethod("onResume");
   onResume.setAccessible(true);
 
@@ -23,8 +23,8 @@ function installActivityDialog(prepared, tag) {
 }
 
 function postShow(activity, prepared, tag) {
-  const Handler = Java.type("android.os.Handler");
-  const Looper = Java.type("android.os.Looper");
+  const Handler = Java.use("android.os.Handler");
+  const Looper = Java.use("android.os.Looper");
 
   const handler = new Handler(Looper.getMainLooper());
   const delay = prepared.config.showDelayMs || 800;
@@ -42,15 +42,15 @@ function postShow(activity, prepared, tag) {
 }
 
 function showDialog(activity, prepared) {
-  const AlertDialogBuilder = Java.type("android.app.AlertDialog$Builder");
-  const LinearLayout = Java.type("android.widget.LinearLayout");
-  const ImageView = Java.type("android.widget.ImageView");
-  const TextView = Java.type("android.widget.TextView");
-  const Uri = Java.type("android.net.Uri");
-  const File = Java.type("java.io.File");
-  const ViewGroupLayoutParams = Java.type("android.view.ViewGroup$LayoutParams");
-  const LinearLayoutLayoutParams = Java.type("android.widget.LinearLayout$LayoutParams");
-  const ImageScaleType = Java.type("android.widget.ImageView$ScaleType");
+  const AlertDialogBuilder = Java.use("android.app.AlertDialog$Builder");
+  const LinearLayout = Java.use("android.widget.LinearLayout");
+  const ImageView = Java.use("android.widget.ImageView");
+  const TextView = Java.use("android.widget.TextView");
+  const Uri = Java.use("android.net.Uri");
+  const File = Java.use("java.io.File");
+  const ViewGroupLayoutParams = Java.use("android.view.ViewGroup$LayoutParams");
+  const LinearLayoutLayoutParams = Java.use("android.widget.LinearLayout$LayoutParams");
+  const ImageScaleType = Java.use("android.widget.ImageView$ScaleType");
 
   const padding = dp(activity, 20);
 

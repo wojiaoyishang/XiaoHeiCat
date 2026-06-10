@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
+import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 import top.lovepikachu.XiaoHeiHook.mcp.McpManager
 import top.lovepikachu.XiaoHeiHook.webide.ProcessUtil
 import top.lovepikachu.XiaoHeiHook.webide.WebIdeManager
@@ -49,6 +50,7 @@ class XiaoHeiApplication : Application() {
             Log.i(TAG, "main process created; reset volatile WebIDE/MCP state on app start")
             WebIdeManager.resetOnApplicationStart(this)
             McpManager.resetOnApplicationStart(this)
+            MainProcessKeepAliveService.stopIfNotNeeded(this)
         } else {
             Log.i(TAG, "non-main process created; skip volatile WebIDE/MCP reset, process=$currentProcess")
         }
@@ -70,6 +72,9 @@ class XiaoHeiApplication : Application() {
                     resetVolatileServicesOnBind = false
                     Log.i(TAG, "xposed service bound in main process; refresh remote MCP disabled state")
                     McpManager.resetOnApplicationStart(this@XiaoHeiApplication)
+                } else {
+                    McpManager.syncStatusWithSavedConfig(this@XiaoHeiApplication)
+                    MainProcessKeepAliveService.startIfNeeded(this@XiaoHeiApplication, MainProcessKeepAliveService.REASON_BRIDGE)
                 }
             }
 

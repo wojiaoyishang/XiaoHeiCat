@@ -30,54 +30,19 @@ const DECRYPT_META = {
   isStatic: true
 };
 
-function javaClassOfWithLoader(loader, name) {
-  if (name === "int") return Java.type("java.lang.Integer").TYPE;
-  if (name === "long") return Java.type("java.lang.Long").TYPE;
-  if (name === "boolean") return Java.type("java.lang.Boolean").TYPE;
-  if (name === "byte") return Java.type("java.lang.Byte").TYPE;
-  if (name === "char") return Java.type("java.lang.Character").TYPE;
-  if (name === "short") return Java.type("java.lang.Short").TYPE;
-  if (name === "float") return Java.type("java.lang.Float").TYPE;
-  if (name === "double") return Java.type("java.lang.Double").TYPE;
-
-  if (loader) {
-    return loader.loadClass(name);
-  }
-
-  return Java.type(name);
-}
-
-function toJavaInt(value, fallback) {
-  const Integer = Java.type("java.lang.Integer");
-
-  if (value == null || value === "") {
-    return Integer.valueOf(fallback == null ? 0 : fallback);
-  }
-
-  const parsed = parseInt(value, 10);
-
-  if (isNaN(parsed)) {
-    return Integer.valueOf(fallback == null ? 0 : fallback);
-  }
-
-  return Integer.valueOf(parsed);
-}
-
 function resolveDecryptMethod() {
   let TargetClass;
 
   if (appClassLoader != null) {
     TargetClass = appClassLoader.loadClass(DECRYPT_META.className);
   } else {
-    TargetClass = Java.type(DECRYPT_META.className);
+    TargetClass = Java.use(DECRYPT_META.className);
   }
 
+  // 1.32 (109) 起，getDeclaredMethod 的签名参数支持字符串数组。
   const method = TargetClass.getDeclaredMethod(
     DECRYPT_META.methodName,
-    javaClassOfWithLoader(appClassLoader, DECRYPT_META.paramTypes[0]),
-    javaClassOfWithLoader(appClassLoader, DECRYPT_META.paramTypes[1]),
-    javaClassOfWithLoader(appClassLoader, DECRYPT_META.paramTypes[2]),
-    javaClassOfWithLoader(appClassLoader, DECRYPT_META.paramTypes[3])
+    DECRYPT_META.paramTypes
   );
 
   method.setAccessible(true);
@@ -94,12 +59,10 @@ function installPcHook(loader) {
 
   const TargetClass = loader.loadClass(DECRYPT_META.className);
 
+  // 1.32 (109) 起，基础类型和常见 Java 类可以直接写字符串签名。
   const targetMethod = TargetClass.getDeclaredMethod(
     DECRYPT_META.methodName,
-    javaClassOfWithLoader(loader, DECRYPT_META.paramTypes[0]),
-    javaClassOfWithLoader(loader, DECRYPT_META.paramTypes[1]),
-    javaClassOfWithLoader(loader, DECRYPT_META.paramTypes[2]),
-    javaClassOfWithLoader(loader, DECRYPT_META.paramTypes[3])
+    DECRYPT_META.paramTypes
   );
 
   targetMethod.setAccessible(true);
@@ -146,8 +109,8 @@ xhh.rpc.register_method("decrypt_cbc", function (params) {
     const key = params.key == null ? "" : String(params.key);
     const iv = params.iv == null ? "" : String(params.iv);
 
-    // 重点：反射目标参数是 int，不能直接传 JS number / Double。
-    const mode = toJavaInt(params.mode, 0);
+    // 1.32 (109) 推荐写法：需要精确 Java 类型时使用 Java.to。
+    const mode = Java.to("int", params.mode == null || params.mode === "" ? 0 : params.mode);
 
     const result = method.invoke(
       null,
@@ -204,10 +167,10 @@ xposed.onPackageLoaded(function (param) {
   xposed.i(TAG, "process=" + env.processName);
   xposed.i(TAG, "raw param=" + param.raw);
 
-  const Application = Java.type("android.app.Application");
-  const ContextClass = Java.type("android.content.Context");
+  const Application = Java.use("android.app.Application");
 
-  const attach = Application.getDeclaredMethod("attach", ContextClass);
+  // 1.32 (109) 起，getDeclaredMethod 可直接使用字符串签名。
+  const attach = Application.getDeclaredMethod("attach", "android.content.Context");
   attach.setAccessible(true);
 
   xposed

@@ -124,6 +124,17 @@
     <string name="mcp_token_copied">Token 已复制</string>
     <string name="mcp_token_copy_hint">可左右拖动查看；长按复制 Token。</string>
 
+
+    <!-- Foreground service permissions -->
+    <string name="service_permission_title">开启 %1$s 前需要授权</string>
+    <string name="service_permission_message">为了让 %1$s 在后台稳定运行，请先打开通知权限并允许忽略电池优化。两个权限都已满足时会直接继续开启流程。</string>
+    <string name="service_permission_notification_missing">• 通知权限未开启：前台服务通知可能无法显示，系统更容易限制后台服务。</string>
+    <string name="service_permission_battery_missing">• 未忽略电池优化：切到后台后服务可能被系统冻结或暂停。</string>
+    <string name="service_permission_open_notifications">打开通知权限</string>
+    <string name="service_permission_open_battery">忽略电池优化</string>
+    <string name="service_permission_recheck">我已开启，重新检查</string>
+    <string name="service_permission_open_settings_failed">无法打开设置页面：%1$s</string>
+
     <!-- Notifications -->
     <string name="notification_webide_title">XiaoHeiHook WebIDE</string>
     <string name="notification_webide_stop_action">关闭 WebIDE</string>
@@ -133,6 +144,9 @@
     <string name="notification_mcp_stop_action">关闭 MCP</string>
     <string name="notification_mcp_channel_name">MCP 服务</string>
     <string name="notification_mcp_running">MCP 远程调用服务运行中，点击此处可关闭</string>
+    <string name="notification_main_keepalive_title">XiaoHeiHook 主进程桥接</string>
+    <string name="notification_main_keepalive_channel_name">主进程桥接保活</string>
+    <string name="notification_main_keepalive_running">WebIDE/MCP 正在保持主进程响应，用于 LSPosed 与远程偏好桥接请求。</string>
 
     <!-- Apps -->
     <string name="apps_permission_settings_failed">无法打开管理所有文件权限页面，请手动到系统设置中授权</string>

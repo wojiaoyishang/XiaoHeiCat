@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import top.lovepikachu.XiaoHeiHook.R
 import top.lovepikachu.XiaoHeiHook.mcp.McpDefaults
 import top.lovepikachu.XiaoHeiHook.mcp.McpManager
+import top.lovepikachu.XiaoHeiHook.permissions.ForegroundServicePermissionHelper
 import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
 
 @Composable
@@ -51,10 +52,23 @@ fun McpSettingsCard(modifier: Modifier = Modifier) {
     var portText by remember { mutableStateOf(savedConfig.port.toString()) }
     var tokenEnabled by remember { mutableStateOf(savedConfig.tokenEnabled) }
     var showDangerDialog by remember { mutableStateOf(false) }
+    var showPermissionDialog by remember { mutableStateOf(false) }
     var pendingError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         McpManager.syncStatusWithSavedConfig(context)
+    }
+
+
+    if (showPermissionDialog) {
+        ForegroundServicePermissionDialog(
+            serviceName = stringResource(R.string.mcp_title),
+            onDismiss = { showPermissionDialog = false },
+            onAllGranted = {
+                showPermissionDialog = false
+                showDangerDialog = true
+            }
+        )
     }
 
     if (showDangerDialog) {
@@ -135,7 +149,11 @@ fun McpSettingsCard(modifier: Modifier = Modifier) {
                     checked = status.running,
                     onCheckedChange = { checked ->
                         if (checked) {
-                            showDangerDialog = true
+                            if (ForegroundServicePermissionHelper.check(context).allGranted) {
+                                showDangerDialog = true
+                            } else {
+                                showPermissionDialog = true
+                            }
                         } else {
                             McpManager.stop(context)
                             Toast.makeText(context, context.getString(R.string.mcp_stopped), Toast.LENGTH_SHORT).show()

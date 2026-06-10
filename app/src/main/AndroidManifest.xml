@@ -15,8 +15,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name=".XiaoHeiApplication"
@@ -46,15 +46,26 @@
         </provider>
 
         <service
+            android:name=".keepalive.MainProcessKeepAliveService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice|specialUse"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-enabled bridge anchor that keeps the main app process responsive for WebIDE and MCP Remote Preferences / XposedService requests while either server is running." />
+        </service>
+
+        <service
             android:name=".webide.WebIdeForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync|specialUse"
+            android:foregroundServiceType="connectedDevice|specialUse"
             android:process=":webide"
             android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Embedded local WebIDE HTTP/dataSync server for user-authorized script editing and debugging. Runs in a dedicated foreground service process while the user explicitly enables WebIDE." />
+                android:value="User-enabled embedded WebIDE local HTTP server for script editing and debugging over local or device network connections." />
         </service>
 
 
@@ -62,12 +73,12 @@
             android:name=".mcp.McpForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync|specialUse"
+            android:foregroundServiceType="connectedDevice|specialUse"
             android:process=":mcp"
             android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Embedded local MCP HTTP server for user-authorized remote JS method calls. Runs only while the user explicitly enables MCP." />
+                android:value="User-enabled embedded MCP server for local or trusted network clients to invoke authorized debugging and automation methods." />
         </service>
 
         <receiver

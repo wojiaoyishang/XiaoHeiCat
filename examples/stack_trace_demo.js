@@ -18,9 +18,8 @@ xposed.onPackageLoaded(function (param) {
   const packageName = String(param.getPackageName())
   xposed.i(TAG, "loaded package=" + packageName + ", process=" + env.processName)
 
-  const Application = Java.type("android.app.Application")
-  const Context = Java.type("android.content.Context")
-  const attach = Application.getDeclaredMethod("attach", Context)
+  const Application = Java.use("android.app.Application")
+  const attach = Application.getDeclaredMethod("attach", "android.content.Context")
   attach.setAccessible(true)
 
   xposed

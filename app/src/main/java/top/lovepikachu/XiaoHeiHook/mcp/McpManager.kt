@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
+import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 
 object McpManager {
     private val _status = MutableStateFlow(McpStatus())
@@ -65,6 +66,7 @@ object McpManager {
         } else {
             appContext.startService(intent)
         }
+        MainProcessKeepAliveService.startIfNeeded(appContext, MainProcessKeepAliveService.REASON_MCP)
         pendingStatus
     }.onFailure { error ->
         val safeHost = sanitizeHost(host)
@@ -91,6 +93,7 @@ object McpManager {
             if (stopResult.isFailure) {
                 runCatching { appContext.stopService(android.content.Intent(appContext, McpForegroundService::class.java)) }
             }
+            MainProcessKeepAliveService.stopIfNotNeeded(appContext)
         } else {
             syncRemoteEnabled(false)
         }
@@ -113,6 +116,7 @@ object McpManager {
         syncRemoteEnabled(false)
         runCatching { appContext.startService(McpForegroundService.stopIntent(appContext)) }
         runCatching { appContext.stopService(android.content.Intent(appContext, McpForegroundService::class.java)) }
+        MainProcessKeepAliveService.stopIfNotNeeded(appContext)
     }
 
     fun syncStatusWithSavedConfig(context: Context) {

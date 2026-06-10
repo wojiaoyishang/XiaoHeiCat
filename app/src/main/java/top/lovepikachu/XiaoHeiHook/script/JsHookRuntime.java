@@ -10,6 +10,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
@@ -93,6 +94,8 @@ import top.lovepikachu.XiaoHeiHook.mcp.McpBridgeProtocol;
 public final class JsHookRuntime {
     private static final String TAG = "XiaoHeiHook-JS";
     private static final String MCP_TAG = "XiaoHeiHook-MCP-Bridge";
+    private static final long MCP_DISCOVERY_TIMEOUT_MS = 8000L;
+    private static final int MCP_CONNECT_TIMEOUT_MS = 3000;
 
     private static final Object DEBUG_COMMAND_LOCK = new Object();
     private static final Map<String, DebugCommand> DEBUG_COMMANDS = new ConcurrentHashMap<>();
@@ -104,7 +107,13 @@ public final class JsHookRuntime {
     private static volatile Boolean rhinoConstLoopLexicalBindingSupported = null;
     private static volatile String rhinoConstLoopLexicalBindingStatus = "not-tested";
 
+    private static final HandlerThread MCP_DISCOVERY_THREAD;
+    private static final Handler MCP_DISCOVERY_HANDLER;
+
     static {
+        MCP_DISCOVERY_THREAD = new HandlerThread("XHH-MCP-discovery");
+        MCP_DISCOVERY_THREAD.start();
+        MCP_DISCOVERY_HANDLER = new Handler(MCP_DISCOVERY_THREAD.getLooper());
         installGlobalRhinoRegExpListener();
     }
 
@@ -1814,17 +1823,18 @@ public final class JsHookRuntime {
                     intent,
                     null,
                     resultReceiver,
-                    new Handler(Looper.getMainLooper()),
+                    MCP_DISCOVERY_HANDLER,
                     Activity.RESULT_CANCELED,
                     null,
                     null
             );
-            if (!latch.await(1200L, TimeUnit.MILLISECONDS)) {
+            if (!latch.await(MCP_DISCOVERY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 mcpBridgeUnavailableReason = "no-discovery-response";
                 mcpLog(Log.WARN, "MCP bridge discovery no response package=" + packageName
                         + " process=" + processName
                         + " session=" + mcpSessionId
                         + " request=" + requestId
+                        + " timeoutMs=" + MCP_DISCOVERY_TIMEOUT_MS
                         + " action=ignored");
                 return null;
             }
@@ -1854,6 +1864,13 @@ public final class JsHookRuntime {
 
     private boolean isMcpBridgePending() {
         return "context-not-ready".equals(mcpBridgeUnavailableReason) || "discover-pending".equals(mcpBridgeUnavailableReason);
+    }
+
+    private boolean isTransientMcpBridgeFailure() {
+        return "no-discovery-response".equals(mcpBridgeUnavailableReason)
+                || "discover-pending".equals(mcpBridgeUnavailableReason)
+                || "connect-failed".equals(mcpBridgeUnavailableReason)
+                || "discover-exception".equals(mcpBridgeUnavailableReason);
     }
 
     private android.content.Context resolveApplicationContext() {
@@ -1975,7 +1992,7 @@ public final class JsHookRuntime {
                         + " port=" + endpoint.port);
                 Socket socket = new Socket();
                 socket.setTcpNoDelay(true);
-                socket.connect(new InetSocketAddress(endpoint.host, endpoint.port), 700);
+                socket.connect(new InetSocketAddress(endpoint.host, endpoint.port), MCP_CONNECT_TIMEOUT_MS);
                 mcpBridgeSocket = socket;
                 mcpBridgeInput = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
                 mcpBridgeOutput = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
@@ -2175,7 +2192,7 @@ public final class JsHookRuntime {
                             mcpLog(Log.INFO, "MCP deferred registration flushed package=" + packageName + " process=" + processName + " session=" + mcpSessionId);
                             return;
                         }
-                        if (!isMcpBridgePending()) {
+                        if (!isMcpBridgePending() && !isTransientMcpBridgeFailure()) {
                             clearMcpLocalRegistrations("bridge-unavailable:" + mcpBridgeUnavailableReason);
                             return;
                         }

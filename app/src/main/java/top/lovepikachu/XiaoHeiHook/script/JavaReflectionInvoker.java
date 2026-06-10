@@ -84,8 +84,13 @@ public final class JavaReflectionInvoker {
             for (int i = 0; i < result.length; i++) result[i] = array.get(i, array);
             return result;
         }
-        if (unwrapped instanceof Object[]) return (Object[]) unwrapped;
         if (unwrapped instanceof List<?>) return ((List<?>) unwrapped).toArray(new Object[0]);
+        if (unwrapped.getClass().isArray()) {
+            int len = Array.getLength(unwrapped);
+            Object[] result = new Object[len];
+            for (int i = 0; i < len; i++) result[i] = Array.get(unwrapped, i);
+            return result;
+        }
         return new Object[]{unwrapped};
     }
 
@@ -124,6 +129,9 @@ public final class JavaReflectionInvoker {
         if (unwrappedTarget == null || unwrappedTarget == Undefined.instance || unwrappedTarget == Scriptable.NOT_FOUND) {
             throw new NullPointerException("Java instance call target is null");
         }
+        if (unwrappedTarget instanceof Method && "invoke".equals(methodName) && !hasExplicitTypes(parameterTypes)) {
+            return invokeReflectedMethod((Method) unwrappedTarget, args == null ? new Object[0] : args);
+        }
         Method method = hasExplicitTypes(parameterTypes)
                 ? unwrappedTarget.getClass().getDeclaredMethod(methodName, toClassArray(parameterTypes))
                 : findBestMethod(unwrappedTarget.getClass(), methodName, args, false);
@@ -135,6 +143,26 @@ public final class JavaReflectionInvoker {
             throw rethrowInvocationTarget(e);
         }
         return method.getReturnType() == Void.TYPE ? Undefined.instance : wrapReturn(result);
+    }
+
+    private Object invokeReflectedMethod(Method targetMethod, Object[] invokeArgs) throws Exception {
+        targetMethod.setAccessible(true);
+        Object receiver = invokeArgs.length == 0 ? null : unwrap(invokeArgs[0]);
+        Object[] actualArgs = new Object[Math.max(0, invokeArgs.length - 1)];
+        if (invokeArgs.length > 1) System.arraycopy(invokeArgs, 1, actualArgs, 0, actualArgs.length);
+
+        Class<?>[] realTypes = targetMethod.getParameterTypes();
+        if (actualArgs.length == 1 && realTypes.length != 1 && isArrayLikeValue(unwrap(actualArgs[0]))) {
+            actualArgs = toObjectArray(actualArgs[0]);
+        }
+
+        Object result;
+        try {
+            result = targetMethod.invoke(receiver, convertArguments(realTypes, targetMethod.isVarArgs(), actualArgs));
+        } catch (InvocationTargetException e) {
+            throw rethrowInvocationTarget(e);
+        }
+        return targetMethod.getReturnType() == Void.TYPE ? Undefined.instance : wrapReturn(result);
     }
 
     public Object newInstance(Object clazzOrName, Object[] args, Object parameterTypes) throws Exception {
@@ -423,14 +451,29 @@ public final class JavaReflectionInvoker {
     }
 
     private int scoreArgument(Class<?> targetType, Object arg) {
+        boolean directJavaObject = isDirectJavaObject(arg);
         Object value = unwrap(arg);
         if (value == Undefined.instance || value == Scriptable.NOT_FOUND) value = null;
         if (value == null) return targetType.isPrimitive() ? -1 : 1;
         Class<?> boxed = boxType(targetType);
+
+        // Java wrappers / NativeJavaObject values are already Java values.  Do
+        // not treat them as JS primitives and do not perform numeric/string
+        // auto-conversion for overload resolution.  They may still match their
+        // own type, a super type, Object, or the boxed form of a primitive.
+        if (directJavaObject) {
+            if (targetType.isArray()) return targetType.isInstance(value) ? 0 : -1;
+            if (boxed.isInstance(value)) return 0;
+            if (!targetType.isPrimitive() && targetType.isAssignableFrom(value.getClass())) return 1;
+            if (targetType == Object.class) return 10;
+            return -1;
+        }
+
         if (targetType.isInterface() && bridge.getProxyFactory().canAutoProxy(targetType, arg)) return value instanceof Function ? 1 : 3;
         if (Number.class.isAssignableFrom(boxed) && value instanceof Number) return scoreNumberArgument(boxed, (Number) value);
         if (boxed.isInstance(value)) return 0;
         if (boxed == Boolean.class && value instanceof Boolean) return 0;
+        if (targetType == Class.class && value instanceof CharSequence && canLoadClassName(String.valueOf(value))) return 2;
         if (boxed == Character.class && (value instanceof Character || String.valueOf(value).length() == 1)) return 2;
         if (targetType == String.class || targetType == CharSequence.class) return 3;
         if (targetType.isArray() && isArrayLike(value)) return 4;
@@ -464,6 +507,16 @@ public final class JavaReflectionInvoker {
         return d >= min && d <= max;
     }
 
+    private boolean canLoadClassName(String className) {
+        if (className == null || className.trim().isEmpty()) return false;
+        try {
+            loadClass(className.trim());
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     public Object[] convertArguments(Class<?>[] targetTypes, Object[] args) {
         return convertArguments(targetTypes, false, args);
     }
@@ -495,9 +548,24 @@ public final class JavaReflectionInvoker {
     }
 
     public Object convertArgument(Class<?> targetType, Object arg) {
+        boolean directJavaObject = isDirectJavaObject(arg);
         Object value = unwrap(arg);
         if (value == Undefined.instance || value == Scriptable.NOT_FOUND) value = null;
         if (value == null) return null;
+        if (targetType.isArray() && targetType.isInstance(value)) return value;
+
+        // Values that are already Java wrappers / NativeJavaObject are not
+        // converted again.  They are only unwrapped and handed back to Java.
+        // This preserves explicit values created by Java.to(...), Java.type(...)
+        // calls, loader.loadClass(...), Method/Field/ClassLoader instances, etc.
+        if (directJavaObject) {
+            Class<?> boxed = boxType(targetType);
+            if (boxed.isInstance(value)) return value;
+            if (!targetType.isPrimitive() && targetType.isInstance(value)) return value;
+            if (targetType == Object.class) return value;
+            return value;
+        }
+
         if (targetType.isInterface()) {
             Object proxied = bridge.getProxyFactory().maybeCreateProxy(targetType, arg);
             if (proxied == null || targetType.isInstance(proxied)) return proxied;
@@ -517,8 +585,17 @@ public final class JavaReflectionInvoker {
             String text = String.valueOf(value);
             return text.isEmpty() ? '\0' : text.charAt(0);
         }
+        if (targetType == Class.class) {
+            if (value instanceof Class<?>) return value;
+            if (value instanceof CharSequence) {
+                try {
+                    return loadClass(String.valueOf(value).trim());
+                } catch (ClassNotFoundException e) {
+                    throw new IllegalArgumentException("Cannot resolve Java class type: " + value, e);
+                }
+            }
+        }
         if (targetType == String.class || targetType == CharSequence.class) return String.valueOf(value);
-        if (targetType == Class.class && value instanceof JavaClassWrapper) return ((JavaClassWrapper) value).getRawClass();
         return value;
     }
 
@@ -576,7 +653,19 @@ public final class JavaReflectionInvoker {
         if (value == Context.getUndefinedValue() || value == Scriptable.NOT_FOUND || value == Undefined.instance) return null;
         if (value instanceof JavaClassWrapper) return ((JavaClassWrapper) value).getRawClass();
         if (value instanceof JavaObjectWrapper) return ((JavaObjectWrapper) value).getRawObject();
+        if (value instanceof JavaListWrapper) return ((JavaListWrapper) value).getRawList();
+        if (value instanceof JavaMapWrapper) return ((JavaMapWrapper) value).getRawMap();
         if (value instanceof Wrapper) return ((Wrapper) value).unwrap();
         return value;
+    }
+
+    private boolean isDirectJavaObject(Object value) {
+        if (value == null || value == Context.getUndefinedValue() || value == Scriptable.NOT_FOUND || value == Undefined.instance) return false;
+        if (value instanceof JavaClassWrapper || value instanceof JavaObjectWrapper || value instanceof JavaListWrapper || value instanceof JavaMapWrapper) return true;
+        if (value instanceof Wrapper) {
+            Object raw = ((Wrapper) value).unwrap();
+            return raw != null && !(raw instanceof Scriptable);
+        }
+        return false;
     }
 }

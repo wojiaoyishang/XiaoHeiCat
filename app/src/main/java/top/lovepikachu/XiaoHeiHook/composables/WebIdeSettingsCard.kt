@@ -36,6 +36,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import top.lovepikachu.XiaoHeiHook.R
+import top.lovepikachu.XiaoHeiHook.permissions.ForegroundServicePermissionHelper
 import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
 import top.lovepikachu.XiaoHeiHook.webide.BatteryOptimizationHelper
 import top.lovepikachu.XiaoHeiHook.webide.WebIdeDefaults
@@ -50,6 +51,7 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
     var hostText by remember { mutableStateOf(WebIdeManager.loadConfig(context).host) }
     var portText by remember { mutableStateOf(WebIdeManager.loadConfig(context).port.toString()) }
     var showDangerDialog by remember { mutableStateOf(false) }
+    var showPermissionDialog by remember { mutableStateOf(false) }
     var pendingError by remember { mutableStateOf<String?>(null) }
     var batteryIgnored by remember { mutableStateOf(BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)) }
 
@@ -66,6 +68,19 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+
+    if (showPermissionDialog) {
+        ForegroundServicePermissionDialog(
+            serviceName = stringResource(R.string.webide_title),
+            onDismiss = { showPermissionDialog = false },
+            onAllGranted = {
+                showPermissionDialog = false
+                showDangerDialog = true
+                batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
+            }
+        )
     }
 
     if (showDangerDialog) {
@@ -148,7 +163,11 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
                         checked = status.running,
                         onCheckedChange = { checked ->
                             if (checked) {
-                                showDangerDialog = true
+                                if (ForegroundServicePermissionHelper.check(context).allGranted) {
+                                    showDangerDialog = true
+                                } else {
+                                    showPermissionDialog = true
+                                }
                             } else {
                                 WebIdeManager.stop(context)
                                 Toast.makeText(context, context.getString(R.string.webide_stopped), Toast.LENGTH_SHORT).show()

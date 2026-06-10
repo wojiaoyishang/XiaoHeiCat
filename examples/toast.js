@@ -15,9 +15,9 @@ const TAG = "ToastDemo";
 let executed = false;
 
 function showToast(context, text) {
-  const Toast = Java.type("android.widget.Toast");
-  const Looper = Java.type("android.os.Looper");
-  const Handler = Java.type("android.os.Handler");
+  const Toast = Java.use("android.widget.Toast");
+  const Looper = Java.use("android.os.Looper");
+  const Handler = Java.use("android.os.Handler");
 
   const mainHandler = new Handler(Looper.getMainLooper());
 
@@ -33,10 +33,9 @@ xposed.onPackageLoaded(function (param) {
 
   xposed.i(TAG, "loaded package=" + packageName + " process=" + processName);
 
-  const Application = Java.type("android.app.Application");
-  const ContextClass = Java.type("android.content.Context");
+  const Application = Java.use("android.app.Application");
 
-  const attach = Application.getDeclaredMethod("attach", ContextClass);
+  const attach = Application.getDeclaredMethod("attach", "android.content.Context");
   attach.setAccessible(true);
 
   xposed

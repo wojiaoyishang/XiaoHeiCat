@@ -16,7 +16,9 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import kotlin.system.exitProcess
+import top.lovepikachu.XiaoHeiHook.MainActivity
 import top.lovepikachu.XiaoHeiHook.R
+import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 
 class WebIdeForegroundService : Service() {
 
@@ -122,6 +124,7 @@ class WebIdeForegroundService : Service() {
 
         val newServer = WebIdeServer(applicationContext, host, port)
         newServer.startServer()
+        MainProcessKeepAliveService.startIfNeeded(applicationContext, MainProcessKeepAliveService.REASON_WEBIDE)
         server = newServer
         serverHost = host
         serverPort = port
@@ -134,6 +137,7 @@ class WebIdeForegroundService : Service() {
         runCatching { WebIdeBridgeClient(applicationContext).clearAllDebugState() }
             .onFailure { Log.w(TAG, "clear WebIDE debug state failed", it) }
         WebIdeManager.markServiceStopped(this, runningHost, runningPort, updateSavedConfig)
+        MainProcessKeepAliveService.stopIfNotNeeded(applicationContext)
     }
 
     private fun stopServerOnly() {
@@ -222,27 +226,20 @@ class WebIdeForegroundService : Service() {
     }
 
     private fun startForegroundCompat(notification: Notification) {
-        when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
-                // 同时声明 dataSync，让系统按“正在进行的数据传输/本地服务”维持调度。
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                )
-            }
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                )
-            }
-            else -> {
-                @Suppress("DEPRECATION")
-                startForeground(NOTIFICATION_ID, notification)
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, foregroundServiceTypeMask())
+        } else {
+            @Suppress("DEPRECATION")
+            startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    private fun foregroundServiceTypeMask(): Int {
+        var mask = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            mask = mask or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        }
+        return mask
     }
 
     private fun stopForegroundCompat() {
@@ -266,6 +263,14 @@ class WebIdeForegroundService : Service() {
             Intent(this, WebIdeForegroundService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val openIntent = PendingIntent.getActivity(
+            this,
+            2,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
@@ -279,7 +284,7 @@ class WebIdeForegroundService : Service() {
             .setContentTitle(getString(R.string.notification_webide_title))
             .setContentText(getString(R.string.notification_webide_running))
             .setStyle(Notification.BigTextStyle().bigText(getString(R.string.notification_webide_running)))
-            .setContentIntent(stopIntent)
+            .setContentIntent(openIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)

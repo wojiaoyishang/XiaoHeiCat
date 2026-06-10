@@ -259,19 +259,20 @@ libxposed 到 JS 的映射
      - ``xposed.listRemoteFiles`` / ``xposed.openRemoteFile``
      - 访问同步后的 Remote Files。
    * - Java 反射与桥接
-     - ``Java.type`` / wrapper 调用 / ``Java.method`` / ``Java.proxy``
+     - ``Java.use`` / ``Java.type`` / wrapper 调用 / ``Java.method`` / ``Java.proxy``
      - 获取 Class、Method、Constructor、Field，或通过 wrapper 直接调用 Java 静态方法、构造函数和实例方法。
 
 Java Bridge wrapper 的定位
 --------------------------------------
 
 从 ``1.30 (106)`` 起，``Java.type`` 返回的不是裸 ``java.lang.Class``，而是
-``JavaClassWrapper``。这样脚本既可以继续做反射，也可以直接使用更简洁的 Java 调用写法。
+``JavaClassWrapper``。从 ``1.32 (109)`` 起，文档示例统一推荐使用等价别名
+``Java.use``。这样脚本既可以继续做反射，也可以直接使用更简洁的 Java 调用写法。
 
 .. code-block:: javascript
 
-   const Looper = Java.type('android.os.Looper');
-   const Handler = Java.type('android.os.Handler');
+   const Looper = Java.use('android.os.Looper');
+   const Handler = Java.use('android.os.Handler');
 
    const handler = new Handler(Looper.getMainLooper());
 
@@ -283,23 +284,40 @@ Java Bridge wrapper 的定位
 
 .. code-block:: javascript
 
-   const Activity = Java.type('android.app.Activity');
+   const Activity = Java.use('android.app.Activity');
    const raw = Activity.classObject || Activity.getRawClass();
    xposed.i('XHH', raw.getName());
 
-当脚本调用 ``Application.getDeclaredMethod('attach', ContextClass)`` 这类
+当脚本调用 ``Application.getDeclaredMethod('attach', 'android.content.Context')`` 这类
 ``java.lang.Class`` 方法时，Bridge 会把 ``JavaClassWrapper`` 参数自动解包为原始
 ``Class``，并处理 ``Class<?>...`` 这类 varargs 参数。
 
+从 ``1.32 (109)`` 起，``Java.to`` 数据类型转换能力加入；``getDeclaredMethod``、``getMethod``、
+``getDeclaredConstructor`` 和 ``getConstructor`` 的签名参数也支持字符串快捷写法。
+推荐写法如下：
+
+.. code-block:: javascript
+
+   const attach = Application.getDeclaredMethod('attach', 'android.content.Context');
+
+基础类型也可以直接写 ``'int'``、``'long'``、``'boolean'``、``'void'`` 等名称。
+如果参数类型来自目标 App 的特殊 ``ClassLoader``，仍可以传入
+``loader.loadClass(name)`` 返回的原始 ``Class``。
+
+.. tip::
+
+   完整反射能力检查脚本见仓库 ``examples/java_reflection_smoke_test.js``；综合 Bridge
+   检查脚本见 ``examples/java_bridge_smoke_test.js``。
+
 .. important::
 
-   ``JavaClassWrapper``、``JavaObjectWrapper`` 和通过 ``Java.type``、``Java.proxy``、
+   从 ``1.32 (109)`` 起，``JavaClassWrapper``、``JavaObjectWrapper`` 和通过 ``Java.use`` / ``Java.type``、``Java.proxy``、
    ``chain.getExecutable()`` 等获得的 Java 侧对象，在再次传给 Java 方法时不会被当作普通 JS 对象重建。
    Bridge 会先识别它们是否已经是 Java 值；已经是 Java 值时直接传递，只有普通 JS 值才进入自动转换流程。
 
    例如反射调用 ``Method.invoke`` 时，Bridge 会按被调用的真实方法签名转换 JS 参数：目标参数是
    ``int`` 时，JS number 可以自动转换为 Java ``int``。如果脚本已经显式传入
-   ``Java.type('java.lang.Integer').valueOf(0)``，该 ``Integer`` 会保持为 Java 对象，不会再被转换成
+   ``Java.to('java.lang.Integer', 0)``，该 ``Integer`` 会保持为 Java 对象，不会再被转换成
    Rhino 的 ``Double``。
 
 ``Java.call``、``Java.callStatic``、``Java.newInstance`` 等低层反射接口仍然保留，
@@ -344,7 +362,7 @@ Hook 模型差异
 
 .. code-block:: javascript
 
-   const Activity = Java.type('android.app.Activity');
+   const Activity = Java.use('android.app.Activity');
    const onResume = Java.method(Activity, 'onResume');
 
    xposed.hook(onResume).intercept(function (chain) {
@@ -356,7 +374,7 @@ Hook 模型差异
 
 .. code-block:: javascript
 
-   const Activity = Java.type('android.app.Activity');
+   const Activity = Java.use('android.app.Activity');
    const onResume = Activity.getDeclaredMethod('onResume');
    onResume.setAccessible(true);
 

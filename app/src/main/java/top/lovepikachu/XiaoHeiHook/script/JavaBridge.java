@@ -141,6 +141,22 @@ public final class JavaBridge {
         return java.lang.reflect.Array.newInstance(invoker.asClass(componentType), length);
     }
 
+    /**
+     * Explicitly convert a JS value to a Java type.  The returned value is kept
+     * as a Java wrapper so it can be passed back to Java calls without being
+     * normalized into a JS primitive.
+     */
+    public Object to(Object type, Object value) throws Exception {
+        return to(type, value, org.mozilla.javascript.Undefined.instance);
+    }
+
+    public Object to(Object type, Object value, Object options) throws Exception {
+        Class<?> targetType = JavaValueConverter.resolveType(this, type);
+        JavaValueConverter.JavaToOptions parsedOptions = JavaValueConverter.JavaToOptions.from(this, options);
+        Object javaValue = JavaValueConverter.explicitToJava(this, targetType, value, parsedOptions);
+        return invoker.wrapConstructedObject(javaValue);
+    }
+
     public Object proxy(String interfaceName, Object handlers) throws Exception {
         return proxy(invoker.loadClass(interfaceName), handlers);
     }

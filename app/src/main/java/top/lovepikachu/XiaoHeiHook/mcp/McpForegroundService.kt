@@ -20,7 +20,9 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import kotlin.system.exitProcess
+import top.lovepikachu.XiaoHeiHook.MainActivity
 import top.lovepikachu.XiaoHeiHook.R
+import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 import top.lovepikachu.XiaoHeiHook.webide.ProcessUtil
 
 class McpForegroundService : Service() {
@@ -128,6 +130,7 @@ class McpForegroundService : Service() {
         acquireKeepAliveLocks()
         val newServer = McpServer(applicationContext, host, port, tokenEnabled)
         newServer.startServer()
+        MainProcessKeepAliveService.startIfNeeded(applicationContext, MainProcessKeepAliveService.REASON_MCP)
         runtimeActive = true
         server = newServer
         serverHost = host
@@ -139,6 +142,7 @@ class McpForegroundService : Service() {
         stopServerOnly()
         releaseKeepAliveLocks()
         McpManager.markServiceStopped(this, runningHost, runningPort, runningTokenEnabled, updateSavedConfig)
+        MainProcessKeepAliveService.stopIfNotNeeded(applicationContext)
     }
 
     private fun stopServerOnly() {
@@ -281,22 +285,20 @@ class McpForegroundService : Service() {
     }
 
     private fun startForegroundCompat(notification: Notification) {
-        when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                )
-            }
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-            }
-            else -> {
-                @Suppress("DEPRECATION")
-                startForeground(NOTIFICATION_ID, notification)
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, foregroundServiceTypeMask())
+        } else {
+            @Suppress("DEPRECATION")
+            startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    private fun foregroundServiceTypeMask(): Int {
+        var mask = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            mask = mask or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        }
+        return mask
     }
 
     private fun stopForegroundCompat() {
@@ -320,6 +322,14 @@ class McpForegroundService : Service() {
             Intent(this, McpForegroundService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val openIntent = PendingIntent.getActivity(
+            this,
+            2,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
         } else {
@@ -331,7 +341,7 @@ class McpForegroundService : Service() {
             .setContentTitle(getString(R.string.notification_mcp_title))
             .setContentText(getString(R.string.notification_mcp_running))
             .setStyle(Notification.BigTextStyle().bigText(getString(R.string.notification_mcp_running)))
-            .setContentIntent(stopIntent)
+            .setContentIntent(openIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)

@@ -1,9 +1,9 @@
 # Configuration file for the Sphinx documentation builder.
 
 project = 'XiaoHeiHook'
-copyright = '2026, XiaoHeiHook'
+copyright = '2026, Yishang'
 author = 'XiaoHeiHook'
-release = 'v1.31 (108)'
+release = 'v1.32 (109)'
 
 extensions = ['sphinx.ext.intersphinx']
 templates_path = ['_templates']

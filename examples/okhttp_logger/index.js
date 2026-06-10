@@ -1,9 +1,9 @@
 // ==LSPosedScript==
-// @name         Hook OkHttp 示例
-// @id           demo.okhttp.multifile.logger
-// @version      1.0.0
+// @name         Hook OkHttp 多文件示例
+// @id           demo.okhttp.multifile.all.packages
+// @version      1.32.109
 // @author       XiaoHeiHook
-// @description  多文件脚本示例：Hook OkHttp 请求/响应基础信息，仅用于授权调试。
+// @description  XiaoHeiHook 1.32 (109) 多文件 OkHttp Hook 示例，默认匹配所有包名，仅用于授权调试。
 // @target       *
 // @process      *
 // @run-at       package-loaded
@@ -12,20 +12,21 @@
 // @grant        xposed.raw
 // ==/LSPosedScript==
 
-const config = require("./config.js")
-const logger = require("./logger.js")
-const okhttp = require("./okhttp.js")
+var config = require("./config.js")
+var logger = require("./logger.js")
+var okhttp = require("./okhttp.js")
 
 xposed.onPackageLoaded(function (param) {
-  const packageName = String(param.getPackageName())
+  var packageName = String(param.getPackageName())
+  var processName = String(env.processName)
 
-  if (config.targetPackages.indexOf(packageName) < 0) {
-    logger.warn("skip package=" + packageName)
+  if (!config.shouldHookPackage(packageName, processName)) {
+    logger.debug("skip package=" + packageName + ", process=" + processName)
     return
   }
 
-  logger.info("OkHttp multi-file logger loaded")
-  logger.info("package=" + packageName + ", process=" + env.processName)
+  logger.info("OkHttp multi-file hook loaded")
+  logger.info("package=" + packageName + ", process=" + processName)
   logger.info("scriptPath=" + env.scriptPath)
 
   okhttp.install(param, config, logger)

@@ -5,6 +5,7 @@ import android.os.Build
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 
 object WebIdeManager {
     private val _status = MutableStateFlow(WebIdeStatus())
@@ -50,6 +51,7 @@ object WebIdeManager {
         } else {
             appContext.startService(intent)
         }
+        MainProcessKeepAliveService.startIfNeeded(appContext, MainProcessKeepAliveService.REASON_WEBIDE)
 
         pendingStatus
     }.onFailure { error ->
@@ -78,6 +80,7 @@ object WebIdeManager {
                 // 兜底：如果系统拒绝投递 STOP intent，至少强制停止服务声明本身。
                 runCatching { appContext.stopService(android.content.Intent(appContext, WebIdeForegroundService::class.java)) }
             }
+            MainProcessKeepAliveService.stopIfNotNeeded(appContext)
         }
     }
 
@@ -94,6 +97,7 @@ object WebIdeManager {
         )
         runCatching { appContext.startService(WebIdeForegroundService.stopIntent(appContext)) }
         runCatching { appContext.stopService(android.content.Intent(appContext, WebIdeForegroundService::class.java)) }
+        MainProcessKeepAliveService.stopIfNotNeeded(appContext)
     }
 
     fun syncStatusWithSavedConfig(context: Context) {

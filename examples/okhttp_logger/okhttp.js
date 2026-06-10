@@ -1,344 +1,589 @@
-const utils = require("./utils.js")
+var utils = require("./utils.js")
+var reflect = require("./reflect.js")
 
-var TAG = "OkHttp-Hook";
-var installed = false;
+var installedLoaderKeys = {}
+var hookedCallClassNames = {}
 
-// 主入口 - 使用 onPackageLoaded 监听目标应用
-xposed.onPackageLoaded(function (param) {
-  console.log("OkHttp Hook 脚本加载成功!", "package=", param.getPackageName(), "process=", env.processName);
+function install(param, config, logger) {
+  logger.info("OkHttp hook install start")
+  logger.info("package=" + param.getPackageName() + ", process=" + env.processName)
 
-  var packageName = String(param.getPackageName());
-  
-  xposed.i(TAG, "onPackageLoaded: " + packageName);
-  xposed.i(TAG, "process=" + env.processName);
+  var Application = Java.use("android.app.Application")
 
-  var Application = Java.type("android.app.Application");
-  var ContextClass = Java.type("android.content.Context");
-
-  // Hook Application.attach 获取真正的应用 ClassLoader
-  var attach = Application.getDeclaredMethod("attach", ContextClass);
-  attach.setAccessible(true);
+  // XiaoHeiHook 1.32 (109) 推荐语法：getDeclaredMethod 可以直接传字符串签名。
+  var attach = Application.getDeclaredMethod("attach", "android.content.Context")
+  attach.setAccessible(true)
 
   xposed
     .hook(attach)
     .setPriority(xposed.PRIORITY_DEFAULT)
     .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
     .intercept(function (chain) {
-      var context = chain.getArg(0);
-      xposed.d(TAG, "Application.attach before, context=" + context);
+      var context = chain.getArg(0)
+      logger.debug("Application.attach before, context=" + context)
 
-      var result = chain.proceed();
+      var result = chain.proceed()
 
       try {
-        var loader = context.getClassLoader();
-        xposed.d(TAG, "Application.attach after, appClassLoader=" + loader);
-        
-        // 使用应用真实的 ClassLoader 安装 Hook
-        install(loader);
+        var loader = context.getClassLoader()
+        logger.debug("Application.attach after, classLoader=" + loader)
+        installWithClassLoader(loader, config, logger)
       } catch (e) {
-        xposed.e(TAG, "install OkHttp hooks from Application.attach failed", e);
+        logger.error("install OkHttp hooks from Application.attach failed", e)
       }
 
-      return result;
-    });
-});
+      return result
+    })
+}
 
-function install(loader) {
-  if (installed) {
-    xposed.d(TAG, "OkHttp hooks already installed, skip");
-    return;
+function installWithClassLoader(loader, config, logger) {
+  var loaderKey = String(loader)
+
+  if (installedLoaderKeys[loaderKey]) {
+    logger.debug("OkHttp hooks already installed for classLoader, skip")
+    return
   }
 
-  // 动态查找 OkHttp 相关类
-  var okHttpClasses = findOkHttpClasses(loader);
-  
-  if (okHttpClasses.length === 0) {
-    xposed.w(TAG, "No OkHttp classes found in application ClassLoader");
-    return;
-  }
+  var classes = findOkHttpClasses(loader, logger)
+  var count = 0
 
-  var count = 0;
+  if (config.hookNewCall !== false && classes.OkHttpClient && classes.Request) {
+    count += hookDeclaredMethodsByNameAndParamCount(
+      classes.OkHttpClient,
+      "newCall",
+      1,
+      "okhttp3.OkHttpClient.newCall(Request)",
+      function (method) {
+        return function (chain) {
+          var request = chain.getArg(0)
 
-  // 尝试 Hook OkHttpClient.newCall(Request)
-  if (arrayContains(okHttpClasses, "okhttp3.OkHttpClient") && arrayContains(okHttpClasses, "okhttp3.Request")) {
-    try {
-      var OkHttpClientClass = loader.loadClass("okhttp3.OkHttpClient");
-      var RequestClass = loader.loadClass("okhttp3.Request");
-      var newCallMethod = OkHttpClientClass.getDeclaredMethod("newCall", RequestClass);
-      newCallMethod.setAccessible(true);
+          safeLogRequest("newCall", request, config, logger)
 
-      xposed
-        .hook(newCallMethod)
-        .setPriority(xposed.PRIORITY_DEFAULT)
-        .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
-        .intercept(function (chain) {
-          var args = chain.getArgs();
-          var request = args && args.length > 0 ? args[0] : null;
-          logRequest("newCall", request);
-          
-          var call = chain.proceed();
-          xposed.d(TAG, "[OkHttp newCall] call=" + call);
-          return call;
-        });
+          var call = chain.proceed()
+          logger.debug("[OkHttp newCall] call=" + call)
 
-      xposed.i(TAG, "Hook installed: okhttp3.OkHttpClient.newCall(Request)");
-      count++;
-    } catch (e) {
-      xposed.w(TAG, "Hook OkHttpClient.newCall failed: " + e);
-    }
-  }
+          try {
+            installCallEnhancementHooksFromObject(call, classes, config, logger, "OkHttpClient.newCall")
+          } catch (e) {
+            logger.warn("install Call enhancement from newCall failed but ignored: " + e)
+          }
 
-  // 尝试 Hook RealCall 相关方法
-  if (arrayContains(okHttpClasses, "okhttp3.RealCall")) {
-    var RealCallClass = loader.loadClass("okhttp3.RealCall");
-    
-    // Hook execute()
-    try {
-      var executeMethod = RealCallClass.getDeclaredMethod("execute");
-      executeMethod.setAccessible(true);
-
-      xposed
-        .hook(executeMethod)
-        .setPriority(xposed.PRIORITY_DEFAULT)
-        .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
-        .intercept(function (chain) {
-          var call = chain.getThisObject();
-          logRequestFromCall("execute", call);
-
-          var response = chain.proceed();
-          logResponse("execute", response);
-          return response;
-        });
-
-      xposed.i(TAG, "Hook installed: okhttp3.RealCall.execute()");
-      count++;
-    } catch (e) {
-      xposed.w(TAG, "Hook RealCall.execute failed: " + e);
-    }
-
-    // Hook enqueue(Callback)
-    if (arrayContains(okHttpClasses, "okhttp3.Callback")) {
-      try {
-        var CallbackClass = loader.loadClass("okhttp3.Callback");
-        var enqueueMethod = RealCallClass.getDeclaredMethod("enqueue", CallbackClass);
-        enqueueMethod.setAccessible(true);
-
-        xposed
-          .hook(enqueueMethod)
-          .setPriority(xposed.PRIORITY_DEFAULT)
-          .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
-          .intercept(function (chain) {
-            var call = chain.getThisObject();
-            logRequestFromCall("enqueue", call);
-            return chain.proceed();
-          });
-
-        xposed.i(TAG, "Hook installed: okhttp3.RealCall.enqueue(Callback)");
-        count++;
-      } catch (e) {
-        xposed.w(TAG, "Hook RealCall.enqueue failed: " + e);
-      }
-    }
-
-    // Hook getResponseWithInterceptorChain()
-    try {
-      var chainMethod = RealCallClass.getDeclaredMethod("getResponseWithInterceptorChain");
-      chainMethod.setAccessible(true);
-
-      xposed
-        .hook(chainMethod)
-        .setPriority(xposed.PRIORITY_DEFAULT)
-        .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
-        .intercept(function (chain) {
-          var call = chain.getThisObject();
-          logRequestFromCall("chain", call);
-
-          var response = chain.proceed();
-          logResponse("chain", response);
-          return response;
-        });
-
-      xposed.i(TAG, "Hook installed: okhttp3.RealCall.getResponseWithInterceptorChain()");
-      count++;
-    } catch (e) {
-      xposed.w(TAG, "Hook RealCall.getResponseWithInterceptorChain failed: " + e);
-    }
-  }
-
-  installed = count > 0;
-
-  if (installed) {
-    xposed.i(TAG, "OkHttp hooks installed, count=" + count);
+          return call
+        }
+      },
+      logger
+    )
   } else {
-    xposed.w(TAG, "No OkHttp hook installed. Target app may not use okhttp3 or classloader is not ready.");
+    logger.warn("Skip OkHttpClient.newCall hook: OkHttpClient or Request class not found")
+  }
+
+  if (config.hookRequestBuilder !== false && classes.RequestBuilder) {
+    count += hookRequestBuilder(classes, config, logger)
+  } else {
+    logger.warn("Skip Request.Builder hooks: okhttp3.Request$Builder not found or disabled")
+  }
+
+  if (config.hookFormBodyBuilder !== false && classes.FormBodyBuilder) {
+    count += hookFormBodyBuilder(classes, config, logger)
+  } else {
+    logger.warn("Skip FormBody.Builder hooks: okhttp3.FormBody$Builder not found or disabled")
+  }
+
+  if (config.hookCallInterface !== false && classes.Call) {
+    count += hookCallLikeClass(classes.Call, classes, config, logger, "okhttp3.Call")
+  }
+
+  if (count > 0) {
+    installedLoaderKeys[loaderKey] = true
+    logger.info("OkHttp hooks installed for classLoader, count=" + count)
+  } else {
+    logger.warn("No OkHttp hook installed for this classLoader")
   }
 }
 
-// 动态查找 OkHttp 相关类
-function findOkHttpClasses(loader) {
-  var okHttpClasses = [];
-  
-  // 常见的 OkHttp 类名
-  var targetClasses = [
-    "okhttp3.OkHttpClient",
-    "okhttp3.Request",
-    "okhttp3.Response",
-    "okhttp3.RealCall",
-    "okhttp3.Callback",
-    "okhttp3.Interceptor",
-    "okhttp3.Interceptor$Chain",
-    "okhttp3.RequestBody",
-    "okhttp3.ResponseBody",
-    "okhttp3.Headers",
-    "okhttp3.MediaType"
-  ];
+function findOkHttpClasses(loader, logger) {
+  var classes = {}
 
-  // 尝试加载每个类
-  for (var i = 0; i < targetClasses.length; i++) {
-    var className = targetClasses[i];
+  classes.OkHttpClient = tryLoadClass(loader, "okhttp3.OkHttpClient", logger)
+  classes.Call = tryLoadClass(loader, "okhttp3.Call", logger)
+  classes.Request = tryLoadClass(loader, "okhttp3.Request", logger)
+  classes.Response = tryLoadClass(loader, "okhttp3.Response", logger)
+  classes.Callback = tryLoadClass(loader, "okhttp3.Callback", logger)
+  classes.Headers = tryLoadClass(loader, "okhttp3.Headers", logger)
+  classes.RequestBody = tryLoadClass(loader, "okhttp3.RequestBody", logger)
+  classes.ResponseBody = tryLoadClass(loader, "okhttp3.ResponseBody", logger)
+  classes.RequestBuilder = tryLoadClass(loader, "okhttp3.Request$Builder", logger)
+  classes.FormBodyBuilder = tryLoadClass(loader, "okhttp3.FormBody$Builder", logger)
+  classes.HttpUrl = tryLoadClass(loader, "okhttp3.HttpUrl", logger)
+
+  // 注意：不要主动 loader.loadClass("okhttp3.RealCall")。
+  // 很多 App 的 RealCall 可能被移动、混淆、裁剪，主动加载容易导致 Hook 回调失败。
+  // 本示例只在 OkHttpClient.newCall(Request) 返回真实 Call 对象后，从对象本身获取 Class 再增强 Hook。
+  classes.RealCall = null
+
+  return classes
+}
+
+function tryLoadClass(loader, name, logger) {
+  try {
+    var cls = loader.loadClass(name)
+    logger.debug("Found OkHttp class: " + name)
+    return cls
+  } catch (e) {
+    logger.debug("Class not found: " + name)
+    return null
+  }
+}
+
+function hookRequestBuilder(classes, config, logger) {
+  var count = 0
+  var BuilderClass = classes.RequestBuilder
+
+  count += hookDeclaredMethodsByNameAndParamCount(
+    BuilderClass,
+    "get",
+    0,
+    "Request.Builder.get()",
+    function (method) {
+      return function (chain) {
+        logger.info("[OkHttp builder] GET")
+        return chain.proceed()
+      }
+    },
+    logger
+  )
+
+  count += hookDeclaredMethodsByNameAndParamCount(
+    BuilderClass,
+    "post",
+    1,
+    "Request.Builder.post(RequestBody)",
+    function (method) {
+      return function (chain) {
+        var body = chain.getArg(0)
+        logger.info("[OkHttp builder] POST body=" + describeRequestBody(body, logger))
+        return chain.proceed()
+      }
+    },
+    logger
+  )
+
+  count += hookDeclaredMethodsByNameAndParamCount(
+    BuilderClass,
+    "method",
+    2,
+    "Request.Builder.method(String, RequestBody)",
+    function (method) {
+      return function (chain) {
+        var methodName = chain.getArg(0)
+        var body = chain.getArg(1)
+        logger.info("[OkHttp builder] method=" + methodName + ", body=" + describeRequestBody(body, logger))
+        return chain.proceed()
+      }
+    },
+    logger
+  )
+
+  count += hookDeclaredMethodsByNameAndParamCount(
+    BuilderClass,
+    "url",
+    1,
+    "Request.Builder.url(...)",
+    function (method) {
+      return function (chain) {
+        logger.info("[OkHttp builder] url=" + chain.getArg(0))
+        return chain.proceed()
+      }
+    },
+    logger
+  )
+
+  count += hookDeclaredMethodsByNameAndParamCount(
+    BuilderClass,
+    "build",
+    0,
+    "Request.Builder.build()",
+    function (method) {
+      return function (chain) {
+        var request = chain.proceed()
+        safeLogRequest("build", request, config, logger)
+        return request
+      }
+    },
+    logger
+  )
+
+  return count
+}
+
+function hookFormBodyBuilder(classes, config, logger) {
+  var count = 0
+  var BuilderClass = classes.FormBodyBuilder
+
+  count += hookDeclaredMethodsByNameAndParamCount(
+    BuilderClass,
+    "add",
+    2,
+    "FormBody.Builder.add(String, String)",
+    function (method) {
+      return function (chain) {
+        logger.info("[OkHttp form] add " + chain.getArg(0) + "=" + chain.getArg(1))
+        return chain.proceed()
+      }
+    },
+    logger
+  )
+
+  count += hookDeclaredMethodsByNameAndParamCount(
+    BuilderClass,
+    "addEncoded",
+    2,
+    "FormBody.Builder.addEncoded(String, String)",
+    function (method) {
+      return function (chain) {
+        logger.info("[OkHttp form] addEncoded " + chain.getArg(0) + "=" + chain.getArg(1))
+        return chain.proceed()
+      }
+    },
+    logger
+  )
+
+  count += hookDeclaredMethodsByNameAndParamCount(
+    BuilderClass,
+    "build",
+    0,
+    "FormBody.Builder.build()",
+    function (method) {
+      return function (chain) {
+        var body = chain.proceed()
+        logger.info("[OkHttp form] build body=" + describeRequestBody(body, logger))
+        return body
+      }
+    },
+    logger
+  )
+
+  return count
+}
+
+function hookDeclaredMethodsByNameAndParamCount(clazz, methodName, paramCount, label, handlerFactory, logger) {
+  var count = 0
+  var methods = reflect.findDeclaredMethods(clazz, methodName, paramCount, logger)
+  var i
+
+  if (methods.length === 0) {
+    logger.debug("No method matched: " + label)
+    return 0
+  }
+
+  for (i = 0; i < methods.length; i++) {
+    var method = methods[i]
+
     try {
-      loader.loadClass(className);
-      okHttpClasses.push(className);
-      xposed.d(TAG, "Found OkHttp class: " + className);
+      reflect.setAccessible(method)
+
+      xposed
+        .hook(method)
+        .setPriority(xposed.PRIORITY_DEFAULT)
+        .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
+        .intercept(handlerFactory(method))
+
+      logger.info("Hook installed: " + label)
+      count++
     } catch (e) {
-      // 类不存在，跳过
+      logger.warn("Hook " + label + " failed but ignored: " + e)
     }
   }
 
-  // 也尝试模糊查找（如果 OkHttp 被混淆）
+  return count
+}
+
+function describeRequestBody(body, logger) {
+  if (!body) return "null"
+
+  var contentType = reflect.invokeNoArg(body, "contentType", null)
+  var contentLength = reflect.invokeNoArg(body, "contentLength", null)
+
+  if (contentLength === null || contentLength === undefined) {
+    contentLength = -1
+  }
+
+  return "contentType=" + contentType + ", contentLength=" + contentLength
+}
+
+function installCallEnhancementHooksFromObject(obj, classes, config, logger, source) {
+  if (obj === null || obj === undefined) return
+
+  var cls = reflect.getJavaObjectClass(obj)
+  var className = reflect.getClassNameFromClass(cls)
+
+  if (hookedCallClassNames[className]) {
+    return
+  }
+
+  logger.debug("Try install Call enhancement hooks from " + source + ": " + className)
+
+  var count = hookCallLikeClass(cls, classes, config, logger, className)
+
+  if (count > 0) {
+    hookedCallClassNames[className] = true
+    logger.info("Call enhancement hooks installed from " + source + ": " + className)
+  } else {
+    logger.debug("No Call enhancement hook installed for class: " + className)
+  }
+}
+
+function hookCallLikeClass(CallClass, classes, config, logger, labelPrefix) {
+  var count = 0
+
+  if (config.hookExecute !== false) {
+    count += hookDeclaredMethodsByNameAndParamCount(
+      CallClass,
+      "execute",
+      0,
+      labelPrefix + ".execute()",
+      function (method) {
+        return function (chain) {
+          var call = chain.getThisObject()
+          safeLogRequestFromCall("execute", call, config, logger)
+
+          var response = chain.proceed()
+          safeLogResponse("execute", response, config, logger)
+          return response
+        }
+      },
+      logger
+    )
+  }
+
+  if (config.hookEnqueue !== false && classes.Callback) {
+    count += hookDeclaredMethodsByNameAndParamCount(
+      CallClass,
+      "enqueue",
+      1,
+      labelPrefix + ".enqueue(Callback)",
+      function (method) {
+        return function (chain) {
+          var call = chain.getThisObject()
+          safeLogRequestFromCall("enqueue", call, config, logger)
+          return chain.proceed()
+        }
+      },
+      logger
+    )
+  }
+
+  // 不 hook getResponseWithInterceptorChain。
+  // 该方法在不同 OkHttp 版本、Kotlin 版本、混淆版本中经常不存在；
+  // 示例优先使用更稳定的 newCall / execute / enqueue / Builder 入口。
+
+  return count
+}
+
+function safeLogRequestFromCall(stage, call, config, logger) {
   try {
-    var OkHttpClientClass = loader.loadClass("okhttp3.OkHttpClient");
-    var methods = OkHttpClientClass.getDeclaredMethods();
-    for (var j = 0; j < methods.length; j++) {
-      var method = methods[j];
-      var methodName = method.getName();
-      var paramTypes = method.getParameterTypes();
-      if (methodName === "newCall" && paramTypes.length === 1) {
-        var paramClassName = paramTypes[0].getName();
-        okHttpClasses.push(paramClassName);
-        xposed.d(TAG, "Found OkHttp Request class via method: " + paramClassName);
-      }
-    }
+    logRequestFromCall(stage, call, config, logger)
   } catch (e) {
-    // 忽略
+    logger.warn("logRequestFromCall failed but ignored at " + stage + ": " + e)
   }
-
-  return okHttpClasses;
 }
 
-// 检查数组是否包含某个元素
-function arrayContains(arr, element) {
-  for (var i = 0; i < arr.length; i++) {
-    if (arr[i] === element) {
-      return true;
-    }
+function logRequestFromCall(stage, call, config, logger) {
+  var request = reflect.invokeNoArg(call, "request", null)
+
+  if (request) {
+    logRequest(stage, request, config, logger)
+  } else {
+    logger.debug("[OkHttp " + stage + "] call.request unavailable")
   }
-  return false;
 }
 
-function logRequestFromCall(stage, call) {
+function safeLogRequest(stage, request, config, logger) {
   try {
-    if (call && typeof call.request === "function") {
-      logRequest(stage, call.request());
-    } else {
-      xposed.w(TAG, "[OkHttp " + stage + "] call.request unavailable");
-    }
+    logRequest(stage, request, config, logger)
   } catch (e) {
-    xposed.e(TAG, "logRequestFromCall failed at " + stage, e);
+    logger.warn("logRequest failed but ignored at " + stage + ": " + e)
   }
 }
 
-function logRequest(stage, request) {
+function logRequest(stage, request, config, logger) {
   if (!request) {
-    xposed.w(TAG, "[OkHttp " + stage + "] request=null");
-    return;
+    logger.debug("[OkHttp " + stage + "] request=null")
+    return
   }
 
-  try {
-    var method = request.method();
-    var url = request.url();
-    xposed.i(TAG, "[OkHttp " + stage + "] --> " + method + " " + url);
+  var method = reflect.invokeNoArg(request, "method", null)
+  var url = reflect.invokeNoArg(request, "url", null)
 
-    var body = safeCall("request.body", function () {
-      return request.body();
-    }, null);
-
-    if (body) {
-      var contentType = body.contentType();
-      var contentLength = getContentLength(body);
-      xposed.i(TAG, "[OkHttp " + stage + "] requestBody contentType=" + contentType + ", contentLength=" + contentLength);
+  if (method === null || method === undefined) {
+    try {
+      method = request.method
+    } catch (e1) {
+      method = "<unknown-method>"
     }
+  }
 
-    // 打印请求头
-    var headers = request.headers();
-    if (headers && headers.size() > 0) {
-      var size = Math.min(headers.size(), 10);
-      for (var k = 0; k < size; k++) {
-        var name = headers.name(k);
-        var value = redactSensitiveHeader(name, headers.value(k));
-        xposed.d(TAG, "[OkHttp header request] " + name + ": " + value);
-      }
+  if (url === null || url === undefined) {
+    try {
+      url = request.url
+    } catch (e2) {
+      url = "<unknown-url>"
     }
-  } catch (e) {
-    xposed.e(TAG, "logRequest failed", e);
+  }
+
+  logger.info("[OkHttp " + stage + "] --> " + method + " " + url)
+
+  var body = reflect.invokeNoArg(request, "body", null)
+
+  if (body) {
+    logger.info("[OkHttp " + stage + "] requestBody " + describeRequestBody(body, logger))
+  }
+
+  if (config.logHeaders !== false) {
+    var headers = reflect.invokeNoArg(request, "headers", null)
+    safeLogHeaders("request", headers, config, logger)
   }
 }
 
-function logResponse(stage, response) {
+function safeLogResponse(stage, response, config, logger) {
+  try {
+    logResponse(stage, response, config, logger)
+  } catch (e) {
+    logger.warn("logResponse failed but ignored at " + stage + ": " + e)
+  }
+}
+
+function logResponse(stage, response, config, logger) {
   if (!response) {
-    xposed.w(TAG, "[OkHttp " + stage + "] response=null");
-    return;
+    logger.debug("[OkHttp " + stage + "] response=null")
+    return
   }
 
+  var request = reflect.invokeNoArg(response, "request", null)
+  var url = request ? reflect.invokeNoArg(request, "url", null) : "<unknown-url>"
+  var code = reflect.invokeNoArg(response, "code", null)
+  var message = reflect.invokeNoArg(response, "message", null)
+
+  logger.info("[OkHttp " + stage + "] <-- code=" + code + " message=" + message + " url=" + url)
+
+  var body = reflect.invokeNoArg(response, "body", null)
+
+  if (body) {
+    logger.info("[OkHttp " + stage + "] responseBody " + describeRequestBody(body, logger))
+  }
+
+  if (config.logHeaders !== false) {
+    var headers = reflect.invokeNoArg(response, "headers", null)
+    safeLogHeaders("response", headers, config, logger)
+  }
+}
+
+function safeLogHeaders(kind, headers, config, logger) {
   try {
-    var request = safeCall("response.request", function () {
-      return response.request();
-    }, null);
+    logHeaders(kind, headers, config, logger)
+  } catch (e) {
+    logger.debug("logHeaders failed but ignored: " + e)
+  }
+}
 
-    var url = request ? request.url() : "<unknown-url>";
-    xposed.i(TAG, "[OkHttp " + stage + "] <-- code=" + response.code() + " message=" + response.message() + " url=" + url);
+function logHeaders(kind, headers, config, logger) {
+  if (!headers) return
 
-    var body = safeCall("response.body", function () {
-      return response.body();
-    }, null);
+  if (reflect.isRhinoNativeArray(headers) || reflect.isJsArrayLike(headers)) {
+    logArrayLikeHeaders(kind, headers, config, logger)
+    return
+  }
 
-    if (body) {
-      var contentType = body.contentType();
-      var contentLength = getContentLength(body);
-      xposed.i(TAG, "[OkHttp " + stage + "] responseBody contentType=" + contentType + ", contentLength=" + contentLength);
+  logJavaHeaders(kind, headers, config, logger)
+}
+
+function logJavaHeaders(kind, headers, config, logger) {
+  var headerSize = reflect.invokeNoArg(headers, "size", null)
+
+  if (headerSize === null || headerSize === undefined) {
+    logger.debug("logHeaders skipped: headers.size unavailable")
+    return
+  }
+
+  var size = Math.min(utils.asNumber(headerSize, 0), config.maxHeaderCount)
+  var i
+
+  for (i = 0; i < size; i++) {
+    var name = reflect.invokeIntArg(headers, "name", i, null)
+    var rawValue = reflect.invokeIntArg(headers, "value", i, null)
+
+    if (name === null || name === undefined) {
+      continue
     }
-  } catch (e) {
-    xposed.e(TAG, "logResponse failed", e);
+
+    logger.debug("[OkHttp header " + kind + "] " + name + ": " + utils.redactHeaderValue(config, name, rawValue))
   }
 }
 
-function safeCall(name, fn, defaultValue) {
+function logArrayLikeHeaders(kind, headers, config, logger) {
+  var length = Math.min(reflect.toArrayLength(headers), config.maxHeaderCount)
+  var i
+
+  for (i = 0; i < length; i++) {
+    var item = null
+
+    try {
+      item = headers[i]
+    } catch (e) {
+      item = null
+    }
+
+    logOneArrayHeader(kind, item, i, config, logger)
+  }
+}
+
+function logOneArrayHeader(kind, item, index, config, logger) {
+  if (item === null || item === undefined) return
+
   try {
-    var result = fn();
-    return result !== undefined && result !== null ? result : defaultValue;
-  } catch (e) {
-    xposed.w(TAG, "safeCall failed for " + name + ": " + e.message);
-    return defaultValue;
-  }
-}
+    if (typeof item === "string") {
+      logger.debug("[OkHttp header " + kind + "] " + item)
+      return
+    }
 
-function getContentLength(body) {
-  try {
-    var contentLength = body.contentLength();
-    return contentLength >= 0 ? contentLength + " bytes" : "unknown";
-  } catch (e) {
-    return "unknown";
-  }
-}
+    var name = null
+    var value = null
 
-function redactSensitiveHeader(name, value) {
-  var sensitiveHeaders = ["Authorization", "Cookie", "Set-Cookie", "X-Auth-Token"];
-  for (var m = 0; m < sensitiveHeaders.length; m++) {
-    if (name.toLowerCase() === sensitiveHeaders[m].toLowerCase()) {
-      if (value && value.length > 8) {
-        return value.substring(0, 4) + "***" + value.substring(value.length - 4);
+    try {
+      name = item.name
+    } catch (e1) {
+    }
+
+    try {
+      value = item.value
+    } catch (e2) {
+    }
+
+    if (name === null || name === undefined) {
+      try {
+        name = item[0]
+      } catch (e3) {
       }
     }
+
+    if (value === null || value === undefined) {
+      try {
+        value = item[1]
+      } catch (e4) {
+      }
+    }
+
+    if (name === null || name === undefined) {
+      logger.debug("[OkHttp header " + kind + "] #" + index + " " + item)
+      return
+    }
+
+    logger.debug("[OkHttp header " + kind + "] " + name + ": " + utils.redactHeaderValue(config, name, value))
+  } catch (e) {
+    logger.debug("logOneArrayHeader failed but ignored: " + e)
   }
-  return value;
+}
+
+module.exports = {
+  install: install
 }

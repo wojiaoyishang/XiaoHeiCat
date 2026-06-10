@@ -4,7 +4,10 @@ import androidx.annotation.Nullable;
 
 import org.mozilla.javascript.NativeArray;
 import org.mozilla.javascript.NativeObject;
+import org.mozilla.javascript.Context;
+import org.mozilla.javascript.ScriptRuntime;
 import org.mozilla.javascript.Scriptable;
+import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.Undefined;
 import org.mozilla.javascript.Wrapper;
 
@@ -102,21 +105,64 @@ public final class JsApiValueNormalizer {
     }
 
     private static NativeObject newObject() {
+        Scriptable scope = currentTopScope();
+        if (scope != null) {
+            try {
+                Object obj = Context.getCurrentContext().newObject(scope);
+                if (obj instanceof NativeObject) return (NativeObject) obj;
+            } catch (Throwable ignored) {
+                // Fall through to the scope-less fallback below.
+            }
+        }
         NativeObject object = new NativeObject();
-        attachScope(object);
+        attachScope(object, scope, false);
         return object;
     }
 
     private static NativeArray newArray(Object[] values) {
+        Scriptable scope = currentTopScope();
+        if (scope != null) {
+            try {
+                return (NativeArray) Context.getCurrentContext().newArray(scope, values);
+            } catch (Throwable ignored) {
+                // Fall through to the scope-less fallback below.
+            }
+        }
         NativeArray array = new NativeArray(values);
-        attachScope(array);
+        attachScope(array, scope, true);
         return array;
     }
 
-    private static void attachScope(Scriptable object) {
-        // NativeObject/NativeArray keep own properties even without attaching a parent scope.
-        // Avoid depending on Rhino internals here; the returned value is still stable for
-        // property access (ret.paths) and array access (ret.paths[0]).
+    /**
+     * Rhino NativeObject/NativeArray must be created with the current top-level scope/prototype.
+     * Otherwise ordinary JS operations such as String(ret.paths), "" + ret.paths,
+     * ret.paths.join(","), or Array.prototype methods may throw "Cannot find default value",
+     * even though ret.paths[0] can be read. API facades should normalize Java Map/List results
+     * into real scoped JS objects/arrays, so scripts do not need arrayLike/getAny compatibility
+     * helpers for API return values.
+     */
+    @Nullable
+    private static Scriptable currentTopScope() {
+        try {
+            Context cx = Context.getCurrentContext();
+            if (cx == null) return null;
+            Scriptable scope = ScriptRuntime.getTopCallScope(cx);
+            return scope == null ? null : ScriptableObject.getTopLevelScope(scope);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static void attachScope(Scriptable object, @Nullable Scriptable scope, boolean array) {
+        if (scope == null || object == null) return;
+        try {
+            object.setParentScope(scope);
+            object.setPrototype(array
+                    ? ScriptableObject.getClassPrototype(scope, "Array")
+                    : ScriptableObject.getObjectPrototype(scope));
+        } catch (Throwable ignored) {
+            // A scope-less value is still better than failing the API call.
+        }
     }
 
     private static void put(NativeObject object, String key, Object value) {

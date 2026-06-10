@@ -9,22 +9,37 @@ function safeCall(label, fn, fallback, logger) {
   }
 }
 
-function hasHeader(config, name) {
-  const lower = String(name).toLowerCase()
-  for (let i = 0; i < config.redactHeaders.length; i++) {
-    if (lower === String(config.redactHeaders[i]).toLowerCase()) {
+function lowerText(value) {
+  if (value === null || value === undefined) return ""
+  return String(value).toLowerCase()
+}
+
+function shouldRedactHeader(config, name) {
+  var lower = lowerText(name)
+  var i
+
+  for (i = 0; i < config.redactHeaders.length; i++) {
+    if (lower === lowerText(config.redactHeaders[i])) {
       return true
     }
   }
+
   return false
 }
 
 function redactHeaderValue(config, name, value) {
-  if (hasHeader(config, name)) {
+  if (shouldRedactHeader(config, name)) {
     return "<redacted>"
   }
 
-  let text = String(value)
+  var text = ""
+
+  if (value === null || value === undefined) {
+    text = ""
+  } else {
+    text = String(value)
+  }
+
   if (text.length > config.maxHeaderValueLength) {
     text = text.substring(0, config.maxHeaderValueLength) + "...<truncated>"
   }
@@ -32,17 +47,18 @@ function redactHeaderValue(config, name, value) {
   return text
 }
 
-function contentLengthOrUnknown(body) {
-  if (!body) return -1
-  try {
-    return body.contentLength()
-  } catch (e) {
-    return -1
+function asNumber(value, fallback) {
+  var n = Number(value)
+
+  if (isNaN(n)) {
+    return fallback
   }
+
+  return n
 }
 
 module.exports = {
-  safeCall,
-  redactHeaderValue,
-  contentLengthOrUnknown
+  safeCall: safeCall,
+  redactHeaderValue: redactHeaderValue,
+  asNumber: asNumber
 }

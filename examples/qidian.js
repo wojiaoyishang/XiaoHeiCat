@@ -28,13 +28,12 @@ xposed.onPackageLoaded(function (param) {
   xposed.i(TAG, "process=" + env.processName);
   xposed.i(TAG, "raw param=" + param.raw);
 
-  const Application = Java.type("android.app.Application");
-  const ContextClass = Java.type("android.content.Context");
+  const Application = Java.use("android.app.Application");
 
   // 关键点：目标业务类 pc.a 必须通过目标应用自己的 ClassLoader 加载。
   // 这里 Hook Application.attach(Context)，从 Context.getClassLoader() 取得真正的应用 ClassLoader，
-  // 然后再安装 pc.a.d() 的 Hook。
-  const attach = Application.getDeclaredMethod("attach", ContextClass);
+  // 然后再安装 pc.a.d() 的 Hook。1.32 (109) 起签名参数推荐直接写字符串。
+  const attach = Application.getDeclaredMethod("attach", "android.content.Context");
   attach.setAccessible(true);
 
   xposed

@@ -22,7 +22,7 @@ Application.onCreate 日志
    // ==/LSPosedScript==
 
    xposed.onPackageLoaded(function (param) {
-       const Application = Java.type('android.app.Application');
+       const Application = Java.use('android.app.Application');
        const onCreate = Application.getDeclaredMethod('onCreate');
        onCreate.setAccessible(true);
 
@@ -56,9 +56,9 @@ Application.attach 后 Toast
    let executed = false;
 
    function showToast(context, text) {
-       const Toast = Java.type('android.widget.Toast');
-       const Looper = Java.type('android.os.Looper');
-       const Handler = Java.type('android.os.Handler');
+       const Toast = Java.use('android.widget.Toast');
+       const Looper = Java.use('android.os.Looper');
+       const Handler = Java.use('android.os.Handler');
 
        const mainHandler = new Handler(Looper.getMainLooper());
 
@@ -68,10 +68,8 @@ Application.attach 后 Toast
    }
 
    xposed.onPackageLoaded(function (param) {
-       const Application = Java.type('android.app.Application');
-       const ContextClass = Java.type('android.content.Context');
-
-       const attach = Application.getDeclaredMethod('attach', ContextClass);
+       const Application = Java.use('android.app.Application');
+       const attach = Application.getDeclaredMethod('attach', 'android.content.Context');
        attach.setAccessible(true);
 
        xposed.hook(attach)
@@ -145,9 +143,8 @@ Application.attach 后 Toast
    let executed = false;
 
    xposed.onPackageLoaded(function () {
-       const Application = Java.type('android.app.Application');
-       const ContextClass = Java.type('android.content.Context');
-       const attach = Application.getDeclaredMethod('attach', ContextClass);
+       const Application = Java.use('android.app.Application');
+       const attach = Application.getDeclaredMethod('attach', 'android.content.Context');
        attach.setAccessible(true);
 
        xposed.hook(attach).intercept(function (chain) {
@@ -232,9 +229,9 @@ Application.attach 后 Toast
 
 ``Activity.onResume`` 后展示图片的核心逻辑::
 
-   const ImageView = Java.type('android.widget.ImageView');
-   const Uri = Java.type('android.net.Uri');
-   const File = Java.type('java.io.File');
+   const ImageView = Java.use('android.widget.ImageView');
+   const Uri = Java.use('android.net.Uri');
+   const File = Java.use('java.io.File');
 
    const image = new ImageView(activity);
    image.setAdjustViewBounds(true);
@@ -267,10 +264,8 @@ Hook 某个方法
 
 	  xposed.i(TAG, "script loaded package=" + pkg + " process=" + env.processName);
 
-	  const Application = Java.type("android.app.Application");
-	  const ContextClass = Java.type("android.content.Context");
-
-	  const attach = Application.getDeclaredMethod("attach", ContextClass);
+	  const Application = Java.use("android.app.Application");
+	  const attach = Application.getDeclaredMethod("attach", "android.content.Context");
 	  attach.setAccessible(true);
 
 	  xposed
@@ -431,9 +426,8 @@ Hook 某个方法
    xposed.onPackageLoaded(function () {
        bump('onPackageLoaded');
 
-       const Application = Java.type('android.app.Application');
-       const ContextClass = Java.type('android.content.Context');
-       const attach = Application.getDeclaredMethod('attach', ContextClass);
+       const Application = Java.use('android.app.Application');
+       const attach = Application.getDeclaredMethod('attach', 'android.content.Context');
        attach.setAccessible(true);
 
        xposed.hook(attach).intercept(function (chain) {
@@ -443,8 +437,8 @@ Hook 某个方法
            bump('Application.attach.before');
            const result = chain.proceed();
 
-           const Handler = Java.type('android.os.Handler');
-           const Looper = Java.type('android.os.Looper');
+           const Handler = Java.use('android.os.Handler');
+           const Looper = Java.use('android.os.Looper');
            const handler = new Handler(Looper.getMainLooper());
 
            handler.post(function () {
@@ -507,9 +501,8 @@ Hook 回调、SAM 回调和 RPC 回调都回到了同一份脚本作用域。
 
    xposed.onPackageLoaded(function (param) {
        const processName = String(env.processName || '');
-       const Application = Java.type('android.app.Application');
-       const ContextClass = Java.type('android.content.Context');
-       const attach = Application.getDeclaredMethod('attach', ContextClass);
+       const Application = Java.use('android.app.Application');
+       const attach = Application.getDeclaredMethod('attach', 'android.content.Context');
        attach.setAccessible(true);
 
        xposed.hook(attach)
@@ -637,9 +630,8 @@ DumpDex 后进行 Smali 特征查找
 
    xposed.onPackageLoaded(function (param) {
        const processName = String(env.processName || '');
-       const Application = Java.type('android.app.Application');
-       const ContextClass = Java.type('android.content.Context');
-       const attach = Application.getDeclaredMethod('attach', ContextClass);
+       const Application = Java.use('android.app.Application');
+       const attach = Application.getDeclaredMethod('attach', 'android.content.Context');
        attach.setAccessible(true);
 
        xposed.hook(attach)
@@ -660,6 +652,63 @@ DumpDex 后进行 Smali 特征查找
                return result;
            });
    });
+
+
+.. _scripts-example-smali-echo:
+
+Smali echo：遍历 dump dex 并输出候选方法
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``Smali echo`` 示例用于不知道类名、方法名和 proto 的场景。脚本会先 dump 当前
+``ClassLoader`` 已加载的 dex，然后逐个输出正在搜索的 dex，并用
+``dex.forEachMethod(options, callback)`` 在 JS 回调中按 smali / strings / invokes 特征打分。
+
+.. tip::
+
+   完整脚本文件在 GitHub 仓库中维护：`examples/qidian_dex_search.js <https://github.com/wojiaoyishang/XiaoHeiCat/blob/master/examples/qidian_dex_search.js>`_。
+
+下面是核心搜索逻辑，完整版本包含 ``Application.attach``、DumpDex、包名过滤和结果输出：
+
+.. code-block:: javascript
+
+   var paths = dump.paths || [];
+   var candidateCount = 0;
+
+   for (var i = 0; i < paths.length; i++) {
+       var dexPath = String(paths[i]);
+       xposed.i('SmaliEcho', 'searching dex [' + (i + 1) + '/' + paths.length + '] ' + dexPath);
+
+       dex.forEachMethod({
+           path: dexPath,
+           includeSmali: true,
+           includeStrings: true,
+           includeInvokes: true,
+           maxSmaliChars: 120000,
+           limit: 0
+       }, function (m) {
+           var body = String(m.smali || '') + '\n' +
+                      String(m.strings || '') + '\n' +
+                      String(m.invokes || '');
+
+           if (body.indexOf('Ljavax/crypto/Cipher;') < 0) {
+               return false;
+           }
+
+           candidateCount++;
+           xposed.i(
+               'SmaliEcho',
+               'candidate #' + candidateCount +
+               ' method=' + m.className + '.' + m.methodName + m.proto +
+               ' dex=' + m.path
+           );
+
+           if (candidateCount >= 20) {
+               return 'stop';
+           }
+
+           return false;
+       });
+   }
 
 精确检查方法：inspectMethodInFile
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -730,39 +779,6 @@ DumpDex 后进行 Smali 特征查找
      isStatic: true
    };
 
-   function javaClassOfWithLoader(loader, name) {
-     if (name === "int") return Java.type("java.lang.Integer").TYPE;
-     if (name === "long") return Java.type("java.lang.Long").TYPE;
-     if (name === "boolean") return Java.type("java.lang.Boolean").TYPE;
-     if (name === "byte") return Java.type("java.lang.Byte").TYPE;
-     if (name === "char") return Java.type("java.lang.Character").TYPE;
-     if (name === "short") return Java.type("java.lang.Short").TYPE;
-     if (name === "float") return Java.type("java.lang.Float").TYPE;
-     if (name === "double") return Java.type("java.lang.Double").TYPE;
-
-     if (loader) {
-       return loader.loadClass(name);
-     }
-
-     return Java.type(name);
-   }
-
-   function toJavaInt(value, fallback) {
-     const Integer = Java.type("java.lang.Integer");
-
-     if (value == null || value === "") {
-       return Integer.valueOf(fallback == null ? 0 : fallback);
-     }
-
-     const parsed = parseInt(value, 10);
-
-     if (isNaN(parsed)) {
-       return Integer.valueOf(fallback == null ? 0 : fallback);
-     }
-
-     return Integer.valueOf(parsed);
-   }
-
    function resolveTargetMethod() {
      if (appClassLoader == null) {
        throw new Error("appClassLoader is not ready");
@@ -770,12 +786,11 @@ DumpDex 后进行 Smali 特征查找
 
      const TargetClass = appClassLoader.loadClass(TARGET_META.className);
 
+     // 1.32 (109) 起：getDeclaredMethod 的签名参数支持字符串或字符串数组。
+     // "java.lang.String" / "int" 会被运行时解析成对应的 Class。
      const method = TargetClass.getDeclaredMethod(
        TARGET_META.methodName,
-       javaClassOfWithLoader(appClassLoader, TARGET_META.paramTypes[0]),
-       javaClassOfWithLoader(appClassLoader, TARGET_META.paramTypes[1]),
-       javaClassOfWithLoader(appClassLoader, TARGET_META.paramTypes[2]),
-       javaClassOfWithLoader(appClassLoader, TARGET_META.paramTypes[3])
+       TARGET_META.paramTypes
      );
 
      method.setAccessible(true);
@@ -828,8 +843,8 @@ DumpDex 后进行 Smali 特征查找
        const key = params.key == null ? "" : String(params.key);
        const iv = params.iv == null ? "" : String(params.iv);
 
-       // 目标参数是 int 时，不要直接依赖 JS number。
-       const mode = toJavaInt(params.mode, 0);
+       // 目标参数是 int，使用 Java.to 明确构造 Java int/Integer。
+       const mode = Java.to("int", params.mode == null || params.mode === "" ? 0 : params.mode);
 
        const result = method.invoke(
          null,
@@ -870,10 +885,8 @@ DumpDex 后进行 Smali 特征查找
      xposed.i(TAG, "package=" + param.getPackageName());
      xposed.i(TAG, "process=" + env.processName);
 
-     const Application = Java.type("android.app.Application");
-     const ContextClass = Java.type("android.content.Context");
-
-     const attach = Application.getDeclaredMethod("attach", ContextClass);
+     const Application = Java.use("android.app.Application");
+     const attach = Application.getDeclaredMethod("attach", "android.content.Context");
      attach.setAccessible(true);
 
      xposed
@@ -910,10 +923,91 @@ DumpDex 后进行 Smali 特征查找
 
 .. tip::
 
-   如果目标方法参数是 ``int.class``，解析方法签名时应使用 ``Java.type("java.lang.Integer").TYPE``。
-   实际调用时可以使用 ``Integer.valueOf(...)`` 显式构造 Java ``Integer``，避免 JS number 被映射成 ``Double``。
+   从 ``1.32 (109)`` 起，解析方法签名时可以直接使用 ``"java.lang.String"``、``"int"`` 这类类名字符串或基础类型名称。
+   实际调用时若目标参数是 ``Object`` 或需要精确包装类型，可以使用 ``Java.to("java.lang.Integer", value)``，避免 JS number 被映射成 ``Double``。
 
 .. warning::
 
    如果目标方法内部依赖 native 库，MCP 调用必须发生在已经加载该 native 库的进程中。
    否则即使反射方法解析成功，也可能抛出 ``UnsatisfiedLinkError``。
+
+Java Bridge 综合 smoke test
+-------------------------------
+
+.. tip::
+
+   完整脚本见仓库 ``examples/java_bridge_smoke_test.js``。该脚本覆盖 ``Java.use``、静态字段、
+   静态方法、构造函数、实例方法、``Java.to``、自动 SAM、``Java.proxy`` 和反射 fallback。
+
+这个脚本适合升级到 ``1.32 (109)`` 后先运行一次，用来确认 Java Bridge 的推荐调用语法是否可用。
+
+.. code-block:: javascript
+
+   const Application = Java.use("android.app.Application");
+   const attach = Application.getDeclaredMethod("attach", "android.content.Context");
+   attach.setAccessible(true);
+
+   const StringClass = Java.use("java.lang.String");
+   const substring = StringClass.getDeclaredMethod("substring", ["int", "int"]);
+   const text = Java.to("java.lang.String", "abcdef");
+   const value = substring.invoke(text, 1, 4);
+
+   xposed.i("JavaBridgeSmoke", "substring=" + value);
+
+Java 反射能力 smoke test
+-------------------------------
+
+.. tip::
+
+   完整脚本见仓库 ``examples/java_reflection_smoke_test.js``。该脚本专门验证
+   ``getDeclaredMethod``、``getMethod``、``getDeclaredConstructor`` 的字符串签名快捷写法，
+   以及 ``Method.invoke`` 按真实目标签名转换参数的行为。
+
+推荐使用 ``1.32 (109)`` 的字符串签名写法，不再为基础类型手写 ``Integer.TYPE``。
+已经拿到的 ``Java.use(...)`` 结果、``loader.loadClass(...)`` 返回值或其他 Java 对象仍然可以直接传入。
+
+.. code-block:: javascript
+
+   const StringClass = Java.use("java.lang.String");
+   const substring = StringClass.getDeclaredMethod("substring", "int", "int");
+   const text = Java.to("java.lang.String", "abcdef");
+
+   const value = substring.invoke(text, 1, 4);
+   xposed.i("JavaReflectSmoke", "substring=" + value);
+
+   const IntegerClass = Java.use("java.lang.Integer");
+   const valueOf = IntegerClass.getDeclaredMethod("valueOf", StringClass);
+   const intObject = valueOf.invoke(null, "456");
+   xposed.i("JavaReflectSmoke", "Integer.valueOf=" + intObject);
+
+Java 代理能力 smoke test
+-------------------------------
+
+.. tip::
+
+   完整脚本见仓库 ``examples/java_proxy_smoke_test.js``。该脚本专门验证
+   ``Java.proxy``、自动 SAM 代理、代理返回值转换，以及代理对象传回 Java 反射调用的行为。
+
+单方法接口可以直接传 JS function；多方法接口或需要明确方法名时，推荐使用 ``Java.proxy``。
+接口方法返回值需要精确 Java 类型时，可在回调中返回 ``Java.to(...)`` 的结果。
+
+.. code-block:: javascript
+
+   const runnable = Java.proxy("java.lang.Runnable", {
+       run: function () {
+           xposed.i("JavaProxySmoke", "Runnable.run callback executed");
+       }
+   });
+
+   runnable.run();
+
+   const FutureTask = Java.use("java.util.concurrent.FutureTask");
+   const callable = Java.proxy("java.util.concurrent.Callable", {
+       call: function () {
+           return Java.to("java.lang.String", "callable-ok");
+       }
+   });
+
+   const task = new FutureTask(callable);
+   task.run();
+   xposed.i("JavaProxySmoke", "Callable result=" + task.get());

@@ -7,6 +7,7 @@ import org.json.JSONObject
 import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 import top.lovepikachu.XiaoHeiHook.data.ScriptPrefs
 import top.lovepikachu.XiaoHeiHook.debug.DebugProtocol
+import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 
 /** Client used by WebIDE(:webide) to execute Remote Preferences / LSPosed operations in the main process. */
 class WebIdeBridgeClient(private val context: Context) {
@@ -198,6 +199,7 @@ class WebIdeBridgeClient(private val context: Context) {
     fun scriptEnabled(packageName: String, scriptId: String): Boolean = getBoolean(ScriptPrefs.scriptEnabledKey(packageName, scriptId), false)
 
     private fun call(method: String, extras: Bundle? = null): Bundle {
+        MainProcessKeepAliveService.startIfNeeded(context, MainProcessKeepAliveService.REASON_BRIDGE)
         return context.applicationContext.contentResolver.call(uri, method, null, extras) ?: Bundle().apply {
             putBoolean("ok", false)
             putString("error", "主进程桥接未返回结果")

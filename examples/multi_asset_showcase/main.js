@@ -8,10 +8,9 @@ function install() {
   xposed.onPackageLoaded(function (param) {
     xposed.i(TAG, "loaded package=" + param.getPackageName() + ", process=" + env.processName);
 
-    const Application = Java.type("android.app.Application");
-    const ContextClass = Java.type("android.content.Context");
+    const Application = Java.use("android.app.Application");
 
-    const attach = Application.getDeclaredMethod("attach", ContextClass);
+    const attach = Application.getDeclaredMethod("attach", "android.content.Context");
     attach.setAccessible(true);
 
     xposed.hook(attach).intercept(function (chain) {
