@@ -57,9 +57,10 @@ interface RendererProps {
   field: SettingField;
   values: Record<string, unknown>;
   onChange: (key: string, value: unknown) => void;
+  onPrompt: (title: string, defaultValue?: string, message?: string, multiline?: boolean) => Promise<string | null>;
 }
 
-function SettingFieldRenderer({ field, values, onChange }: RendererProps) {
+function SettingFieldRenderer({ field, values, onChange, onPrompt }: RendererProps) {
   const key = valueKey(field);
   const value = key ? values[key] : undefined;
   const label = fieldTitle(field);
@@ -83,7 +84,7 @@ function SettingFieldRenderer({ field, values, onChange }: RendererProps) {
       <fieldset className={"settings-group" + (hasRadio ? " radio-group" : "")}>
         {(field.label || field.title) ? <legend>{field.label || field.title}</legend> : null}
         {(field.items || []).map((item, idx) => (
-          <SettingFieldRenderer key={`${item.key || item.type}-${idx}`} field={item} values={values} onChange={onChange} />
+          <SettingFieldRenderer key={`${item.key || item.type}-${idx}`} field={item} values={values} onChange={onChange} onPrompt={onPrompt} />
         ))}
       </fieldset>
     );
@@ -162,8 +163,8 @@ function SettingFieldRenderer({ field, values, onChange }: RendererProps) {
             placeholder={field.placeholder}
             maxLength={field.maxLength}
             onChange={(ev) => onChange(key, ev.target.value)}
-            onDoubleClick={() => {
-              const next = window.prompt(label, text);
+            onDoubleClick={async () => {
+              const next = await onPrompt(label, text, undefined, true);
               if (next !== null) onChange(key, next);
             }}
           />
@@ -224,8 +225,8 @@ function SettingFieldRenderer({ field, values, onChange }: RendererProps) {
             </span>
           ))}
           <button
-            onClick={() => {
-              const next = window.prompt("添加标签", "");
+            onClick={async () => {
+              const next = await onPrompt("添加标签", "");
               if (next && next.trim()) onChange(key, [...tags, next.trim()]);
             }}
           >+ 添加</button>
@@ -256,8 +257,8 @@ function SettingFieldRenderer({ field, values, onChange }: RendererProps) {
               <button onClick={() => { const next = { ...obj }; delete next[k]; onChange(key, next); }}>删除</button>
             </div>
           ))}
-          <button onClick={() => {
-            const k = window.prompt("键名", "key");
+          <button onClick={async () => {
+            const k = await onPrompt("键名", "key");
             if (k && k.trim()) onChange(key, { ...obj, [k.trim()]: "" });
           }}>+ 添加键值</button>
         </div>
@@ -294,6 +295,7 @@ function SettingFieldRenderer({ field, values, onChange }: RendererProps) {
                     field={child}
                     values={item}
                     onChange={(itemKey, itemValue) => setItem(idx, itemKey, itemValue)}
+                    onPrompt={onPrompt}
                   />
                 ))}
               </div>
@@ -316,9 +318,10 @@ interface Props {
   onSave: () => void;
   onReset: () => void;
   onClose: () => void;
+  onPrompt: (title: string, defaultValue?: string, message?: string, multiline?: boolean) => Promise<string | null>;
 }
 
-export function ScriptSettingsPanel({ data, values, saving, onChange, onSave, onReset, onClose }: Props) {
+export function ScriptSettingsPanel({ data, values, saving, onChange, onSave, onReset, onClose, onPrompt }: Props) {
   const update = (key: string, value: unknown) => onChange({ ...values, [key]: value });
   return (
     <div className="settings-mask" onMouseDown={(ev) => { if (ev.target === ev.currentTarget) onClose(); }}>
@@ -332,7 +335,7 @@ export function ScriptSettingsPanel({ data, values, saving, onChange, onSave, on
         </header>
         <div className="settings-body">
           {(data.schema.fields || []).map((field, idx) => (
-            <SettingFieldRenderer key={`${field.key || field.type}-${idx}`} field={field} values={values} onChange={update} />
+            <SettingFieldRenderer key={`${field.key || field.type}-${idx}`} field={field} values={values} onChange={update} onPrompt={onPrompt} />
           ))}
         </div>
         <footer>

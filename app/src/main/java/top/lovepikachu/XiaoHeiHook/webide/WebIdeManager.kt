@@ -5,6 +5,7 @@ import android.os.Build
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import top.lovepikachu.XiaoHeiHook.keepalive.AccessibilityKeepAliveManager
 import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 
 object WebIdeManager {
@@ -64,6 +65,7 @@ object WebIdeManager {
             lastError = error.message ?: error.javaClass.simpleName
         )
         saveConfig(context, WebIdeConfig(enabled = false, host = safeHost, port = safePort))
+        AccessibilityKeepAliveManager.disableIfNoRuntimeNeedsKeepAlive(context)
     }
 
     /**
@@ -81,23 +83,53 @@ object WebIdeManager {
                 runCatching { appContext.stopService(android.content.Intent(appContext, WebIdeForegroundService::class.java)) }
             }
             MainProcessKeepAliveService.stopIfNotNeeded(appContext)
+            AccessibilityKeepAliveManager.disableIfNoRuntimeNeedsKeepAlive(appContext)
         }
     }
 
 
     fun resetOnApplicationStart(context: Context) {
+        // 兼容旧调用名：WebIDE 是用户显式打开的前台服务，进程被系统回收后应按保存的开关恢复，
+        // 不能在主进程重新创建时把 enabled 强制改回 false。
+        ensureStartedIfEnabled(context)
+    }
+
+    fun ensureStartedIfEnabled(context: Context): Boolean {
         val appContext = context.applicationContext
         val config = loadConfig(appContext)
-        saveConfig(appContext, config.copy(enabled = false))
-        _status.value = WebIdeStatus(
-            running = false,
-            host = config.host,
-            port = config.port,
-            lastError = null
-        )
-        runCatching { appContext.startService(WebIdeForegroundService.stopIntent(appContext)) }
-        runCatching { appContext.stopService(android.content.Intent(appContext, WebIdeForegroundService::class.java)) }
-        MainProcessKeepAliveService.stopIfNotNeeded(appContext)
+        if (!config.enabled) {
+            _status.value = WebIdeStatus(
+                running = false,
+                host = config.host,
+                port = config.port,
+                lastError = null
+            )
+            return false
+        }
+
+        val safeHost = sanitizeHost(config.host)
+        val safePort = config.port.coerceIn(1024, 65535)
+        _status.value = WebIdeStatus(running = true, host = safeHost, port = safePort, lastError = null)
+
+        val intent = WebIdeForegroundService.startIntent(appContext, safeHost, safePort)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                appContext.startForegroundService(intent)
+            } else {
+                appContext.startService(intent)
+            }
+        }.onFailure { error ->
+            _status.value = WebIdeStatus(
+                running = false,
+                host = safeHost,
+                port = safePort,
+                lastError = error.message ?: error.javaClass.simpleName
+            )
+            return false
+        }
+
+        MainProcessKeepAliveService.startIfNeeded(appContext, MainProcessKeepAliveService.REASON_WEBIDE)
+        return true
     }
 
     fun syncStatusWithSavedConfig(context: Context) {
@@ -123,6 +155,7 @@ object WebIdeManager {
         _status.value = WebIdeStatus(running = false, host = safeHost, port = safePort, lastError = null)
         if (context != null && updateSavedConfig) {
             saveConfig(context, WebIdeConfig(enabled = false, host = safeHost, port = safePort))
+            AccessibilityKeepAliveManager.disableIfNoRuntimeNeedsKeepAlive(context)
         }
     }
 
@@ -136,6 +169,7 @@ object WebIdeManager {
             lastError = error.message ?: error.javaClass.simpleName
         )
         saveConfig(context, WebIdeConfig(enabled = false, host = safeHost, port = safePort))
+        AccessibilityKeepAliveManager.disableIfNoRuntimeNeedsKeepAlive(context)
     }
 
     internal fun sanitizeHost(host: String): String {

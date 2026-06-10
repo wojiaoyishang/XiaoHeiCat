@@ -246,6 +246,14 @@ public final class JavaReflectionInvoker {
         return new JavaObjectWrapper(bridge, v);
     }
 
+    public Object wrapTypedValue(Object value, Class<?> explicitType) {
+        Object v = unwrap(value);
+        if (v == null || v == Undefined.instance || v == Scriptable.NOT_FOUND) return null;
+        if (v instanceof JavaObjectWrapper) return new JavaObjectWrapper(bridge, ((JavaObjectWrapper) v).getRawObject(), explicitType);
+        if (v instanceof Class<?>) return wrapClass((Class<?>) v);
+        return new JavaObjectWrapper(bridge, v, explicitType);
+    }
+
     private boolean isJsPrimitiveLikeReturn(Object value) {
         if (value instanceof String || value instanceof Boolean || value instanceof Character) return true;
         return isBoxedPrimitiveNumberClass(value.getClass());

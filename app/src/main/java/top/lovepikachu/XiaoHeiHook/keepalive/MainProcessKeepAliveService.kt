@@ -36,6 +36,7 @@ class MainProcessKeepAliveService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var heartbeatScheduled = false
     private var lastReason: String = ""
+    private var foregroundHandshakeDone = false
 
     private val heartbeatRunnable = object : Runnable {
         override fun run() {
@@ -45,6 +46,7 @@ class MainProcessKeepAliveService : Service() {
                 stopSelfSafely()
                 return
             }
+            WebIdeManager.ensureStartedIfEnabled(this@MainProcessKeepAliveService)
             Log.d(TAG, "heartbeat active reason=$lastReason process=${ProcessUtil.currentProcessName(this@MainProcessKeepAliveService)}")
             mainHandler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
         }
@@ -58,20 +60,33 @@ class MainProcessKeepAliveService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
+        lastReason = intent?.getStringExtra(EXTRA_REASON).orEmpty().ifBlank {
+            if (action == ACTION_STOP) "stop" else "refresh"
+        }
+
+        // This service is normally launched through startForegroundService().  Around WebIDE/MCP
+        // shutdown there can be stale or reordered service starts from the framework, the bridge
+        // provider, or an older app version.  Some of those starts may not carry our marker extra
+        // anymore.  Therefore every onStartCommand performs the FGS handshake first, then decides
+        // whether to keep running.  A brief notification is better than crashing the main process
+        // with ForegroundServiceDidNotStartInTimeException.
+        if (!ensureForegroundHandshake("onStartCommand action=${action ?: "null"}")) {
+            stopSelfSafely()
+            return START_NOT_STICKY
+        }
+
         if (action == ACTION_STOP) {
             Log.i(TAG, "stop requested")
             stopSelfSafely()
             return START_NOT_STICKY
         }
 
-        lastReason = intent?.getStringExtra(EXTRA_REASON).orEmpty().ifBlank { "refresh" }
         if (!shouldKeepAlive(this)) {
             Log.i(TAG, "no active WebIDE/MCP config, skip main-process keepalive")
             stopSelfSafely()
             return START_NOT_STICKY
         }
 
-        startForegroundCompat(buildNotification())
         acquireWakeLock()
         scheduleHeartbeat()
         Log.i(TAG, "main-process keepalive active reason=$lastReason")
@@ -131,16 +146,28 @@ class MainProcessKeepAliveService : Service() {
         mainHandler.removeCallbacks(heartbeatRunnable)
         releaseWakeLock()
         stopForegroundCompat()
+        foregroundHandshakeDone = false
         stopSelf()
     }
 
+    private fun ensureForegroundHandshake(reason: String): Boolean {
+        if (foregroundHandshakeDone) return true
+        return runCatching {
+            startForegroundCompat(buildNotification())
+            foregroundHandshakeDone = true
+            true
+        }.onFailure {
+            Log.e(TAG, "main-process keepalive foreground handshake failed, reason=$reason", it)
+        }.getOrDefault(false)
+    }
+
     private fun startForegroundCompat(notification: Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, foregroundServiceTypeMask())
-        } else {
-            @Suppress("DEPRECATION")
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        // Use the two-argument form for compatibility with stale requests from older versions.
+        // The service is no longer actively started by this build; this path is only a crash guard
+        // for already queued framework starts, so avoiding OEM foreground-service-type validation
+        // is safer than advertising an optional bridge-specific type here.
+        @Suppress("DEPRECATION")
+        startForeground(NOTIFICATION_ID, notification)
     }
 
     private fun foregroundServiceTypeMask(): Int {
@@ -225,10 +252,21 @@ class MainProcessKeepAliveService : Service() {
         const val ACTION_START = "top.lovepikachu.XiaoHeiHook.keepalive.START"
         const val ACTION_STOP = "top.lovepikachu.XiaoHeiHook.keepalive.STOP"
         const val EXTRA_REASON = "reason"
+        private const val EXTRA_STARTED_AS_FOREGROUND = "started_as_foreground" // kept for compatibility with older queued intents
         const val REASON_WEBIDE = "webide"
         const val REASON_MCP = "mcp"
         const val REASON_BRIDGE = "bridge"
 
+        /**
+         * Main-process keepalive is intentionally disabled.
+         *
+         * WebIDE and MCP already run in their own foreground-service processes.  This helper was
+         * only an optimization to keep the normal UI process warm for bridge calls, but on some
+         * Android/OPlus builds the queued startForegroundService() request for this extra service
+         * can be delivered after WebIDE has been stopped or while the app is opening, causing
+         * ForegroundServiceDidNotStartInTimeException in the main process.  Do not start a second
+         * foreground service from here anymore; just leave a cleanup path for old running instances.
+         */
         fun startIfNeeded(context: Context, reason: String): Result<Unit> = runCatching {
             val appContext = context.applicationContext
             if (reason == REASON_BRIDGE) {
@@ -236,29 +274,15 @@ class MainProcessKeepAliveService : Service() {
                 if (now - lastBridgeStartAttemptUptime < BRIDGE_START_THROTTLE_MS) return@runCatching
                 lastBridgeStartAttemptUptime = now
             }
-            if (!shouldKeepAlive(appContext)) {
-                stopIfNotNeeded(appContext)
-                return@runCatching
-            }
-            val intent = Intent(appContext, MainProcessKeepAliveService::class.java)
-                .setAction(ACTION_START)
-                .putExtra(EXTRA_REASON, reason)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
-            } else {
-                appContext.startService(intent)
-            }
-        }.onFailure { Log.w(TAG, "start main-process keepalive failed reason=$reason", it) }
+            Log.d(TAG, "main-process keepalive disabled, skip start reason=$reason")
+            appContext.stopService(Intent(appContext, MainProcessKeepAliveService::class.java))
+        }.onFailure { Log.w(TAG, "cleanup main-process keepalive failed reason=$reason", it) }
 
         fun stopIfNotNeeded(context: Context): Result<Unit> = runCatching {
             val appContext = context.applicationContext
-            if (shouldKeepAlive(appContext)) {
-                startIfNeeded(appContext, "refresh")
-                Unit
-            } else {
-                appContext.stopService(Intent(appContext, MainProcessKeepAliveService::class.java))
-                Unit
-            }
+            Log.d(TAG, "main-process keepalive disabled, stop old instance if any")
+            appContext.stopService(Intent(appContext, MainProcessKeepAliveService::class.java))
+            Unit
         }.onFailure { Log.w(TAG, "stop main-process keepalive failed", it) }
 
 

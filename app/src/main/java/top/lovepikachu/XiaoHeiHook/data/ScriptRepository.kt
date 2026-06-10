@@ -207,23 +207,67 @@ xposed.onPackageLoaded(function (param) {
         }
     }
 
+    /**
+     * Cheap UI refresh for app detail pages. It only lists candidate script entry files
+     * and compares their count with the count saved with the metadata cache. If the
+     * count is unchanged, the cached metadata is reused. If the count changed, a full
+     * metadata rescan is performed and the cache is updated.
+     */
+    fun softRefreshScriptMetadataCacheIfCountChanged(
+        prefs: SharedPreferences?,
+        allowRootFallback: Boolean = true
+    ): Result<List<ScriptMetadata>> = runCatching {
+        applyScriptRootFromPrefs(prefs)
+        if (!hasScriptMetadataCache(prefs)) {
+            Log.d(TAG, "softRefreshScriptMetadataCacheIfCountChanged: cache missing, full refresh")
+            return@runCatching refreshScriptMetadataCache(prefs, allowRootFallback).getOrThrow()
+        }
+
+        val cached = readScriptMetadataCache(prefs)
+        val cachedFileCount = prefs?.getInt(ScriptPrefs.SCRIPT_METADATA_CACHE_FILE_COUNT, -1) ?: -1
+        val expectedCount = if (cachedFileCount >= 0) cachedFileCount else cached.size
+        val currentCount = countPublicScriptEntryFiles(allowRootFallback)
+
+        Log.d(
+            TAG,
+            "softRefreshScriptMetadataCacheIfCountChanged: cached=${cached.size}, expectedFileCount=$expectedCount, currentFileCount=$currentCount"
+        )
+
+        if (currentCount != expectedCount) {
+            Log.d(TAG, "softRefreshScriptMetadataCacheIfCountChanged: file count changed, full refresh")
+            refreshScriptMetadataCache(prefs, allowRootFallback).getOrThrow()
+        } else {
+            if (cachedFileCount != currentCount) {
+                prefs?.edit()?.putInt(ScriptPrefs.SCRIPT_METADATA_CACHE_FILE_COUNT, currentCount)?.commit()
+            }
+            cached
+        }
+    }.onFailure { error ->
+        Log.w(TAG, "softRefreshScriptMetadataCacheIfCountChanged: failed", error)
+    }
+
     fun refreshScriptMetadataCache(
         prefs: SharedPreferences?,
         allowRootFallback: Boolean = true
     ): Result<List<ScriptMetadata>> = runCatching {
         applyScriptRootFromPrefs(prefs)
         Log.d(TAG, "refreshScriptMetadataCache: start, allowRootFallback=$allowRootFallback")
-        val scripts = readPublicScriptSources(
+        val sources = readPublicScriptSources(
             debugPackageName = null,
             allowRootFallback = allowRootFallback,
             forceRootMerge = allowRootFallback
-        ).map { it.metadata }
-        saveScriptMetadataCache(prefs, scripts)
+        )
+        val scripts = sources.map { it.metadata }
+        saveScriptMetadataCache(prefs, scripts, scriptFileCount = sources.size)
         Log.d(TAG, "refreshScriptMetadataCache: saved count=${scripts.size}, ids=${scripts.joinToString { it.id }}")
         scripts
     }
 
-    fun saveScriptMetadataCache(prefs: SharedPreferences?, scripts: List<ScriptMetadata>) {
+    fun saveScriptMetadataCache(
+        prefs: SharedPreferences?,
+        scripts: List<ScriptMetadata>,
+        scriptFileCount: Int = scripts.size
+    ) {
         if (prefs == null) {
             Log.w(TAG, "saveScriptMetadataCache: prefs null, skip cache save, count=${scripts.size}")
             return
@@ -231,7 +275,63 @@ xposed.onPackageLoaded(function (param) {
         prefs.edit()
             .putString(ScriptPrefs.SCRIPT_METADATA_CACHE_JSON, scripts.toJson().toString())
             .putLong(ScriptPrefs.SCRIPT_METADATA_CACHE_UPDATED_AT, System.currentTimeMillis())
+            .putInt(ScriptPrefs.SCRIPT_METADATA_CACHE_FILE_COUNT, scriptFileCount)
             .commit()
+    }
+
+    private fun countPublicScriptEntryFiles(allowRootFallback: Boolean): Int {
+        ensurePublicFolderAndSample(allowRootFallback).onFailure {
+            Log.e(TAG, "countPublicScriptEntryFiles: ensure folder failed", it)
+        }
+        val normal = listPublicScriptEntryPathsByFileApi()
+        val root = if (allowRootFallback) listPublicScriptEntryPathsByRoot() else emptyList()
+        val merged = (normal + root).distinct()
+        Log.d(
+            TAG,
+            "countPublicScriptEntryFiles: count=${merged.size}, normal=${normal.size}, root=${root.size}, allowRootFallback=$allowRootFallback"
+        )
+        return merged.size
+    }
+
+    private fun listPublicScriptEntryPathsByFileApi(): List<String> {
+        if (!publicScriptsDir.exists() || !publicScriptsDir.isDirectory) return emptyList()
+        return runCatching {
+            publicScriptsDir.listFiles()
+                ?.mapNotNull { entry ->
+                    when {
+                        entry.isFile && entry.extension.equals("js", ignoreCase = true) -> entry.absolutePath
+                        entry.isDirectory -> File(entry, "index.js").takeIf { it.isFile }?.absolutePath
+                        else -> null
+                    }
+                }
+                ?.sortedBy { it.lowercase() }
+                ?: emptyList()
+        }.getOrElse { error ->
+            Log.w(TAG, "listPublicScriptEntryPathsByFileApi failed", error)
+            emptyList()
+        }
+    }
+
+    private fun listPublicScriptEntryPathsByRoot(): List<String> {
+        val idResult = runRootCommand("id", timeoutSeconds = 5)
+        if (idResult.timedOut || idResult.exitCode != 0) {
+            Log.d(TAG, "listPublicScriptEntryPathsByRoot: su unavailable or denied")
+            return emptyList()
+        }
+        val findCommand = "find ${shellQuote(publicScriptsDir.absolutePath)} -maxdepth 2 -type f 2>/dev/null"
+        val findResult = runRootCommand(findCommand, timeoutSeconds = 10)
+        if (findResult.timedOut || findResult.exitCode != 0) {
+            Log.w(TAG, "listPublicScriptEntryPathsByRoot: find failed")
+            return emptyList()
+        }
+        return findResult.stdout
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it.endsWith(".js", ignoreCase = true) }
+            .filter { isRootScriptEntryPath(it) }
+            .distinct()
+            .sortedBy { it.lowercase() }
+            .toList()
     }
 
     private fun readPublicScriptSources(

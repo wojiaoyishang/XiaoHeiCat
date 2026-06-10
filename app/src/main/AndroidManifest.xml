@@ -16,6 +16,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
@@ -47,7 +48,7 @@
 
         <service
             android:name=".keepalive.MainProcessKeepAliveService"
-            android:enabled="true"
+            android:enabled="false"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|specialUse"
             android:stopWithTask="false">
@@ -60,12 +61,21 @@
             android:name=".webide.WebIdeForegroundService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|specialUse"
+            android:foregroundServiceType="dataSync"
             android:process=":webide"
-            android:stopWithTask="false">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-enabled embedded WebIDE local HTTP server for script editing and debugging over local or device network connections." />
+            android:stopWithTask="false" />
+
+        <service
+            android:name=".keepalive.KeepAliveAccessibilityService"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/xiaohei_keep_alive_accessibility_service" />
         </service>
 
 

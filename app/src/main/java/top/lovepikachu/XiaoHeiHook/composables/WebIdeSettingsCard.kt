@@ -57,12 +57,15 @@ fun WebIdeSettingsCard(modifier: Modifier = Modifier) {
 
     LaunchedEffect(Unit) {
         WebIdeManager.syncStatusWithSavedConfig(context)
+        WebIdeManager.ensureStartedIfEnabled(context)
         batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
     }
 
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                WebIdeManager.syncStatusWithSavedConfig(context)
+                WebIdeManager.ensureStartedIfEnabled(context)
                 batteryIgnored = BatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
             }
         }

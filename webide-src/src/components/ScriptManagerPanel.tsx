@@ -1,5 +1,52 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import type { ScriptFileEntry, ScriptInfo } from '../types/webide'
+
+
+
+type FileColumnKey = 'name' | 'type' | 'size' | 'modified' | 'actions'
+
+const FILE_COLUMN_STORAGE_KEY = 'xhh.scriptManager.columnWidths'
+
+const FILE_COLUMNS: Array<{ key: FileColumnKey; label: string; min: number; defaultWidth: number }> = [
+  { key: 'name', label: '名称', min: 120, defaultWidth: 210 },
+  { key: 'type', label: '类型', min: 48, defaultWidth: 64 },
+  { key: 'size', label: '大小', min: 54, defaultWidth: 70 },
+  { key: 'modified', label: '修改时间', min: 96, defaultWidth: 132 },
+  { key: 'actions', label: '操作', min: 92, defaultWidth: 118 },
+]
+
+type FileColumnWidths = Record<FileColumnKey, number>
+
+function defaultFileColumnWidths(): FileColumnWidths {
+  return FILE_COLUMNS.reduce((acc, column) => {
+    acc[column.key] = column.defaultWidth
+    return acc
+  }, {} as FileColumnWidths)
+}
+
+function loadFileColumnWidths(): FileColumnWidths {
+  const defaults = defaultFileColumnWidths()
+  try {
+    const raw = window.localStorage.getItem(FILE_COLUMN_STORAGE_KEY)
+    if (!raw) return defaults
+    const parsed = JSON.parse(raw) as Partial<Record<FileColumnKey, number>>
+    return FILE_COLUMNS.reduce((acc, column) => {
+      const value = Number(parsed[column.key])
+      acc[column.key] = Number.isFinite(value) ? Math.max(column.min, value) : defaults[column.key]
+      return acc
+    }, {} as FileColumnWidths)
+  } catch {
+    return defaults
+  }
+}
+
+function saveFileColumnWidths(widths: FileColumnWidths) {
+  try {
+    window.localStorage.setItem(FILE_COLUMN_STORAGE_KEY, JSON.stringify(widths))
+  } catch {
+    // ignore localStorage errors in private mode / restricted WebView
+  }
+}
 
 interface Props {
   scripts: ScriptInfo[]
@@ -71,6 +118,7 @@ export function ScriptManagerPanel({
 }: Props) {
   const [query, setQuery] = useState('')
   const [menu, setMenu] = useState<ContextMenuState | null>(null)
+  const [columnWidths, setColumnWidths] = useState<FileColumnWidths>(() => loadFileColumnWidths())
   const scriptByPath = useMemo(() => {
     const map = new Map<string, ScriptInfo>()
     scripts.forEach((script) => map.set(script.path, script))
@@ -130,6 +178,45 @@ export function ScriptManagerPanel({
     setMenu({ x: ev.clientX, y: ev.clientY, entry })
   }
 
+  const columnTemplate = FILE_COLUMNS.map((column) => `${columnWidths[column.key]}px`).join(' ')
+
+  const startResizeColumn = (ev: ReactMouseEvent, key: FileColumnKey) => {
+    ev.preventDefault()
+    ev.stopPropagation()
+    const column = FILE_COLUMNS.find((item) => item.key === key)
+    if (!column) return
+
+    const startX = ev.clientX
+    const startWidth = columnWidths[key]
+    document.body.classList.add('resizing-file-column')
+
+    const onMove = (moveEv: MouseEvent) => {
+      const nextWidth = Math.max(column.min, startWidth + moveEv.clientX - startX)
+      setColumnWidths((old) => ({ ...old, [key]: nextWidth }))
+    }
+
+    const onUp = (upEv: MouseEvent) => {
+      const nextWidth = Math.max(column.min, startWidth + upEv.clientX - startX)
+      const next = { ...columnWidths, [key]: nextWidth }
+      setColumnWidths(next)
+      saveFileColumnWidths(next)
+      document.body.classList.remove('resizing-file-column')
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  const resetColumnWidth = (key: FileColumnKey) => {
+    const column = FILE_COLUMNS.find((item) => item.key === key)
+    if (!column) return
+    const next = { ...columnWidths, [key]: column.defaultWidth }
+    setColumnWidths(next)
+    saveFileColumnWidths(next)
+  }
+
   return (
     <aside className="panel left-panel script-manager-panel classic-file-manager">
       <div className="panel-title">脚本文件管理</div>
@@ -166,15 +253,25 @@ export function ScriptManagerPanel({
       </div>
 
       <div className="classic-file-table" role="table" aria-label="脚本文件" onContextMenu={(ev) => ev.preventDefault()}>
-        <div className="classic-file-row classic-file-head" role="row">
-          <div>名称</div>
-          <div>类型</div>
-          <div>大小</div>
-          <div>修改时间</div>
-          <div>操作</div>
+        <div className="classic-file-row classic-file-head" role="row" style={{ gridTemplateColumns: columnTemplate }}>
+          {FILE_COLUMNS.map((column) => (
+            <div
+              key={column.key}
+              className="classic-file-head-cell"
+              role="columnheader"
+              title="拖动右侧边界调整宽度，双击恢复默认宽度"
+              onDoubleClick={() => resetColumnWidth(column.key)}
+            >
+              <span>{column.label}</span>
+              <span
+                className="classic-file-column-resizer"
+                onMouseDown={(ev) => startResizeColumn(ev, column.key)}
+              />
+            </div>
+          ))}
         </div>
         {canGoUp ? (
-          <div className="classic-file-row directory up-entry" role="row" onDoubleClick={onGoUp} title="双击返回上级目录">
+          <div className="classic-file-row directory up-entry" role="row" style={{ gridTemplateColumns: columnTemplate }} onDoubleClick={onGoUp} title="双击返回上级目录">
             <div className="classic-name"><span className="file-icon">📁</span><span>..</span></div>
             <div>上级目录</div>
             <div />
@@ -192,6 +289,7 @@ export function ScriptManagerPanel({
               key={`${entry.type}:${entry.path}`}
               className={`classic-file-row ${entry.type}${isCurrent ? ' selected' : ''}${role ? ' script-role' : ''}`}
               role="row"
+              style={{ gridTemplateColumns: columnTemplate }}
               title={entry.path || entry.name}
               onDoubleClick={() => openEntry(entry)}
               onContextMenu={(ev) => showEntryMenu(ev, entry)}

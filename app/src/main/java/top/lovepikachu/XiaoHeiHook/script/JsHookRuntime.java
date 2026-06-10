@@ -1209,6 +1209,18 @@ public final class JsHookRuntime {
         return Context.jsToJava(unwrapped, Object.class);
     }
 
+    private Object jsHookReturnToJavaValue(Executable executable, Object value) throws Exception {
+        if (executable instanceof Constructor<?>) {
+            // Constructors do not have a normal Java return value.  Avoid setting
+            // an arbitrary JS value as a constructor result.
+            return null;
+        }
+        if (executable instanceof Method && javaBridge != null) {
+            return JavaValueConverter.convertReturnValue(javaBridge, ((Method) executable).getReturnType(), value);
+        }
+        return jsToJavaValue(value);
+    }
+
     private boolean shouldAutoConvertJsValue(Object value) {
         if (value == null || value == Undefined.instance || value == Scriptable.NOT_FOUND || value == Context.getUndefinedValue()) {
             return true;
@@ -2870,7 +2882,7 @@ public final class JsHookRuntime {
             XposedInterface.HookHandle handle = builder.intercept(chain -> {
                 try {
                     Object jsResult = callJs(callback, new JsChain(chain));
-                    return jsToJavaValue(jsResult);
+                    return jsHookReturnToJavaValue(chain.getExecutable(), jsResult);
                 } catch (Throwable t) {
                     log(Log.ERROR, "Hook 回调执行失败: " + chain.getExecutable(), t);
                     throw t;

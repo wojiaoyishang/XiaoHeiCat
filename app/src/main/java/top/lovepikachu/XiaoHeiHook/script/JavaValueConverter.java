@@ -100,6 +100,87 @@ public final class JavaValueConverter {
         return toCustomJavaObject(bridge, targetType, value, options);
     }
 
+
+    /**
+     * Convert the value returned from xposed.hook(...).intercept(...) to the
+     * exact Java boundary type expected by libxposed.
+     *
+     * Plain JS values are converted against the hooked method's real return
+     * type. Values explicitly created by Java.to(type, value[, options]) carry
+     * their requested type through JavaObjectWrapper#getExplicitType(); for
+     * those values we only validate assignability and do primitive boxed
+     * acceptance, instead of re-inferring/converting the value from returnType.
+     */
+    public static Object convertReturnValue(JavaBridge bridge, Class<?> returnType, Object jsValue) throws Exception {
+        if (returnType == null || returnType == Void.TYPE || returnType == Void.class) return null;
+
+        Class<?> explicitType = explicitJavaTypeOf(jsValue);
+        Object raw = unwrapJavaLike(jsValue);
+        if (raw == Undefined.instance || raw == Scriptable.NOT_FOUND || raw == Context.getUndefinedValue()) raw = null;
+
+        if (raw == null) {
+            if (returnType.isPrimitive()) {
+                throw new IllegalArgumentException("Cannot return null/undefined for primitive return type: " + returnType.getName());
+            }
+            return null;
+        }
+
+        if (explicitType != null) {
+            return validateExplicitReturnValue(returnType, explicitType, raw);
+        }
+
+        return explicitToJava(bridge, returnType, jsValue, JavaToOptions.forHookReturn());
+    }
+
+    public static Class<?> explicitJavaTypeOf(Object value) {
+        Object current = value;
+        for (int i = 0; i < 16; i++) {
+            if (current == null || current == Context.getUndefinedValue()
+                    || current == Scriptable.NOT_FOUND || current == Undefined.instance) {
+                return null;
+            }
+            if (current instanceof JavaObjectWrapper) {
+                JavaObjectWrapper wrapper = (JavaObjectWrapper) current;
+                return wrapper.hasExplicitType() ? wrapper.getExplicitType() : null;
+            }
+            if (current instanceof Wrapper) {
+                Object unwrapped = ((Wrapper) current).unwrap();
+                if (unwrapped == current) return null;
+                current = unwrapped;
+                continue;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    private static Object validateExplicitReturnValue(Class<?> returnType, Class<?> explicitType, Object raw) {
+        raw = unwrapJavaLike(raw);
+        Class<?> boxedReturnType = boxType(returnType);
+        Class<?> boxedExplicitType = boxType(explicitType);
+
+        if (raw == null) {
+            if (returnType.isPrimitive()) {
+                throw new IllegalArgumentException("Explicit Java.to(" + explicitType.getName()
+                        + ") returned null for primitive return type " + returnType.getName());
+            }
+            return null;
+        }
+
+        if (returnType.isPrimitive()) {
+            if (boxedReturnType.isInstance(raw)) return raw;
+            throw new IllegalArgumentException("Explicit Java.to(" + explicitType.getName() + ") value "
+                    + raw.getClass().getName() + " is not compatible with primitive return type " + returnType.getName());
+        }
+
+        if (returnType == Object.class) return raw;
+        if (returnType.isInstance(raw)) return raw;
+        if (returnType.isAssignableFrom(boxedExplicitType) && boxedExplicitType.isInstance(raw)) return raw;
+
+        throw new IllegalArgumentException("Explicit Java.to(" + explicitType.getName() + ") value "
+                + raw.getClass().getName() + " is not assignable to return type " + returnType.getName());
+    }
+
     public static boolean isJavaLikeValue(Object value) {
         if (value == null || value == Undefined.instance || value == Scriptable.NOT_FOUND || value == Context.getUndefinedValue()) return false;
         if (value instanceof JavaClassWrapper || value instanceof JavaObjectWrapper || value instanceof JavaListWrapper || value instanceof JavaMapWrapper) return true;
@@ -111,13 +192,42 @@ public final class JavaValueConverter {
     }
 
     public static Object unwrapJavaLike(Object value) {
-        if (value == Context.getUndefinedValue() || value == Scriptable.NOT_FOUND || value == Undefined.instance) return null;
-        if (value instanceof JavaClassWrapper) return ((JavaClassWrapper) value).getRawClass();
-        if (value instanceof JavaObjectWrapper) return ((JavaObjectWrapper) value).getRawObject();
-        if (value instanceof JavaListWrapper) return ((JavaListWrapper) value).getRawList();
-        if (value instanceof JavaMapWrapper) return ((JavaMapWrapper) value).getRawMap();
-        if (value instanceof Wrapper) return ((Wrapper) value).unwrap();
-        return value;
+        Object current = value;
+        for (int i = 0; i < 16; i++) {
+            if (current == Context.getUndefinedValue() || current == Scriptable.NOT_FOUND || current == Undefined.instance) return null;
+            if (current instanceof JavaClassWrapper) {
+                Object next = ((JavaClassWrapper) current).getRawClass();
+                if (next == current) return current;
+                current = next;
+                continue;
+            }
+            if (current instanceof JavaObjectWrapper) {
+                Object next = ((JavaObjectWrapper) current).getRawObject();
+                if (next == current) return current;
+                current = next;
+                continue;
+            }
+            if (current instanceof JavaListWrapper) {
+                Object next = ((JavaListWrapper) current).getRawList();
+                if (next == current) return current;
+                current = next;
+                continue;
+            }
+            if (current instanceof JavaMapWrapper) {
+                Object next = ((JavaMapWrapper) current).getRawMap();
+                if (next == current) return current;
+                current = next;
+                continue;
+            }
+            if (current instanceof Wrapper) {
+                Object next = ((Wrapper) current).unwrap();
+                if (next == current) return current;
+                current = next;
+                continue;
+            }
+            return current;
+        }
+        return current;
     }
 
     private static boolean isWrappedJavaValue(Object value) {
@@ -525,6 +635,14 @@ public final class JavaValueConverter {
             boolean hasDefaultValue = defaultValue != null && defaultValue != Undefined.instance && defaultValue != Scriptable.NOT_FOUND;
             return new JavaToOptions(elementType, keyType, valueType, deep, unsigned, nullAsEmpty, numberAsBoolean,
                     booleanAsNumber, firstChar, encoding, hasDefaultValue, defaultValue);
+        }
+
+        static JavaToOptions forHookReturn() {
+            // Hook return conversion is intentionally a little more permissive
+            // for plain JS values than Java.to(...): returning 1/0 to a boolean
+            // method is accepted, while explicit Java.to(...) values still keep
+            // their own type and are only compatibility-checked.
+            return new JavaToOptions(null, null, null, true, false, false, true, false, false, null, false, null);
         }
 
         JavaToOptions forElement() {

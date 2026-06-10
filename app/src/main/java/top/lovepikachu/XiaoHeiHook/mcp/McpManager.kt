@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
+import top.lovepikachu.XiaoHeiHook.keepalive.AccessibilityKeepAliveManager
 import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 
 object McpManager {
@@ -94,6 +95,7 @@ object McpManager {
                 runCatching { appContext.stopService(android.content.Intent(appContext, McpForegroundService::class.java)) }
             }
             MainProcessKeepAliveService.stopIfNotNeeded(appContext)
+            AccessibilityKeepAliveManager.disableIfNoRuntimeNeedsKeepAlive(appContext)
         } else {
             syncRemoteEnabled(false)
         }
@@ -117,6 +119,7 @@ object McpManager {
         runCatching { appContext.startService(McpForegroundService.stopIntent(appContext)) }
         runCatching { appContext.stopService(android.content.Intent(appContext, McpForegroundService::class.java)) }
         MainProcessKeepAliveService.stopIfNotNeeded(appContext)
+        AccessibilityKeepAliveManager.disableIfNoRuntimeNeedsKeepAlive(appContext)
     }
 
     fun syncStatusWithSavedConfig(context: Context) {
@@ -152,6 +155,7 @@ object McpManager {
         McpMethodRegistry.clearAll()
         if (context != null && updateSavedConfig) {
             saveConfig(context, McpConfig(enabled = false, host = host, port = port, tokenEnabled = tokenEnabled, token = token))
+            AccessibilityKeepAliveManager.disableIfNoRuntimeNeedsKeepAlive(context)
         }
     }
 
@@ -166,6 +170,7 @@ object McpManager {
             lastError = error.message ?: error.javaClass.simpleName
         )
         saveConfig(context, McpConfig(enabled = false, host = host, port = port, tokenEnabled = tokenEnabled, token = token))
+        AccessibilityKeepAliveManager.disableIfNoRuntimeNeedsKeepAlive(context)
     }
 
     internal fun sanitizeHost(host: String): String = host.trim().ifBlank { McpDefaults.DEFAULT_HOST }

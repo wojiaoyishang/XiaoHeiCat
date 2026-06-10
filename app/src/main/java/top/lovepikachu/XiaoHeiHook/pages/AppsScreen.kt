@@ -180,14 +180,23 @@ fun AppsScreen(
         }
     }
 
-    suspend fun loadScripts(debugPackageName: String? = null, forceRescan: Boolean = false): List<ScriptMetadata> = withContext(Dispatchers.IO) {
-        Log.d(TAG, "loadScripts: start, debugPackage=${debugPackageName.orEmpty()}, forceRescan=$forceRescan")
+    suspend fun loadScripts(
+        debugPackageName: String? = null,
+        forceRescan: Boolean = false,
+        softRefresh: Boolean = false
+    ): List<ScriptMetadata> = withContext(Dispatchers.IO) {
+        Log.d(TAG, "loadScripts: start, debugPackage=${debugPackageName.orEmpty()}, forceRescan=$forceRescan, softRefresh=$softRefresh")
         ScriptRepository.ensurePublicFolderAndSample(allowRootFallback)
         val prefs = XiaoHeiApplication.remotePreferences
         val loaded = if (forceRescan) {
             ScriptRepository.refreshScriptMetadataCache(prefs, allowRootFallback).getOrElse { error ->
                 Log.e(TAG, "loadScripts: refresh cache failed, use existing cache", error)
                 ScriptRepository.readScriptMetadataCache(prefs)
+            }
+        } else if (softRefresh) {
+            ScriptRepository.softRefreshScriptMetadataCacheIfCountChanged(prefs, allowRootFallback).getOrElse { error ->
+                Log.e(TAG, "loadScripts: soft refresh failed, use cache or first scan", error)
+                ScriptRepository.loadScriptMetadataCacheOrScan(prefs, allowRootFallback)
             }
         } else {
             ScriptRepository.loadScriptMetadataCacheOrScan(prefs, allowRootFallback)
@@ -206,7 +215,7 @@ fun AppsScreen(
             val loadedApps = withContext(Dispatchers.IO) {
                 AppRepository.loadInstalledApps(context, forceRefresh = forceRefreshApps)
             }
-            val loadedScripts = loadScripts()
+            val loadedScripts = loadScripts(softRefresh = true)
             apps = loadedApps
             scripts = loadedScripts
             loading = false
@@ -225,6 +234,20 @@ fun AppsScreen(
             if (showToast) {
                 Toast.makeText(context, context.getString(R.string.apps_rescan_done, loadedScripts.size, matchedCount), Toast.LENGTH_SHORT).show()
             }
+            scanningScripts = false
+        }
+    }
+
+    suspend fun softRefreshScriptsForApp(app: InstalledAppInfo) {
+        if (requestAllFilesAccessBeforeScan(app, showToastAfterPermission = false)) return
+        scanningScripts = true
+        try {
+            Log.d(TAG, "softRefreshScriptsForApp: package=${app.packageName}")
+            val loadedScripts = loadScripts(app.packageName, softRefresh = true)
+            scripts = loadedScripts
+            val matchedCount = loadedScripts.count { it.supportsPackage(app.packageName) }
+            Log.d(TAG, "softRefreshScriptsForApp: package=${app.packageName}, total=${loadedScripts.size}, matched=$matchedCount")
+        } finally {
             scanningScripts = false
         }
     }
@@ -291,8 +314,14 @@ fun AppsScreen(
         if (apps.isEmpty()) {
             reload(forceRefreshApps = false)
         } else {
-            scripts = loadScripts()
+            scripts = loadScripts(softRefresh = true)
             loading = false
+        }
+    }
+
+    LaunchedEffect(selectedApp?.packageName) {
+        selectedApp?.let { app ->
+            softRefreshScriptsForApp(app)
         }
     }
 
@@ -470,8 +499,8 @@ fun AppsScreen(
                             scripts = matchedScripts,
                             scanningScripts = scanningScripts,
                             moduleActive = moduleState.isActivated,
-                            // Script metadata is now cached globally. Entering detail should not rescan
-                            // Documents/XiaoHeiHook; only the explicit “重新扫描脚本” action refreshes cache.
+                            // Detail open triggers a soft script refresh in AppsScreen: only file-count
+                            // mismatch rebuilds metadata cache. Explicit menu refresh still does a full scan.
                             initialAutoScan = false,
                             onInitialAutoScanConsumed = { detailAutoScannedPackages.add(app.packageName) },
                             onInitialRescanScripts = {},

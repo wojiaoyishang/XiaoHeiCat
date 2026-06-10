@@ -153,6 +153,10 @@ class WebIdeServer(
                     }
                 }
             } catch (e: Throwable) {
+                if (isExpectedShutdown(e)) {
+                    Log.d(TAG, "#$requestId stream/client stopped during WebIDE shutdown: ${e.javaClass.simpleName}")
+                    return
+                }
                 if (isClientDisconnect(e)) {
                     Log.i(TAG, "#$requestId client disconnected: ${e.message ?: e.javaClass.simpleName}")
                     return
@@ -168,6 +172,17 @@ class WebIdeServer(
         }
     }
 
+
+    private fun isExpectedShutdown(error: Throwable): Boolean {
+        if (running) return false
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is InterruptedException) return true
+            if (current is java.io.InterruptedIOException) return true
+            current = current.cause
+        }
+        return false
+    }
 
     private fun isClientDisconnect(error: Throwable): Boolean {
         var current: Throwable? = error

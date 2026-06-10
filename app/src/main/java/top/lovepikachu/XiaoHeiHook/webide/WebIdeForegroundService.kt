@@ -15,7 +15,6 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
-import kotlin.system.exitProcess
 import top.lovepikachu.XiaoHeiHook.MainActivity
 import top.lovepikachu.XiaoHeiHook.R
 import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
@@ -29,8 +28,6 @@ class WebIdeForegroundService : Service() {
     private var runningPort: Int = WebIdeDefaults.DEFAULT_PORT
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
-    @Volatile
-    private var processKillScheduled: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -44,7 +41,6 @@ class WebIdeForegroundService : Service() {
             stopRuntime(updateSavedConfig = true)
             stopForegroundCompat()
             stopSelf(startId)
-            killWebIdeProcessSoon("ACTION_STOP")
             return START_NOT_STICKY
         }
 
@@ -97,7 +93,6 @@ class WebIdeForegroundService : Service() {
         stopRuntime(updateSavedConfig = false)
         stopForegroundCompat()
         Log.i(TAG, "destroyed")
-        killWebIdeProcessSoon("onDestroy")
         super.onDestroy()
     }
 
@@ -203,28 +198,6 @@ class WebIdeForegroundService : Service() {
         wakeLock = null
     }
 
-    private fun killWebIdeProcessSoon(reason: String) {
-        if (processKillScheduled) return
-        processKillScheduled = true
-
-        val pid = android.os.Process.myPid()
-        val processName = ProcessUtil.currentProcessName(this)
-        if (!processName.endsWith(":webide")) {
-            Log.w(TAG, "skip process kill, current process is not :webide: $processName")
-            return
-        }
-
-        Thread({
-            runCatching { Thread.sleep(250) }
-            Log.i(TAG, "kill :webide process after WebIDE stop, reason=$reason, pid=$pid, process=$processName")
-            android.os.Process.killProcess(pid)
-            exitProcess(0)
-        }, "XHH-WebIDE-process-killer").apply {
-            isDaemon = false
-            start()
-        }
-    }
-
     private fun startForegroundCompat(notification: Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, foregroundServiceTypeMask())
@@ -235,11 +208,9 @@ class WebIdeForegroundService : Service() {
     }
 
     private fun foregroundServiceTypeMask(): Int {
-        var mask = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            mask = mask or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-        }
-        return mask
+        // WebIDE is a user-visible local file/script editing server.  Declare it as dataSync
+        // instead of specialUse/connectedDevice so ColorOS/OPlus can classify it more accurately.
+        return ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
     }
 
     private fun stopForegroundCompat() {

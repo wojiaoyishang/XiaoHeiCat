@@ -9,6 +9,7 @@ interface Props {
     onNew: () => void
     onRename: () => void
     onDelete: () => void
+    onOpenGenerator: () => void
     onSync: () => void
     onRestart: () => void
     onSyncRestart: () => void
@@ -83,6 +84,9 @@ export function TopBar(props: Props) {
                 name="debug"/></button>
             <button className="icon-btn stop-debug-btn" onClick={props.onStopDebug} title="停止调试 Shift+F5"><Icon
                 name="stop"/></button>
+            <span className="sep"/>
+            <button className="generator-group-btn" onClick={props.onOpenGenerator} title="打开 Hook 代码生成器"><Icon name="generator"/> 代码生成器</button>
+            <span className="sep"/>
             <span className="status">
               {props.statusText} |{' '}
                     <a

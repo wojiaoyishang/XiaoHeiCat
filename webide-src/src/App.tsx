@@ -24,6 +24,8 @@ import { ScriptManagerPanel } from "./components/ScriptManagerPanel";
 import { ScriptInfoPanel } from "./components/ScriptInfoPanel";
 import { MonacoCodeEditor } from "./editor/MonacoCodeEditor";
 import { ScriptSettingsPanel } from "./components/ScriptSettingsPanel";
+import { CodeGeneratorDialog, type GeneratedScript } from "./components/CodeGeneratorDialog";
+import { UiDialog, type UiDialogRequest, type DialogButton } from "./components/UiDialog";
 
 type PageMode = "apps" | "scripts";
 
@@ -32,6 +34,7 @@ interface OpenTab {
   content: string;
   metadata: ScriptMeta | null;
   dirty: boolean;
+  temporary?: boolean;
 }
 
 let nextLogId = 1;
@@ -75,6 +78,9 @@ export function App() {
   const [settingsDialog, setSettingsDialog] = useState<ScriptSettingsResponse | null>(null);
   const [settingsValues, setSettingsValues] = useState<Record<string, unknown>>({});
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [codeGeneratorOpen, setCodeGeneratorOpen] = useState(false);
+  const [uiDialog, setUiDialog] = useState<UiDialogRequest | null>(null);
+  const [uiDialogValue, setUiDialogValue] = useState("");
 
   const selectedPackage = selectedApp?.packageName;
   const activeTab = useMemo(
@@ -105,6 +111,16 @@ export function App() {
     return status.running ? `就绪 ${status.host || "127.0.0.1"}:${status.port || ""}` : "未启动";
   }, [status]);
 
+  useEffect(() => {
+    if (!hasAnyDirty) return;
+    const onBeforeUnload = (ev: BeforeUnloadEvent) => {
+      ev.preventDefault();
+      ev.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasAnyDirty]);
+
   const log = useCallback((text: string, type?: ConsoleLine["type"]) => {
     const now = new Date().toLocaleTimeString();
     setLogs((old) => {
@@ -126,6 +142,49 @@ export function App() {
     },
     [log],
   );
+
+  const closeUiDialog = useCallback(() => {
+    setUiDialog(null);
+    setUiDialogValue("");
+  }, []);
+
+  const askPrompt = useCallback((title: string, defaultValue = "", message?: string, multiline = false) => {
+    setUiDialogValue(defaultValue || "");
+    return new Promise<string | null>((resolve) => {
+      setUiDialog({
+        kind: "prompt",
+        title,
+        message,
+        defaultValue,
+        multiline,
+        resolve,
+      });
+    });
+  }, []);
+
+  const askConfirm = useCallback((title: string, message?: string, danger = false) => {
+    return new Promise<boolean>((resolve) => {
+      setUiDialog({
+        kind: "confirm",
+        title,
+        message,
+        danger,
+        resolve,
+      });
+    });
+  }, []);
+
+  const askChoice = useCallback((title: string, message: string, buttons: DialogButton[]) => {
+    return new Promise<string | null>((resolve) => {
+      setUiDialog({
+        kind: "choice",
+        title,
+        message,
+        buttons,
+        resolve,
+      });
+    });
+  }, []);
 
 
   const parseDebugJson = useCallback((text: string) => {
@@ -284,9 +343,9 @@ export function App() {
   );
 
   const closeTab = useCallback(
-    (path: string) => {
+    async (path: string) => {
       const tab = openTabs.find((item) => item.path === path);
-      if (tab?.dirty && !window.confirm(`脚本 ${path} 尚未保存，确定关闭吗？`))
+      if (tab?.dirty && !(await askConfirm("关闭未保存文件", `脚本 ${path} 尚未保存，确定关闭吗？`)))
         return;
       setOpenTabs((old) => {
         const idx = old.findIndex((item) => item.path === path);
@@ -303,13 +362,22 @@ export function App() {
 
   const saveTab = useCallback(
     async (tab: OpenTab): Promise<string> => {
+      let savePath = tab.path;
+      if (tab.temporary) {
+        const input = await askPrompt("保存临时文件", tab.path.replace(/^临时\//, ""), "请输入脚本保存文件名；留空将取消保存。");
+        if (!input || !input.trim()) {
+          log("已取消保存临时文件", "warn");
+          return tab.path;
+        }
+        savePath = input.trim().endsWith(".js") ? input.trim() : `${input.trim()}.js`;
+      }
       const data = await post<{
         ok: boolean;
         path: string;
         size: number;
         metadata?: ScriptMeta;
       }>("/api/scripts/save", {
-        path: tab.path,
+        path: savePath,
         content: tab.content,
       });
       setOpenTabs((old) =>
@@ -320,6 +388,7 @@ export function App() {
                 path: data.path,
                 metadata: data.metadata || null,
                 dirty: false,
+                temporary: false,
               }
             : item,
         ),
@@ -330,7 +399,7 @@ export function App() {
       if (selectedPackage) await loadHookSettings(selectedPackage);
       return data.path;
     },
-    [currentPath, refreshScriptLists, selectedPackage, loadHookSettings, log],
+    [currentPath, refreshScriptLists, selectedPackage, loadHookSettings, log, askPrompt],
   );
 
   const saveScript = useCallback(async () => {
@@ -353,26 +422,21 @@ export function App() {
         if (!tab) continue;
 
         if (tab.dirty) {
-          const choice = window.prompt(
-            `文件 ${tab.path} 尚未保存。\n输入 s 保存后关闭，d 不保存直接关闭，c 取消`,
-            "s",
-          );
-          const normalized = (choice || "").trim().toLowerCase();
+          const choice = await askChoice("关闭未保存文件", `文件 ${tab.path} 尚未保存。`, [
+            { label: "保存后关闭", value: "save", role: "primary" },
+            { label: "不保存关闭", value: "discard", role: "danger" },
+            { label: "取消", value: "cancel", role: "cancel" },
+          ]);
 
-          if (!normalized || normalized === "c" || normalized === "cancel") {
+          if (!choice || choice === "cancel") {
             return;
           }
 
-          if (normalized === "s" || normalized === "save") {
+          if (choice === "save") {
             const savedPath = await saveTab(tab);
             pathsToClose.add(savedPath);
             pathsToClose.add(tab.path);
             continue;
-          }
-
-          if (!(normalized === "d" || normalized === "discard" || normalized === "n" || normalized === "no")) {
-            log("关闭已取消：请输入 s、d 或 c", "warn");
-            return;
           }
         }
 
@@ -393,7 +457,7 @@ export function App() {
 
       log(`已关闭 ${pathsToClose.size} 个标签页`, "ok");
     },
-    [openTabs, currentPath, saveTab, log],
+    [openTabs, currentPath, saveTab, log, askChoice],
   );
 
   const revealScriptInManager = useCallback(
@@ -463,8 +527,9 @@ export function App() {
 // @run-at       package-loaded
 // @grant        java.full
 // @grant        xposed.full
-// @grant        dex.full
 // ==/LSPosedScript==
+
+// 如果需要捕获全部进程请修改 @process 字段。
 
 const TAG = "${name}";
 
@@ -487,8 +552,9 @@ xposed.onPackageLoaded(function (param) {
 // @run-at       package-loaded
 // @grant        java.full
 // @grant        xposed.full
-// @grant        dex.full
 // ==/LSPosedScript==
+
+// 如果需要捕获全部进程请修改 @process 字段。
 
 const config = require("./config.js");
 const logger = require("./logger.js");
@@ -540,30 +606,57 @@ module.exports = { install };
     const defaultName = selectedPackage
       ? `${selectedPackage.replace(/[^A-Za-z0-9_.-]/g, "_")}.js`
       : "new_script.js";
-    const path = window.prompt("新建单脚本文件名：", defaultName);
+    const path = await askPrompt("新建单脚本文件名", defaultName);
     if (!path) return;
     const cleanPath = path.endsWith(".js") ? path : `${path}.js`;
     const name = cleanPath.split("/").pop()?.replace(/\.js$/i, "") || "new_script";
     const target = selectedPackage || "*";
-    const data = await post<{ ok: boolean; path: string }>(
-      "/api/scripts/create",
-      {
-        path: cleanPath,
-        target,
-        content: singleScriptTemplate(name, target),
-      },
-    );
-    log(`已创建单脚本：${data.path}`, "ok");
+    const content = singleScriptTemplate(name, target);
+
+    let exists = false;
+    try {
+      await api<ReadScriptResponse>(`/api/scripts/read?path=${encodeURIComponent(cleanPath)}`);
+      exists = true;
+    } catch {
+      exists = false;
+    }
+
+    let finalPath = cleanPath;
+    if (exists) {
+      const overwrite = await askConfirm(
+        "脚本已存在",
+        `脚本 ${cleanPath} 已存在。是否覆盖？选择取消将直接打开现有文件。`,
+      );
+      if (overwrite) {
+        const data = await post<{ ok: boolean; path: string }>("/api/scripts/save", { path: cleanPath, content });
+        finalPath = data.path;
+        log(`已覆盖单脚本：${data.path}`, "ok");
+      } else {
+        log(`打开已有脚本：${cleanPath}`, "warn");
+      }
+    } else {
+      const data = await post<{ ok: boolean; path: string }>(
+        "/api/scripts/create",
+        {
+          path: cleanPath,
+          target,
+          content,
+        },
+      );
+      finalPath = data.path;
+      log(`已创建单脚本：${data.path}`, "ok");
+    }
+
     await refreshScriptLists();
     if (selectedPackage) await loadHookSettings(selectedPackage);
-    await openScript(data.path);
-  }, [selectedPackage, openScript, refreshScriptLists, loadHookSettings, log, singleScriptTemplate]);
+    await openScript(finalPath);
+  }, [selectedPackage, openScript, refreshScriptLists, loadHookSettings, log, singleScriptTemplate, askPrompt, askConfirm]);
 
   const createMultiScript = useCallback(async () => {
     const defaultFolder = selectedPackage
       ? selectedPackage.replace(/[^A-Za-z0-9_.-]/g, "_")
       : "multi_script";
-    const folderInput = window.prompt("新建多脚本目录名：", defaultFolder);
+    const folderInput = await askPrompt("新建多脚本目录名", defaultFolder);
     if (!folderInput) return;
     const folder = folderInput.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
     if (!folder || folder.includes("..") || folder.endsWith(".js")) {
@@ -580,11 +673,11 @@ module.exports = { install };
     await refreshScriptLists();
     if (selectedPackage) await loadHookSettings(selectedPackage);
     await openScript(entryPath);
-  }, [selectedPackage, openScript, refreshScriptLists, loadHookSettings, log, multiScriptTemplates]);
+  }, [selectedPackage, openScript, refreshScriptLists, loadHookSettings, log, multiScriptTemplates, askPrompt]);
 
   const createFileInFolder = useCallback(async (baseDir?: string) => {
     const prefix = baseDir ? `${baseDir.replace(/\/$/, "")}/` : "";
-    const path = window.prompt("新建 JS 文件路径：", `${prefix}helper.js`);
+    const path = await askPrompt("新建 JS 文件路径", `${prefix}helper.js`);
     if (!path) return;
     const cleanPath = path.endsWith(".js") ? path : `${path}.js`;
     const data = await post<{ ok: boolean; path: string }>("/api/scripts/save", {
@@ -594,7 +687,7 @@ module.exports = { install };
     log(`已创建文件：${data.path}`, "ok");
     await refreshScriptLists();
     await openScript(data.path);
-  }, [openScript, refreshScriptLists, log]);
+  }, [openScript, refreshScriptLists, log, askPrompt]);
 
   const openScriptDir = useCallback(async (dir: string) => {
     await loadScriptFiles(dir);
@@ -609,17 +702,17 @@ module.exports = { install };
 
   const createFolderInManager = useCallback(async (baseDir?: string) => {
     const prefix = baseDir ? `${baseDir.replace(/\/$/, "")}/` : "";
-    const path = window.prompt("新建文件夹路径：", `${prefix}new_folder`);
+    const path = await askPrompt("新建文件夹路径", `${prefix}new_folder`);
     if (!path) return;
     const data = await post<{ ok: boolean; path: string }>("/api/files/create-folder", { path });
     log(`已创建文件夹：${data.path}`, "ok");
     await refreshScriptLists();
     const slash = data.path.lastIndexOf("/");
     await loadScriptFiles(slash >= 0 ? data.path.substring(0, slash) : "");
-  }, [refreshScriptLists, loadScriptFiles, log]);
+  }, [refreshScriptLists, loadScriptFiles, log, askPrompt]);
 
   const renamePathInManager = useCallback(async (path: string) => {
-    const to = window.prompt("重命名为：", path);
+    const to = await askPrompt("重命名为", path);
     if (!to || to === path) return;
     const data = await post<{ ok: boolean; path: string; type?: string }>("/api/files/rename", { from: path, to });
     log(`已重命名：${path} -> ${data.path}`, "ok");
@@ -628,34 +721,38 @@ module.exports = { install };
     await refreshScriptLists();
     const slash = data.path.lastIndexOf("/");
     await loadScriptFiles(slash >= 0 ? data.path.substring(0, slash) : "");
-  }, [currentPath, refreshScriptLists, loadScriptFiles, log]);
+  }, [currentPath, refreshScriptLists, loadScriptFiles, log, askPrompt]);
 
   const deletePathInManager = useCallback(async (path: string) => {
-    if (!window.confirm(`确定删除 ${path} 吗？如果是文件夹，将删除其中所有内容。`)) return;
+    if (!(await askConfirm("删除文件", `确定删除 ${path} 吗？如果是文件夹，将删除其中所有内容。`, true))) return;
     await post<{ ok: boolean }>("/api/files/delete", { path, recursive: true });
     log(`已删除：${path}`, "ok");
     setOpenTabs((old) => old.filter((tab) => tab.path !== path && !tab.path.startsWith(path + "/")));
     if (currentPath === path || (currentPath && currentPath.startsWith(path + "/"))) setCurrentPath(null);
     await refreshScriptLists();
     await loadScriptFiles(scriptManagerDir);
-  }, [currentPath, scriptManagerDir, refreshScriptLists, loadScriptFiles, log]);
+  }, [currentPath, scriptManagerDir, refreshScriptLists, loadScriptFiles, log, askConfirm]);
 
   const createScript = useCallback(async () => {
-    const choice = window.prompt("新建类型：输入 1 创建单脚本，输入 2 创建多脚本", "1");
-    if (!choice) return;
+    const choice = await askChoice("新建脚本", "请选择新建类型", [
+      { label: "单脚本", value: "1", role: "primary" },
+      { label: "多文件脚本", value: "2" },
+      { label: "取消", value: "cancel", role: "cancel" },
+    ]);
+    if (!choice || choice === "cancel") return;
     if (choice.trim() === "2") {
       await createMultiScript();
     } else {
       await createSingleScript();
     }
-  }, [createSingleScript, createMultiScript]);
+  }, [createSingleScript, createMultiScript, askChoice]);
 
   const renameScript = useCallback(async () => {
     if (!activeTab) {
       log("没有打开脚本", "warn");
       return;
     }
-    const to = window.prompt("重命名为：", activeTab.path);
+    const to = await askPrompt("重命名为", activeTab.path);
     if (!to || to === activeTab.path) return;
     const data = await post<{ ok: boolean; path: string }>(
       "/api/scripts/rename",
@@ -672,14 +769,14 @@ module.exports = { install };
     log(`已重命名：${data.path}`, "ok");
     await refreshScriptLists();
     if (selectedPackage) await loadHookSettings(selectedPackage);
-  }, [activeTab, selectedPackage, refreshScriptLists, loadHookSettings, log]);
+  }, [activeTab, selectedPackage, refreshScriptLists, loadHookSettings, log, askPrompt]);
 
   const deleteScript = useCallback(async () => {
     if (!activeTab) {
       log("没有打开脚本", "warn");
       return;
     }
-    if (!window.confirm(`确定删除 ${activeTab.path} 吗？`)) return;
+    if (!(await askConfirm("删除脚本", `确定删除 ${activeTab.path} 吗？`, true))) return;
     await post<{ ok: boolean }>("/api/scripts/delete", {
       path: activeTab.path,
     });
@@ -699,6 +796,7 @@ module.exports = { install };
     refreshScriptLists,
     loadHookSettings,
     log,
+    askConfirm,
   ]);
 
   const selectApp = useCallback(
@@ -977,7 +1075,7 @@ module.exports = { install };
 
   const resetScriptSettings = useCallback(async () => {
     if (!settingsDialog) return;
-    if (!window.confirm(`恢复 ${settingsDialog.scriptId} 的默认设置？`)) return;
+    if (!(await askConfirm("恢复默认设置", `恢复 ${settingsDialog.scriptId} 的默认设置？`))) return;
     setSettingsSaving(true);
     try {
       const data = await post<ScriptSettingsSaveResponse>("/api/script-settings/reset", {
@@ -991,7 +1089,28 @@ module.exports = { install };
     } finally {
       setSettingsSaving(false);
     }
-  }, [settingsDialog, log]);
+  }, [settingsDialog, log, askConfirm]);
+
+  const openGeneratedScript = useCallback((script: GeneratedScript) => {
+    const baseName = script.suggestedPath || "generated_hook.js";
+    const path = `临时/${baseName}`;
+    setOpenTabs((old) => {
+      let nextPath = path;
+      let index = 1;
+      while (old.some((tab) => tab.path === nextPath)) {
+        nextPath = `临时/${baseName.replace(/\.js$/i, "")}-${index++}.js`;
+      }
+      setCurrentPath(nextPath);
+      return [
+        ...old,
+        { path: nextPath, content: script.content, metadata: null, dirty: true, temporary: true },
+      ];
+    });
+    setPageMode("scripts");
+    setRightMode("scripts");
+    setCodeGeneratorOpen(false);
+    log(`已生成临时代码：${baseName}，按 Ctrl+S 输入文件名保存`, "ok");
+  }, [log]);
 
   const openTerminalPage = useCallback(() => {    const pkg = selectedPackage?.trim() || "";
     const url = pkg
@@ -1327,6 +1446,7 @@ module.exports = { install };
         onNew={() => run(createScript)}
         onRename={() => run(renameScript)}
         onDelete={() => run(deleteScript)}
+        onOpenGenerator={() => setCodeGeneratorOpen(true)}
         onSync={() => run(syncCurrentApp)}
         onRestart={() => run(restartCurrentApp)}
         onSyncRestart={() => run(syncAndRestartCurrentApp)}
@@ -1472,6 +1592,15 @@ module.exports = { install };
                 >
                   关闭右侧文件
                 </button>
+                <button
+                  disabled={openTabs.length <= 1}
+                  onClick={() => {
+                    setTabMenu(null);
+                    run(() => closeTabsWithPrompt(openTabs.filter((tab) => tab.path !== menuPath).map((tab) => tab.path)));
+                  }}
+                >
+                  关闭其他文件
+                </button>
                 <div className="tab-menu-separator" />
                 <button
                   onClick={() => {
@@ -1545,8 +1674,22 @@ module.exports = { install };
           onSave={() => run(saveScriptSettings)}
           onReset={() => run(resetScriptSettings)}
           onClose={() => setSettingsDialog(null)}
+          onPrompt={askPrompt}
         />
       ) : null}
+      {codeGeneratorOpen ? (
+        <CodeGeneratorDialog
+          selectedPackage={selectedPackage}
+          onGenerate={openGeneratedScript}
+          onClose={() => setCodeGeneratorOpen(false)}
+        />
+      ) : null}
+      <UiDialog
+        request={uiDialog}
+        value={uiDialogValue}
+        onValueChange={setUiDialogValue}
+        onClose={closeUiDialog}
+      />
       {terminalVisible ? (
         <BottomConsole
           lines={logs}

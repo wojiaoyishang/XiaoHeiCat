@@ -125,6 +125,26 @@
     <string name="mcp_token_copy_hint">可左右拖动查看；长按复制 Token。</string>
 
 
+    <!-- Accessibility keep-alive -->
+    <string name="accessibility_keepalive_title">无障碍辅助保活</string>
+    <string name="accessibility_keepalive_service_description">XiaoHeiHook 可选保活服务：不读取界面内容，不执行点击手势，仅用于在用户开启 WebIDE/MCP 时降低系统冻结概率。</string>
+    <string name="accessibility_keepalive_disabled_hint">未启用。部分 ROM 环境可能冻结或杀掉 WebIDE。</string>
+    <string name="accessibility_keepalive_requested_hint">已选择启用。请通过下方按钮开启系统无障碍服务。</string>
+    <string name="accessibility_keepalive_enabled_hint">系统无障碍服务已开启，会辅助 WebIDE/MCP 降低被冻结概率。</string>
+    <string name="accessibility_keepalive_body">这是用户可选的保活方案。服务不读取窗口内容、不执行手势；当 WebIDE/MCP 都关闭或你关闭此选项时，会尝试自动关闭本服务。Root 用户可直接写入系统设置；无 Root 时会跳转到系统无障碍页面手动开启。</string>
+    <string name="accessibility_keepalive_root_enable">Root 直接开启</string>
+    <string name="accessibility_keepalive_open_settings">打开无障碍设置</string>
+    <string name="accessibility_keepalive_refresh">刷新状态</string>
+    <string name="accessibility_keepalive_root_available">Root 可用：可以直接开启/关闭本应用无障碍服务。</string>
+    <string name="accessibility_keepalive_root_unavailable">未检测到 Root：请通过系统设置手动开启。</string>
+    <string name="accessibility_keepalive_root_checking">正在检测 Root 状态…</string>
+    <string name="accessibility_keepalive_root_enabled">已通过 Root 开启无障碍保活</string>
+    <string name="accessibility_keepalive_root_enable_failed">Root 开启失败：%1$s</string>
+    <string name="accessibility_keepalive_disabled">无障碍保活已关闭</string>
+    <string name="accessibility_keepalive_disable_failed">关闭无障碍保活失败：%1$s</string>
+    <string name="accessibility_keepalive_open_settings_failed">无法打开无障碍设置：%1$s</string>
+
+
     <!-- Foreground service permissions -->
     <string name="service_permission_title">开启 %1$s 前需要授权</string>
     <string name="service_permission_message">为了让 %1$s 在后台稳定运行，请先打开通知权限并允许忽略电池优化。两个权限都已满足时会直接继续开启流程。</string>

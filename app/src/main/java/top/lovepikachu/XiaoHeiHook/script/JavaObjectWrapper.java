@@ -14,10 +14,16 @@ import java.lang.reflect.Modifier;
 public final class JavaObjectWrapper extends ScriptableObject implements Wrapper {
     private final JavaBridge bridge;
     private final Object target;
+    private final Class<?> explicitType;
 
     JavaObjectWrapper(JavaBridge bridge, Object target) {
+        this(bridge, target, null);
+    }
+
+    JavaObjectWrapper(JavaBridge bridge, Object target, Class<?> explicitType) {
         this.bridge = bridge;
         this.target = target;
+        this.explicitType = explicitType;
         Scriptable scope = bridge.getScope();
         if (scope != null) {
             setParentScope(scope);
@@ -27,6 +33,15 @@ public final class JavaObjectWrapper extends ScriptableObject implements Wrapper
     }
 
     public Object getRawObject() { return target; }
+
+    /**
+     * Non-null only for values produced by Java.to(type, value[, options]).
+     * Hook return conversion uses this to respect the user's explicit type
+     * instead of re-inferring the value from the hooked method return type.
+     */
+    public Class<?> getExplicitType() { return explicitType; }
+
+    public boolean hasExplicitType() { return explicitType != null; }
 
     @Override
     public Object unwrap() { return target; }

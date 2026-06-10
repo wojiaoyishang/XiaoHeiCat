@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.lovepikachu.XiaoHeiHook.R
+import top.lovepikachu.XiaoHeiHook.composables.AccessibilityKeepAliveCard
 import top.lovepikachu.XiaoHeiHook.composables.AnimatedPressIcon
 import top.lovepikachu.XiaoHeiHook.composables.FullWidthTextButton
 import top.lovepikachu.XiaoHeiHook.composables.McpSettingsCard
@@ -49,6 +50,8 @@ fun AboutScreen(modifier: Modifier = Modifier) {
         item { WebIdeSettingsCard() }
 
         item { McpSettingsCard() }
+
+        item { AccessibilityKeepAliveCard() }
 
         item { ScriptRootSettingsCard() }
 

@@ -71,6 +71,12 @@ object ScriptPrefs {
      */
     const val SCRIPT_METADATA_CACHE_JSON = "script_metadata_cache_json"
     const val SCRIPT_METADATA_CACHE_UPDATED_AT = "script_metadata_cache_updated_at"
+    /**
+     * Number of discovered script units when SCRIPT_METADATA_CACHE_JSON was last saved.
+     * Used by the app detail page for a cheap soft refresh: if the current file count
+     * differs, rebuild the metadata cache; if it is unchanged, keep the cached metadata.
+     */
+    const val SCRIPT_METADATA_CACHE_FILE_COUNT = "script_metadata_cache_file_count"
     const val SCRIPT_ROOT = "scriptRoot"
     const val SCRIPT_ROOT_LEGACY = "script.root"
 

@@ -1,6 +1,7 @@
 package top.lovepikachu.XiaoHeiHook
 
 import android.os.Bundle
+import top.lovepikachu.XiaoHeiHook.keepalive.AccessibilityKeepAliveManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
@@ -38,14 +39,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        val shouldTryKill = isFinishing && !isChangingConfigurations
-        super.onDestroy()
-
-        if (shouldTryKill) {
-            AppProcessExitHelper.scheduleKillIfWebIdeDisabled(
-                this,
-                reason = "MainActivity destroyed after task/app close"
-            )
+        if (isFinishing) {
+            AccessibilityKeepAliveManager.disableIfNoRuntimeNeedsKeepAlive(this)
         }
+        super.onDestroy()
     }
+
 }

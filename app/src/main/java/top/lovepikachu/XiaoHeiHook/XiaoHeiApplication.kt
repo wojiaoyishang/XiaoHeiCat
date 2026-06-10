@@ -47,8 +47,8 @@ class XiaoHeiApplication : Application() {
         val currentProcess = ProcessUtil.currentProcessName(this)
         if (currentProcess == packageName) {
             resetVolatileServicesOnBind = true
-            Log.i(TAG, "main process created; reset volatile WebIDE/MCP state on app start")
-            WebIdeManager.resetOnApplicationStart(this)
+            Log.i(TAG, "main process created; recover WebIDE if enabled and reset volatile MCP state on app start")
+            WebIdeManager.ensureStartedIfEnabled(this)
             McpManager.resetOnApplicationStart(this)
             MainProcessKeepAliveService.stopIfNotNeeded(this)
         } else {
