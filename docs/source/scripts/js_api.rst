@@ -561,6 +561,27 @@ Java Bridge 低层反射 fallback
 
 源码定义：``JsHookRuntime.XposedFacade``。
 
+生命周期回调是脚本进入目标进程后的主要入口。XiaoHeiHook 的 JS API 对 libxposed
+生命周期参数做了包装，使脚本可以直接通过 ``param.getPackageName()``、
+``param.getClassLoader()`` 等方法访问当前包信息和类加载器。
+
+libxposed 原始接口参考：
+
+- `XposedModuleInterface <https://libxposed.github.io/api/io/github/libxposed/api/XposedModuleInterface.html>`__
+- `PackageLoadedParam <https://libxposed.github.io/api/io/github/libxposed/api/XposedModuleInterface.PackageLoadedParam.html>`__
+- `PackageReadyParam <https://libxposed.github.io/api/io/github/libxposed/api/XposedModuleInterface.PackageReadyParam.html>`__
+- `ModuleLoadedParam <https://libxposed.github.io/api/io/github/libxposed/api/XposedModuleInterface.ModuleLoadedParam.html>`__
+- `SystemServerStartingParam <https://libxposed.github.io/api/io/github/libxposed/api/XposedModuleInterface.SystemServerStartingParam.html>`__
+
+.. note::
+
+   libxposed 原始 ``PackageLoadedParam`` 提供 ``getDefaultClassLoader()``，
+   原始 ``PackageReadyParam`` 提供 ``getClassLoader()``。XiaoHeiHook 的 JS 包装层
+   额外提供 ``param.getClassLoader()`` 便捷方法；在 ``onPackageLoaded`` 阶段通常返回
+   默认类加载器，在 ``onPackageReady`` 阶段返回已经 ready 的包类加载器。
+   遇到加固、热修复、插件化或动态 dex 场景时，仍建议在 ``Application.attach(Context)`` 后
+   使用 ``context.getClassLoader()`` 获取更接近业务代码的类加载器。
+
 .. function:: xposed.onPackageLoaded(callback)
 
    注册包加载回调。
@@ -568,20 +589,198 @@ Java Bridge 低层反射 fallback
    :param callback: ``function (param) { ... }``。
    :return: ``void``。
 
-   ``param`` 常用方法包括 ``getPackageName()``、``getProcessName()``、
-   ``getDefaultClassLoader()``、``getClassLoader()``、``isFirstPackage()``。
+   对应 libxposed ``XposedModuleInterface.onPackageLoaded(PackageLoadedParam)``。
+   该回调在当前进程加载某个带代码包时触发，此时默认 ``ClassLoader`` 已可用，
+   但可能早于 ``AppComponentFactory`` 和 ``Application`` 创建。一个进程可能加载多个包，
+   因此脚本应先使用 ``param.getPackageName()`` 或 ``env.processName`` 过滤目标。
+
+   常见用途：根据包名过滤目标、获取默认类加载器、查找目标类、安装早期 Java Hook。
+
+   **极简示例：**
+
+   .. code-block:: javascript
+
+      const TAG = "XHH";
+
+      xposed.onPackageLoaded(function (param) {
+
+          const TargetClass = param.getClassLoader().loadClass("q2.q");
+          const method = TargetClass.getDeclaredMethod("b", "android.content.Context");
+          method.setAccessible(true);
+
+          xposed
+            .hook(method)
+            .setPriority(xposed.PRIORITY_DEFAULT)
+            .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
+            .intercept(function (chain) {
+
+              try {
+                    const oldResult = chain.proceed();
+                    xposed.d(TAG, "Original result=" + oldResult);
+              } catch (e) {
+                    xposed.e(TAG, "Original call failed", e);
+              }
+
+              return true; // modify result
+            });
+
+      });
 
 .. function:: xposed.onPackageReady(callback)
 
    注册包 ready 回调。
 
+   :param callback: ``function (param) { ... }``。
+   :return: ``void``。
+
+   对应 libxposed ``XposedModuleInterface.onPackageReady(PackageReadyParam)``。
+   该回调在 ``AppComponentFactory`` 创建包类加载器，并准备创建 ``Application`` 时触发。
+   与 ``onPackageLoaded`` 相比，此阶段的 ``param.getClassLoader()`` 更接近最终 App
+   代码使用的类加载器。
+
+   常见用途：需要最终包 ``ClassLoader``、需要 ``AppComponentFactory`` 信息、或早期
+   ``onPackageLoaded`` 找不到目标类时，改用本回调。
+
 .. function:: xposed.onModuleLoaded(callback)
 
    注册模块加载回调。
 
+   :param callback: ``function (param) { ... }``。
+   :return: ``void``。
+
+   对应 libxposed ``XposedModuleInterface.onModuleLoaded(ModuleLoadedParam)``。
+   每个进程中模块加载时只触发一次，适合做轻量初始化、记录进程名、判断 system server。
+   不建议在这里直接查找 App 业务类，因为目标包的类加载器通常还没有准备好。
+
 .. function:: xposed.onSystemServerStarting(callback)
 
    注册 system server 启动回调。
+
+   :param callback: ``function (param) { ... }``。
+   :return: ``void``。
+
+   对应 libxposed ``XposedModuleInterface.onSystemServerStarting(SystemServerStartingParam)``。
+   仅在 system server 中使用；在 system server 场景下，该回调会替代首次包加载阶段。
+
+生命周期 ``param`` 方法
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+下面列出脚本侧常用的 ``param`` 方法。不同生命周期回调传入的 ``param`` 类型不同，
+并非所有方法都在所有回调中可用。
+
+.. function:: param.getPackageName()
+
+   返回当前被加载包的包名。
+
+   :return: ``String``。
+   :available: ``onPackageLoaded``、``onPackageReady``。
+
+   常用于过滤目标包：
+
+   .. code-block:: javascript
+
+      xposed.onPackageLoaded(function (param) {
+          if (param.getPackageName() !== "com.example.app") return;
+          xposed.i("XHH", "target package loaded");
+      });
+
+.. function:: param.getApplicationInfo()
+
+   返回当前包的 Android ``ApplicationInfo``。
+
+   :return: ``android.content.pm.ApplicationInfo``。
+   :available: ``onPackageLoaded``、``onPackageReady``。
+
+   常用字段包括 ``packageName``、``sourceDir``、``dataDir``、``nativeLibraryDir`` 等。
+
+.. function:: param.isFirstPackage()
+
+   返回当前包是否为该进程中第一个、主包加载事件。
+
+   :return: ``boolean``。
+   :available: ``onPackageLoaded``、``onPackageReady``。
+
+   一个进程可能通过共享 UID、``createPackageContext(..., CONTEXT_INCLUDE_CODE)`` 等方式加载多个包。
+   需要只在主包执行一次初始化时，可以结合 ``isFirstPackage()`` 与包名判断。
+
+.. function:: param.getDefaultClassLoader()
+
+   返回当前包的默认 ``ClassLoader``。
+
+   :return: ``java.lang.ClassLoader``。
+   :available: ``onPackageLoaded``、``onPackageReady``。
+
+   该方法对应 libxposed 原始 ``PackageLoadedParam.getDefaultClassLoader()``。
+   在 ``onPackageLoaded`` 阶段通常已经可用，但如果目标 App 使用自定义
+   ``AppComponentFactory``、加固壳或插件化加载器，后续真实业务类加载器可能与它不同。
+
+.. function:: param.getClassLoader()
+
+   返回当前生命周期中推荐使用的包 ``ClassLoader``。
+
+   :return: ``java.lang.ClassLoader``。
+   :available: ``onPackageLoaded``、``onPackageReady``、``onSystemServerStarting``。
+
+   在 ``onPackageReady`` 中，该方法对应 libxposed 原始 ``PackageReadyParam.getClassLoader()``。
+   在 ``onPackageLoaded`` 中，XiaoHeiHook 为脚本提供该便捷方法，通常可直接用于
+   ``loadClass`` 或传给 ``dex.dumpDexCookies``。
+
+   .. code-block:: javascript
+
+      xposed.onPackageLoaded(function (param) {
+          const loader = param.getClassLoader();
+          const clazz = loader.loadClass("com.example.Target");
+          xposed.i("XHH", "class=" + clazz);
+      });
+
+.. function:: param.getAppComponentFactory()
+
+   返回当前包的 ``AppComponentFactory``。
+
+   :return: ``android.app.AppComponentFactory``。
+   :available: ``onPackageReady``。
+
+   仅在 ``PackageReadyParam`` 中可用。普通 Hook 脚本很少直接使用该对象，
+   但调试自定义 ``AppComponentFactory`` 或自定义类加载器时可以参考。
+
+.. function:: param.getProcessName()
+
+   返回当前进程名。
+
+   :return: ``String``。
+   :available: ``onModuleLoaded``；脚本中也可以使用全局 ``env.processName``。
+
+   该方法对应 libxposed 原始 ``ModuleLoadedParam.getProcessName()``。
+   对包加载回调而言，推荐直接使用 ``env.processName`` 判断当前进程。
+
+.. function:: param.isSystemServer()
+
+   返回当前进程是否为 system server。
+
+   :return: ``boolean``。
+   :available: ``onModuleLoaded``。
+
+   该方法对应 libxposed 原始 ``ModuleLoadedParam.isSystemServer()``。
+
+生命周期选择建议
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - 场景
+     - 建议入口
+   * - 只需要包名、默认类加载器、尽早安装 Hook
+     - ``xposed.onPackageLoaded(callback)``
+   * - 需要更接近最终 App 的 ``ClassLoader``
+     - ``xposed.onPackageReady(callback)`` 或 ``Application.attach(Context)`` 后取 ``context.getClassLoader()``
+   * - App 使用加固、热修复、动态 dex 或插件化
+     - 优先 Hook ``Application.attach(Context)``，再使用 ``context.getClassLoader()``
+   * - 只做进程级初始化或记录进程名
+     - ``xposed.onModuleLoaded(callback)``
+   * - Hook system server
+     - ``xposed.onSystemServerStarting(callback)``
 
 ``xposed`` Hook 接口
 --------------------------------------------------------------------------------
