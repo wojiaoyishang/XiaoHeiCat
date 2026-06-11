@@ -650,7 +650,7 @@ fun AppsScreen(
                     Column(
                         modifier = modifier
                             .fillMaxSize()
-                            .padding(horizontal = 16.dp)
+                            .padding(start = 16.dp, top = 14.dp, end = 16.dp)
                     ) {
                         AppPageTitle(
                             title = stringResource(R.string.apps_config_title),
