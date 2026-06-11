@@ -86,7 +86,7 @@ WebIDE 中支持断点调试等功能，便于编写脚本。
 
 ## 开发脚本
 
-脚本的开放说明请参考开放文档，文档中也说明了模块的实现思路，所有 JS 保留的接口均可在 [从 LSPosed 到 JS 脚本](https://lab.lovepikachu.top/document/xiaoheihook/scripts/bridge.html) 章节找到对应说明。
+脚本的开放说明请参考开放文档，文档中也说明了模块的实现思路，所有 JS 保留的接口均可在 [从 LSPosed 到 JS 脚本](https://wojiaoyishang.github.io/XiaoHeiCat/scripts/bridge.html) 章节找到对应说明。
 
 <p align="center">
   <img src="./docs/source/_static/极短示例.svg" alt="Code card">
@@ -134,7 +134,7 @@ xposed.onPackageLoaded(function (param) {
 
 如果你在使用过程中遇到问题，建议优先查阅项目文档：
 
-- 项目文档：<https://lab.lovepikachu.top/document/xiaoheihook/welcome/introduction.html>
+- 项目文档：<https://wojiaoyishang.github.io/XiaoHeiCat/welcome/introduction.html>
 - 开源仓库：<https://github.com/wojiaoyishang/XiaoHeiCat/>
 - 问题反馈：<https://github.com/wojiaoyishang/XiaoHeiCat/issues>
 - 功能建议：欢迎提交 Issue 或 Pull Request
