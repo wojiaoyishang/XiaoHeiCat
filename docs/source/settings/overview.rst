@@ -2,7 +2,7 @@
 ==================
 
 .. tip::
-	具体包含设置项的脚本可以参考仓库目录 `example/settings_all_types <https://github.com/wojiaoyishang/XiaoHeiCat/tree/master/example/settings_all_types>`_  下的脚本，其中包含了所有支持的设置项的演示。
+	具体包含设置项的脚本可以参考仓库目录 `example/settings_all_types <https://github.com/wojiaoyishang/XiaoHeiCat/tree/master/examples/settings_all_types>`_  下的脚本，其中包含了所有支持的设置项的演示。
 
 配置项工作流
 -----------------
