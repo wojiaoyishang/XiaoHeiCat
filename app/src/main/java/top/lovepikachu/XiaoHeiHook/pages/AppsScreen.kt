@@ -95,9 +95,40 @@ import top.lovepikachu.XiaoHeiHook.ui.material.AppSectionTitle
 
 private const val TAG = "XiaoHeiHook-Apps"
 
+private val AppListRowHeight = 92.dp
+private val AppListBottomPadding = 24.dp
+private val AppListFabBottomPadding = 26.dp
+private const val AppListRenderAheadItems = 8
+private const val AppListRenderBehindItems = 4
+
 private enum class AppsPane { LIST, DETAIL, LOG }
 
 private enum class AppSortMode { NAME_ASC, NAME_DESC, PACKAGE_ASC }
+
+/**
+ * Keeps the heavy Apps page data alive while the main process is alive.  The pager is
+ * loaded on demand to avoid first-frame jank, but returning to an already-opened Apps
+ * page should reuse its last in-memory data instead of scanning scripts again.
+ */
+private object AppsScreenMemoryCache {
+    @Volatile
+    var apps: List<InstalledAppInfo> = emptyList()
+
+    @Volatile
+    var scripts: List<ScriptMetadata> = emptyList()
+
+    @Volatile
+    var loadedAppsOnce: Boolean = false
+
+    @Volatile
+    var loadedScriptsOnce: Boolean = false
+
+    @Volatile
+    var enabledPackages: Set<String> = emptySet()
+
+    @Volatile
+    var filteredApps: List<InstalledAppInfo> = emptyList()
+}
 
 @OptIn(ExperimentalAnimationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -110,11 +141,23 @@ fun AppsScreen(
     val scope = rememberCoroutineScope()
     val moduleState by XiaoHeiApplication.moduleState.collectAsStateWithLifecycle()
 
-    var apps by remember { mutableStateOf(AppRepository.cachedInstalledApps().orEmpty()) }
-    var scripts by remember { mutableStateOf<List<ScriptMetadata>>(emptyList()) }
+    val initialApps = remember {
+        AppsScreenMemoryCache.apps.ifEmpty { AppRepository.cachedInstalledApps().orEmpty() }
+    }
+    val initialScripts = remember {
+        AppsScreenMemoryCache.scripts.ifEmpty { ScriptRepository.cachedScriptMetadata().orEmpty() }
+    }
+    val initialFilteredApps = remember(initialApps) {
+        AppsScreenMemoryCache.filteredApps.ifEmpty { initialApps.filter { !it.isSystemApp } }
+    }
+
+    var apps by remember { mutableStateOf(initialApps) }
+    var scripts by remember { mutableStateOf(initialScripts) }
+    var enabledPackages by remember { mutableStateOf(AppsScreenMemoryCache.enabledPackages) }
+    var filteredApps by remember { mutableStateOf(initialFilteredApps) }
     var selectedApp by remember { mutableStateOf<InstalledAppInfo?>(null) }
     var logApp by remember { mutableStateOf<InstalledAppInfo?>(null) }
-    var loading by remember { mutableStateOf(apps.isEmpty()) }
+    var loading by remember { mutableStateOf(apps.isEmpty() && !AppsScreenMemoryCache.loadedAppsOnce) }
     var query by remember { mutableStateOf("") }
     var scanningScripts by remember { mutableStateOf(false) }
     var showAllFilesAccessDialog by remember { mutableStateOf(false) }
@@ -124,7 +167,6 @@ fun AppsScreen(
     var sortMode by remember { mutableStateOf(AppSortMode.NAME_ASC) }
     var enabledAppsFirst by remember { mutableStateOf(true) }
     var showSystemApps by remember { mutableStateOf(false) }
-    var enabledAppsRevision by remember { mutableStateOf(0) }
     var pendingPermissionRescanApp by remember { mutableStateOf<InstalledAppInfo?>(null) }
     var pendingPermissionScanToast by remember { mutableStateOf(false) }
     val detailAutoScannedPackages = remember { mutableStateListOf<String>() }
@@ -206,7 +248,41 @@ fun AppsScreen(
             val matched = loaded.filter { it.supportsPackage(packageName) }
             Log.d(TAG, "loadScripts: matched package=$packageName, count=${matched.size}, ids=${matched.joinToString { it.id }}")
         }
-        loaded
+        loaded.also {
+            AppsScreenMemoryCache.scripts = it
+            AppsScreenMemoryCache.loadedScriptsOnce = true
+        }
+    }
+
+    fun updateEnabledPackagesSnapshot(snapshot: Set<String>) {
+        enabledPackages = snapshot
+        AppsScreenMemoryCache.enabledPackages = snapshot
+    }
+
+    fun refreshEnabledPackagesSnapshot(loadedApps: List<InstalledAppInfo>) {
+        scope.launch {
+            val snapshot = withContext(Dispatchers.Default) {
+                val prefs = XiaoHeiApplication.remotePreferences
+                loadedApps.asSequence()
+                    .filter { ScopeController.isAppEnabled(prefs, it.packageName) }
+                    .map { it.packageName }
+                    .toSet()
+            }
+            updateEnabledPackagesSnapshot(snapshot)
+        }
+    }
+
+    fun updateAppsCache(loadedApps: List<InstalledAppInfo>) {
+        apps = loadedApps
+        AppsScreenMemoryCache.apps = loadedApps
+        AppsScreenMemoryCache.loadedAppsOnce = true
+        refreshEnabledPackagesSnapshot(loadedApps)
+    }
+
+    fun updateScriptsCache(loadedScripts: List<ScriptMetadata>) {
+        scripts = loadedScripts
+        AppsScreenMemoryCache.scripts = loadedScripts
+        AppsScreenMemoryCache.loadedScriptsOnce = true
     }
 
     fun reload(forceRefreshApps: Boolean = false) {
@@ -215,10 +291,22 @@ fun AppsScreen(
             val loadedApps = withContext(Dispatchers.IO) {
                 AppRepository.loadInstalledApps(context, forceRefresh = forceRefreshApps)
             }
-            val loadedScripts = loadScripts(softRefresh = true)
-            apps = loadedApps
-            scripts = loadedScripts
+            updateAppsCache(loadedApps)
             loading = false
+        }
+    }
+
+    fun warmScriptsCacheInBackground() {
+        if (AppsScreenMemoryCache.loadedScriptsOnce) return
+        if (scanningScripts) return
+        scope.launch {
+            scanningScripts = true
+            try {
+                val loadedScripts = loadScripts(softRefresh = false)
+                updateScriptsCache(loadedScripts)
+            } finally {
+                scanningScripts = false
+            }
         }
     }
 
@@ -228,7 +316,7 @@ fun AppsScreen(
             scanningScripts = true
             Log.d(TAG, "rescanScriptsForApp: package=${app.packageName}, forceRescan=true")
             val loadedScripts = loadScripts(app.packageName, forceRescan = true)
-            scripts = loadedScripts
+            updateScriptsCache(loadedScripts)
             val matchedCount = loadedScripts.count { it.supportsPackage(app.packageName) }
             Log.d(TAG, "rescanScriptsForApp: package=${app.packageName}, total=${loadedScripts.size}, matched=$matchedCount")
             if (showToast) {
@@ -244,7 +332,7 @@ fun AppsScreen(
         try {
             Log.d(TAG, "softRefreshScriptsForApp: package=${app.packageName}")
             val loadedScripts = loadScripts(app.packageName, softRefresh = true)
-            scripts = loadedScripts
+            updateScriptsCache(loadedScripts)
             val matchedCount = loadedScripts.count { it.supportsPackage(app.packageName) }
             Log.d(TAG, "softRefreshScriptsForApp: package=${app.packageName}, total=${loadedScripts.size}, matched=$matchedCount")
         } finally {
@@ -314,13 +402,27 @@ fun AppsScreen(
         if (apps.isEmpty()) {
             reload(forceRefreshApps = false)
         } else {
-            scripts = loadScripts(softRefresh = true)
             loading = false
+            AppsScreenMemoryCache.loadedAppsOnce = true
+            if (enabledPackages.isEmpty()) {
+                refreshEnabledPackagesSnapshot(apps)
+            }
         }
+        // Defer script cache warm-up until the Apps page has finished its first frame.
+        // This keeps bottom navigation responsive; returning to this page reuses
+        // AppsScreenMemoryCache and will not scan again unless the user requests it.
+        delay(240)
+        warmScriptsCacheInBackground()
     }
 
     LaunchedEffect(selectedApp?.packageName) {
-        selectedApp?.let { app ->
+        val app = selectedApp ?: return@LaunchedEffect
+        // Show cached script matches immediately, then do a delayed soft count check in
+        // the background.  Each package is checked at most once per manager process;
+        // manual “重新扫描脚本” remains a full forced rescan.
+        if (!detailAutoScannedPackages.contains(app.packageName)) {
+            detailAutoScannedPackages.add(app.packageName)
+            delay(260)
             softRefreshScriptsForApp(app)
         }
     }
@@ -347,52 +449,69 @@ fun AppsScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val enabledPackages = remember(apps, enabledAppsRevision, XiaoHeiApplication.remotePreferences) {
-        apps.asSequence()
-            .filter { ScopeController.isAppEnabled(XiaoHeiApplication.remotePreferences, it.packageName) }
-            .map { it.packageName }
-            .toSet()
-    }
-
-    val filteredApps = remember(apps, query, showSystemApps, sortMode, enabledAppsFirst, enabledAppsRevision) {
-        val q = query.trim().lowercase()
-        val sortComparator = when (sortMode) {
-            AppSortMode.NAME_ASC -> Comparator<InstalledAppInfo> { left, right ->
-                left.label.compareTo(right.label, ignoreCase = true)
-            }
-            AppSortMode.NAME_DESC -> Comparator<InstalledAppInfo> { left, right ->
-                right.label.compareTo(left.label, ignoreCase = true)
-            }
-            AppSortMode.PACKAGE_ASC -> Comparator<InstalledAppInfo> { left, right ->
-                left.packageName.compareTo(right.packageName, ignoreCase = true)
-            }
-        }
-        val comparator = if (enabledAppsFirst) {
-            Comparator<InstalledAppInfo> { left, right ->
-                val leftEnabled = enabledPackages.contains(left.packageName)
-                val rightEnabled = enabledPackages.contains(right.packageName)
-                when {
-                    leftEnabled != rightEnabled -> if (leftEnabled) -1 else 1
-                    else -> sortComparator.compare(left, right)
+    LaunchedEffect(apps, query, showSystemApps, sortMode, enabledAppsFirst, enabledPackages) {
+        val sourceApps = apps
+        val enabledSnapshot = enabledPackages
+        val searchQuery = query.trim().lowercase()
+        val includeSystemApps = showSystemApps
+        val currentSortMode = sortMode
+        val currentEnabledAppsFirst = enabledAppsFirst
+        val computed = withContext(Dispatchers.Default) {
+            val sortComparator = when (currentSortMode) {
+                AppSortMode.NAME_ASC -> Comparator<InstalledAppInfo> { left, right ->
+                    left.label.compareTo(right.label, ignoreCase = true)
+                }
+                AppSortMode.NAME_DESC -> Comparator<InstalledAppInfo> { left, right ->
+                    right.label.compareTo(left.label, ignoreCase = true)
+                }
+                AppSortMode.PACKAGE_ASC -> Comparator<InstalledAppInfo> { left, right ->
+                    left.packageName.compareTo(right.packageName, ignoreCase = true)
                 }
             }
-        } else {
-            sortComparator
-        }
-
-        apps.asSequence()
-            .filter { showSystemApps || !it.isSystemApp }
-            .filter { app ->
-                q.isEmpty() || app.label.lowercase().contains(q) || app.packageName.lowercase().contains(q)
+            val comparator = if (currentEnabledAppsFirst) {
+                Comparator<InstalledAppInfo> { left, right ->
+                    val leftEnabled = enabledSnapshot.contains(left.packageName)
+                    val rightEnabled = enabledSnapshot.contains(right.packageName)
+                    when {
+                        leftEnabled != rightEnabled -> if (leftEnabled) -1 else 1
+                        else -> sortComparator.compare(left, right)
+                    }
+                }
+            } else {
+                sortComparator
             }
-            .toList()
-            .sortedWith(comparator)
+
+            sourceApps.asSequence()
+                .filter { includeSystemApps || !it.isSystemApp }
+                .filter { app ->
+                    searchQuery.isEmpty() || app.label.lowercase().contains(searchQuery) || app.packageName.lowercase().contains(searchQuery)
+                }
+                .toList()
+                .sortedWith(comparator)
+        }
+        filteredApps = computed
+        AppsScreenMemoryCache.filteredApps = computed
     }
 
     val appListState = rememberLazyListState()
     val showBackToTop by remember {
         derivedStateOf {
             appListState.firstVisibleItemIndex > 3 || appListState.firstVisibleItemScrollOffset > 700
+        }
+    }
+    val appRowRenderRange by remember {
+        derivedStateOf {
+            val lastIndex = filteredApps.lastIndex
+            if (lastIndex < 0) {
+                IntRange.EMPTY
+            } else {
+                val visibleItems = appListState.layoutInfo.visibleItemsInfo
+                val firstVisible = visibleItems.minOfOrNull { it.index } ?: appListState.firstVisibleItemIndex
+                val lastVisible = visibleItems.maxOfOrNull { it.index } ?: (appListState.firstVisibleItemIndex + 8)
+                val start = (firstVisible - AppListRenderBehindItems).coerceAtLeast(0)
+                val end = (lastVisible + AppListRenderAheadItems).coerceAtMost(lastIndex)
+                start..end
+            }
         }
     }
 
@@ -531,7 +650,7 @@ fun AppsScreen(
                     Column(
                         modifier = modifier
                             .fillMaxSize()
-                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                            .padding(horizontal = 16.dp)
                     ) {
                         AppPageTitle(
                             title = stringResource(R.string.apps_config_title),
@@ -566,18 +685,32 @@ fun AppsScreen(
                                     state = appListState,
                                     modifier = Modifier.fillMaxSize(),
                                     verticalArrangement = Arrangement.spacedBy(5.dp),
-                                    contentPadding = PaddingValues(bottom = 10.dp)
+                                    contentPadding = PaddingValues(bottom = AppListBottomPadding)
                                 ) {
-                                    itemsIndexed(filteredApps, key = { index, app -> "${app.packageName}#$index" }) { _, app ->
-                                        AppRow(
-                                            app = app,
-                                            moduleActive = moduleState.isActivated,
-                                            onOpen = {
-                                                onDetailVisibleChange(true)
-                                                selectedApp = app
-                                            },
-                                            onEnabledChanged = { enabledAppsRevision++ }
-                                        )
+                                    itemsIndexed(
+                                        filteredApps,
+                                        key = { _, app -> app.packageName },
+                                        contentType = { index, _ -> if (index in appRowRenderRange) "app-row" else "app-placeholder" }
+                                    ) { index, app ->
+                                        if (index in appRowRenderRange) {
+                                            val rowEnabled = enabledPackages.contains(app.packageName)
+                                            AppRow(
+                                                app = app,
+                                                moduleActive = moduleState.isActivated,
+                                                initialEnabled = rowEnabled,
+                                                onOpen = {
+                                                    onDetailVisibleChange(true)
+                                                    selectedApp = app
+                                                },
+                                                onEnabledChanged = { checked ->
+                                                    updateEnabledPackagesSnapshot(
+                                                        if (checked) enabledPackages + app.packageName else enabledPackages - app.packageName
+                                                    )
+                                                }
+                                            )
+                                        } else {
+                                            AppRowPlaceholder()
+                                        }
                                     }
                                 }
 
@@ -588,7 +721,7 @@ fun AppsScreen(
                                         contentColor = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier
                                             .align(Alignment.BottomEnd)
-                                            .padding(end = 8.dp, bottom = 12.dp)
+                                            .padding(end = 8.dp, bottom = AppListFabBottomPadding)
                                             .size(48.dp)
                                     ) {
                                         Icon(Icons.Filled.KeyboardArrowUp, contentDescription = stringResource(R.string.apps_back_to_top))
@@ -937,6 +1070,19 @@ private fun ScriptEnableScreen(
         }
 
         Spacer(Modifier.height(12.dp))
+
+        AnimatedVisibility(visible = scanningScripts) {
+            Column {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.script_soft_refreshing),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1296,22 +1442,87 @@ private fun colorForLogLine(line: String): Color {
 }
 
 @Composable
+private fun AppRowPlaceholder() {
+    AppCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(AppListRowHeight),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.34f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.size(50.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.38f),
+                content = {}
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.Center
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth(0.58f)
+                        .height(18.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.30f),
+                    content = {}
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth(0.82f)
+                        .height(13.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.24f),
+                    content = {}
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    modifier = Modifier
+                        .width(52.dp)
+                        .height(12.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.20f),
+                    content = {}
+                )
+            }
+            Surface(
+                modifier = Modifier
+                    .width(48.dp)
+                    .height(30.dp),
+                shape = RoundedCornerShape(999.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.26f),
+                content = {}
+            )
+        }
+    }
+}
+
+@Composable
 private fun AppRow(
     app: InstalledAppInfo,
     moduleActive: Boolean,
+    initialEnabled: Boolean,
     onOpen: () -> Unit,
-    onEnabledChanged: () -> Unit
+    onEnabledChanged: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    var enabled by remember(app.packageName, XiaoHeiApplication.remotePreferences) {
-        mutableStateOf(ScopeController.isAppEnabled(XiaoHeiApplication.remotePreferences, app.packageName))
+    var enabled by remember(app.packageName) { mutableStateOf(initialEnabled) }
+
+    LaunchedEffect(initialEnabled) {
+        enabled = initialEnabled
     }
 
     AppCard(
         modifier = Modifier
             .fillMaxWidth()
-            .height(92.dp),
+            .height(AppListRowHeight),
         onClick = onOpen,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
     ) {
@@ -1368,11 +1579,11 @@ private fun AppRow(
                         enabled = checked,
                         onApproved = {
                             enabled = ScopeController.isAppEnabled(XiaoHeiApplication.remotePreferences, app.packageName)
-                            onEnabledChanged()
+                            onEnabledChanged(enabled)
                         },
                         onFailed = {
                             enabled = false
-                            onEnabledChanged()
+                            onEnabledChanged(false)
                         }
                     )
                 }

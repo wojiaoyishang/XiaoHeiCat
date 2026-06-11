@@ -21,6 +21,16 @@ object ScriptRepository {
     @Volatile
     private var configuredScriptsDir: File? = null
 
+    @Volatile
+    private var memoryScriptMetadataCache: List<ScriptMetadata>? = null
+
+    fun cachedScriptMetadata(): List<ScriptMetadata>? = memoryScriptMetadataCache
+
+    private fun updateMemoryScriptMetadataCache(scripts: List<ScriptMetadata>): List<ScriptMetadata> {
+        memoryScriptMetadataCache = scripts
+        return scripts
+    }
+
     val publicScriptsDir: File
         get() = configuredScriptsDir ?: defaultPublicScriptsDir()
 
@@ -43,6 +53,7 @@ object ScriptRepository {
         val dir = File(path.trim()).absoluteFile
         require(dir.path.isNotBlank()) { "脚本根目录不能为空" }
         configuredScriptsDir = dir
+        memoryScriptMetadataCache = null
         prefs?.edit()
             ?.putString(ScriptPrefs.SCRIPT_ROOT, dir.absolutePath)
             ?.putString(ScriptPrefs.SCRIPT_ROOT_LEGACY, dir.absolutePath)
@@ -184,7 +195,7 @@ xposed.onPackageLoaded(function (param) {
         }
         val scripts = parseIndex(raw)
         Log.d(TAG, "readScriptMetadataCache: count=${scripts.size}, updatedAt=${prefs.getLong(ScriptPrefs.SCRIPT_METADATA_CACHE_UPDATED_AT, 0L)}")
-        return scripts
+        return updateMemoryScriptMetadataCache(scripts)
     }
 
     fun hasScriptMetadataCache(prefs: SharedPreferences?): Boolean {
@@ -197,6 +208,7 @@ xposed.onPackageLoaded(function (param) {
         allowRootFallback: Boolean = true
     ): List<ScriptMetadata> {
         applyScriptRootFromPrefs(prefs)
+        memoryScriptMetadataCache?.let { return it }
         if (hasScriptMetadataCache(prefs)) {
             return readScriptMetadataCache(prefs)
         }
@@ -260,7 +272,7 @@ xposed.onPackageLoaded(function (param) {
         val scripts = sources.map { it.metadata }
         saveScriptMetadataCache(prefs, scripts, scriptFileCount = sources.size)
         Log.d(TAG, "refreshScriptMetadataCache: saved count=${scripts.size}, ids=${scripts.joinToString { it.id }}")
-        scripts
+        updateMemoryScriptMetadataCache(scripts)
     }
 
     fun saveScriptMetadataCache(
@@ -268,6 +280,7 @@ xposed.onPackageLoaded(function (param) {
         scripts: List<ScriptMetadata>,
         scriptFileCount: Int = scripts.size
     ) {
+        updateMemoryScriptMetadataCache(scripts)
         if (prefs == null) {
             Log.w(TAG, "saveScriptMetadataCache: prefs null, skip cache save, count=${scripts.size}")
             return

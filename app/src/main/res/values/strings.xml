@@ -219,6 +219,7 @@
     <string name="script_sync_restart">同步重启</string>
     <string name="terminal_title">终端</string>
     <string name="script_scanning">扫描中</string>
+    <string name="script_soft_refreshing">正在后台检查脚本缓存，不影响当前操作…</string>
     <string name="script_rescan">重新扫描脚本</string>
     <string name="script_sync">同步脚本</string>
     <string name="script_sync_and_restart">同步脚本并重启</string>

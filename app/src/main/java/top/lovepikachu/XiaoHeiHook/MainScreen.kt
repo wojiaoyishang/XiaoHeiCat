@@ -39,6 +39,9 @@ sealed class BottomNavScreen(val titleRes: Int, val icon: androidx.compose.ui.gr
     data object About : BottomNavScreen(R.string.nav_about, Icons.Filled.Info) { override val index: Int = 2 }
 }
 
+private val BottomNavExpandedHeight = 86.dp
+private const val BottomNavPageSlideDurationMillis = 1000
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MainScreen() {
@@ -50,10 +53,18 @@ fun MainScreen() {
     val isAppsDetailVisible = remember { mutableStateOf(false) }
     var selectedIndex by remember { mutableIntStateOf(BottomNavScreen.Home.index) }
     var lastBackPressedAt by remember { mutableLongStateOf(0L) }
+    val loadedPages = remember { mutableStateListOf(BottomNavScreen.Home.index) }
+
+    fun markPageLoaded(index: Int) {
+        if (!loadedPages.contains(index)) {
+            loadedPages.add(index)
+        }
+    }
 
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.currentPage }.collect { page ->
             selectedIndex = page.coerceIn(0, screens.lastIndex)
+            markPageLoaded(selectedIndex)
         }
     }
 
@@ -76,7 +87,7 @@ fun MainScreen() {
 
     val bottomNavVisible = !isAppsDetailVisible.value
     val bottomNavHeight by animateDpAsState(
-        targetValue = if (bottomNavVisible) 80.dp else 0.dp,
+        targetValue = if (bottomNavVisible) BottomNavExpandedHeight else 0.dp,
         animationSpec = tween(durationMillis = 180, easing = navEasing),
         label = "BottomNavHeight"
     )
@@ -100,9 +111,10 @@ fun MainScreen() {
                 NavigationBar(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
+                        .fillMaxSize()
                         .graphicsLayer {
                             alpha = bottomNavAlpha
-                            translationY = (1f - bottomNavAlpha) * 28f
+                            translationY = (1f - bottomNavAlpha) * 32f
                         },
                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f),
                     tonalElevation = 0.dp
@@ -113,10 +125,11 @@ fun MainScreen() {
                             onClick = {
                                 if (selectedIndex != screen.index) {
                                     selectedIndex = screen.index
+                                    markPageLoaded(screen.index)
                                     scope.launch {
                                         pagerState.animateScrollToPage(
                                             page = screen.index,
-                                            animationSpec = tween(durationMillis = 420, easing = navEasing)
+                                            animationSpec = tween(durationMillis = BottomNavPageSlideDurationMillis, easing = navEasing)
                                         )
                                     }
                                 }
@@ -154,23 +167,27 @@ fun MainScreen() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
-            beyondViewportPageCount = screens.lastIndex,
+            beyondViewportPageCount = 0,
             userScrollEnabled = !isAppsDetailVisible.value
         ) { page ->
-            when (screens[page]) {
-                BottomNavScreen.Home -> {
-                    HomeScreen(modifier = Modifier.fillMaxSize())
-                }
+            if (!loadedPages.contains(page)) {
+                Box(modifier = Modifier.fillMaxSize())
+            } else {
+                when (screens[page]) {
+                    BottomNavScreen.Home -> {
+                        HomeScreen(modifier = Modifier.fillMaxSize())
+                    }
 
-                BottomNavScreen.Apps -> {
-                    AppsScreen(
-                        modifier = Modifier.fillMaxSize(),
-                        onDetailVisibleChange = { isAppsDetailVisible.value = it }
-                    )
-                }
+                    BottomNavScreen.Apps -> {
+                        AppsScreen(
+                            modifier = Modifier.fillMaxSize(),
+                            onDetailVisibleChange = { isAppsDetailVisible.value = it }
+                        )
+                    }
 
-                BottomNavScreen.About -> {
-                    AboutScreen(modifier = Modifier.fillMaxSize())
+                    BottomNavScreen.About -> {
+                        AboutScreen(modifier = Modifier.fillMaxSize())
+                    }
                 }
             }
         }
