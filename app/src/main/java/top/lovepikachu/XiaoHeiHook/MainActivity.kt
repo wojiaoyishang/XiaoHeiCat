@@ -2,6 +2,7 @@ package top.lovepikachu.XiaoHeiHook
 
 import android.os.Bundle
 import top.lovepikachu.XiaoHeiHook.keepalive.AccessibilityKeepAliveManager
+import top.lovepikachu.XiaoHeiHook.data.RemotePrefsDiagnostics
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
@@ -11,6 +12,7 @@ import androidx.compose.ui.graphics.Color
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        RemotePrefsDiagnostics.logOnAppOpen(this, XiaoHeiApplication.remotePreferences, "main-activity-open")
 
         setContent {
             MaterialTheme(

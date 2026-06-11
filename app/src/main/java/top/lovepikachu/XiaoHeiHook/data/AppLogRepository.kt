@@ -2,6 +2,7 @@ package top.lovepikachu.XiaoHeiHook.data
 
 import android.content.Context
 import java.io.File
+import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 
 object AppLogRepository {
     private const val LOG_DIR_NAME = "logs"
@@ -19,11 +20,24 @@ object AppLogRepository {
     fun logPath(context: Context, packageName: String): String = moduleLogFile(context, packageName).absolutePath
 
     fun appendModuleLog(context: Context, packageName: String, line: String) {
+        if (isFileLoggingDisabled()) return
         val file = moduleLogFile(context, packageName)
         val parent = file.parentFile
         if (parent != null && !parent.exists()) parent.mkdirs()
         rotateIfNeeded(file)
         file.appendText(line)
+    }
+
+    fun isFileLoggingDisabled(): Boolean {
+        return XiaoHeiApplication.remotePreferences
+            ?.getBoolean(ScriptPrefs.DISABLE_FILE_LOGGING, false)
+            ?: false
+    }
+
+    fun setFileLoggingDisabled(disabled: Boolean): Boolean {
+        val prefs = XiaoHeiApplication.remotePreferences ?: return false
+        prefs.edit().putBoolean(ScriptPrefs.DISABLE_FILE_LOGGING, disabled).apply()
+        return true
     }
 
     fun readLog(context: Context, packageName: String, maxLines: Int = 800): Result<String> = runCatching {
@@ -38,8 +52,9 @@ object AppLogRepository {
 
     fun clearLog(context: Context, packageName: String): Result<Unit> = runCatching {
         val moduleFile = moduleLogFile(context, packageName)
-        moduleFile.parentFile?.mkdirs()
-        moduleFile.writeText("")
+        if (moduleFile.exists()) {
+            moduleFile.writeText("")
+        }
     }
 
     private fun readLocalTail(file: File, maxLines: Int): String {

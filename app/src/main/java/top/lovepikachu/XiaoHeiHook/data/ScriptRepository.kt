@@ -1,11 +1,13 @@
 package top.lovepikachu.XiaoHeiHook.data
 
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import io.github.libxposed.service.XposedService
+import top.lovepikachu.XiaoHeiHook.XiaoHeiApplication
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -138,12 +140,88 @@ xposed.onPackageLoaded(function (param) {
         val timedOut: Boolean = false
     )
 
+    data class TargetCacheSyncSummary(
+        val rootSyncEnabled: Boolean,
+        val rootAvailable: Boolean,
+        val usedRoot: Boolean,
+        val syncedPackages: List<String> = emptyList(),
+        val cleanedPackages: List<String> = emptyList(),
+        val targetProcessFallbackPackages: List<String> = emptyList(),
+        val errors: List<String> = emptyList()
+    ) {
+        fun toJson(): JSONObject = JSONObject().apply {
+            put("rootSyncEnabled", rootSyncEnabled)
+            put("rootAvailable", rootAvailable)
+            put("usedRoot", usedRoot)
+            put("syncedPackages", JSONArray(syncedPackages))
+            put("cleanedPackages", JSONArray(cleanedPackages))
+            put("targetProcessFallbackPackages", JSONArray(targetProcessFallbackPackages))
+            put("errors", JSONArray(errors))
+        }
+    }
+
+    @Volatile
+    private var lastTargetCacheSyncSummary: TargetCacheSyncSummary? = null
+
+    fun lastTargetCacheSyncSummary(): TargetCacheSyncSummary? = lastTargetCacheSyncSummary
+
+    fun lastTargetCacheSyncSummaryJson(): JSONObject = lastTargetCacheSyncSummary?.toJson()
+        ?: TargetCacheSyncSummary(
+            rootSyncEnabled = false,
+            rootAvailable = false,
+            usedRoot = false
+        ).toJson()
+
     fun hasAllFilesAccess(): Boolean {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
     }
 
     fun needsAllFilesAccess(): Boolean {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()
+    }
+
+    fun isRootAvailable(): Boolean {
+        val result = runRootCommand("id", timeoutSeconds = 5)
+        return !result.timedOut && result.exitCode == 0 && (result.stdout.contains("uid=0") || result.stdout.contains("root"))
+    }
+
+    fun isRootScriptCacheSyncEnabled(prefs: SharedPreferences?, rootAvailable: Boolean = isRootAvailable()): Boolean {
+        return prefs?.getBoolean(ScriptPrefs.USE_ROOT_SCRIPT_CACHE_SYNC, rootAvailable) ?: rootAvailable
+    }
+
+    fun setRootScriptCacheSyncEnabled(prefs: SharedPreferences?, enabled: Boolean) {
+        prefs?.edit()?.putBoolean(ScriptPrefs.USE_ROOT_SCRIPT_CACHE_SYNC, enabled)?.apply()
+    }
+
+    fun clearTargetScriptCacheByRoot(packageName: String, targetDir: String = ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR): Boolean {
+        val pkg = packageName.trim()
+        if (!pkg.matches(Regex("^[A-Za-z0-9_.]+$"))) return false
+        val dirs = linkedSetOf(
+            ScriptPrefs.normalizeTargetScriptCacheDir(targetDir),
+            ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR
+        )
+        val dataDirHint = targetPackageDataDirHint(pkg).orEmpty()
+        val script = buildString {
+            appendLine("set -u")
+            appendLine("""fail() { echo "[XHH Root cache clean] ${'$'}*" >&2; exit 1; }""")
+            appendLine("PKG=${shellQuote(pkg)}")
+            appendLine("DATA_DIR_HINT=${shellQuote(dataDirHint)}")
+            appendTargetBaseResolverShell()
+            appendLine("TARGET_BASES=\$(find_target_bases | sort -u)")
+            appendLine("""[ -n "${'$'}TARGET_BASES" ] || fail target_data_dir_not_found:${'$'}PKG:hint=${'$'}DATA_DIR_HINT""")
+            appendLine("""for base in ${'$'}TARGET_BASES; do""")
+            dirs.forEach { dir ->
+                appendLine("""  rm -rf "${'$'}base/files/$dir" 2>/dev/null || true""")
+            }
+            appendLine("done")
+        }
+        val result = runRootCommand(script, timeoutSeconds = 10)
+        if (result.exitCode != 0 || result.timedOut) {
+            Log.w(TAG, "clearTargetScriptCacheByRoot failed: package=$pkg exit=${result.exitCode} timeout=${result.timedOut} stderr=${result.stderr.trim().ifBlank { result.stdout.trim() }}")
+            return false
+        }
+        Log.i(TAG, "clearTargetScriptCacheByRoot ok: package=$pkg dirs=${dirs.joinToString()}")
+        return true
     }
 
     fun ensurePublicFolderAndSample(allowRootFallback: Boolean = true): Result<File> = runCatching {
@@ -537,6 +615,230 @@ xposed.onPackageLoaded(function (param) {
         return normalized
     }
 
+    private fun loadScriptMetadataForSync(prefs: SharedPreferences?): List<ScriptMetadata> {
+        applyScriptRootFromPrefs(prefs)
+        val cached = memoryScriptMetadataCache
+            ?: if (hasScriptMetadataCache(prefs)) readScriptMetadataCache(prefs) else emptyList()
+        val legacyRuntimeIndex = parseIndex(prefs?.getString(ScriptPrefs.SCRIPT_INDEX_JSON, null))
+        val packageRuntimeIndex = parseAllPackageScriptIndexes(prefs)
+        val merged = (cached + legacyRuntimeIndex + packageRuntimeIndex)
+            .asSequence()
+            .filter { it.id.isNotBlank() }
+            .distinctBy { it.id }
+            .toList()
+        Log.d(
+            TAG,
+            "loadScriptMetadataForSync: cached=${cached.size}, legacyRuntime=${legacyRuntimeIndex.size}, packageRuntime=${packageRuntimeIndex.size}, merged=${merged.size}; no full script scan"
+        )
+        return merged
+    }
+
+    private fun parseAllPackageScriptIndexes(prefs: SharedPreferences?): List<ScriptMetadata> {
+        if (prefs == null) return emptyList()
+        return prefs.all
+            .asSequence()
+            .filter { (key, value) ->
+                value is String && ScriptPrefs.isPackageScopedKey(key, ScriptPrefs.SCRIPT_INDEX_JSON)
+            }
+            .flatMap { (_, value) -> parseIndex(value as? String).asSequence() }
+            .toList()
+    }
+
+    private fun packageScriptIndex(prefs: SharedPreferences?, packageName: String): List<ScriptMetadata> {
+        if (prefs == null) return emptyList()
+        return parseIndex(prefs.getString(ScriptPrefs.scriptIndexJsonKey(packageName), null))
+    }
+
+    private fun scriptsForPackageIndex(
+        prefs: SharedPreferences?,
+        packageName: String,
+        scripts: List<ScriptMetadata>
+    ): List<ScriptMetadata> {
+        if (prefs == null) return emptyList()
+        return scripts
+            .filter { script ->
+                script.supportsPackage(packageName) &&
+                    prefs.getBoolean(ScriptPrefs.scriptEnabledKey(packageName, script.id), false)
+            }
+            .distinctBy { it.id }
+    }
+
+    private fun remoteFileNamesForScripts(scripts: List<ScriptMetadata>): Set<String> {
+        return scripts.asSequence()
+            .flatMap { script -> (script.files + script.assets).asSequence() }
+            .map { it.remoteName.trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+    private fun filesForScripts(
+        scripts: List<ScriptMetadata>,
+        files: Collection<RemoteManifestFile>
+    ): List<RemoteManifestFile> {
+        val names = remoteFileNamesForScripts(scripts)
+        if (names.isEmpty()) return emptyList()
+        return files.filter { it.remoteName in names }
+    }
+
+    private fun packageManifest(prefs: SharedPreferences?, packageName: String): Map<String, String> {
+        return parseSyncManifest(prefs?.getString(ScriptPrefs.syncManifestJsonKey(packageName), null))
+    }
+
+    private fun remoteNamesReferencedByOtherPackageManifests(
+        prefs: SharedPreferences?,
+        packageName: String
+    ): Set<String> {
+        if (prefs == null) return emptySet()
+        return prefs.all
+            .asSequence()
+            .filter { (key, value) ->
+                value is String &&
+                    ScriptPrefs.isPackageScopedKey(key, ScriptPrefs.SYNC_MANIFEST_JSON) &&
+                    ScriptPrefs.packageNameFromScopedKey(key, ScriptPrefs.SYNC_MANIFEST_JSON) != packageName
+            }
+            .flatMap { (_, value) -> parseSyncManifest(value as? String).keys.asSequence() }
+            .toSet()
+    }
+
+    private fun removePackageRuntimePrefs(editor: SharedPreferences.Editor, packageName: String): SharedPreferences.Editor {
+        return editor
+            .remove(ScriptPrefs.scriptIndexJsonKey(packageName))
+            .remove(ScriptPrefs.syncManifestJsonKey(packageName))
+            .remove(ScriptPrefs.scriptHashConfigJsonKey(packageName))
+    }
+
+    private fun removeAllPackageRuntimePrefs(editor: SharedPreferences.Editor, prefs: SharedPreferences): SharedPreferences.Editor {
+        prefs.all.keys
+            .filter { key ->
+                ScriptPrefs.isPackageScopedKey(key, ScriptPrefs.SCRIPT_INDEX_JSON) ||
+                    ScriptPrefs.isPackageScopedKey(key, ScriptPrefs.SYNC_MANIFEST_JSON) ||
+                    ScriptPrefs.isPackageScopedKey(key, ScriptPrefs.SCRIPT_HASH_CONFIG_JSON)
+            }
+            .forEach { editor.remove(it) }
+        return editor
+    }
+
+    private fun putPackageRuntimePrefs(
+        editor: SharedPreferences.Editor,
+        prefs: SharedPreferences,
+        packageName: String,
+        scripts: List<ScriptMetadata>,
+        files: Collection<RemoteManifestFile>
+    ): SharedPreferences.Editor {
+        val pkg = packageName.trim()
+        val packageScripts = scriptsForPackageIndex(prefs, pkg, scripts)
+        val packageFiles = filesForScripts(packageScripts, files)
+        return editor
+            .putString(ScriptPrefs.scriptIndexJsonKey(pkg), packageScripts.toJson(prefs).toString())
+            .putString(ScriptPrefs.syncManifestJsonKey(pkg), buildSyncManifestJson(pkg, packageScripts, packageFiles).toString())
+            .putString(ScriptPrefs.scriptHashConfigJsonKey(pkg), buildScriptHashConfigJson(pkg, prefs, packageScripts, packageFiles).toString())
+    }
+
+    private fun readPublicScriptSourceFromMetadata(
+        metadata: ScriptMetadata,
+        debugPackageName: String?,
+        allowRootFallback: Boolean
+    ): ScriptSource? {
+        val entryPath = (metadata.entryPath.ifBlank { metadata.path })
+            .replace("\\", "/")
+            .trim('/')
+        if (entryPath.isBlank()) {
+            Log.w(TAG, "readPublicScriptSourceFromMetadata: empty entry path, id=${metadata.id}")
+            return null
+        }
+
+        val kind = metadata.kind.ifBlank {
+            if (entryPath.endsWith("/index.js", ignoreCase = true)) "directory" else "file"
+        }
+        val rootPath = metadata.rootPath.ifBlank {
+            if (kind == "directory" && entryPath.endsWith("/index.js", ignoreCase = true)) {
+                entryPath.substringBeforeLast("/index.js")
+            } else {
+                ""
+            }
+        }
+        val normalizedMetadata = metadata.copy(
+            path = metadata.path.ifBlank { entryPath },
+            kind = kind,
+            entryPath = entryPath,
+            rootPath = rootPath
+        )
+        val entryFile = File(publicScriptsDir, entryPath)
+
+        val normalText = runCatching {
+            if (entryFile.isFile) entryFile.readText(StandardCharsets.UTF_8) else null
+        }.onFailure { error ->
+            Log.w(TAG, "readPublicScriptSourceFromMetadata(File): read failed id=${metadata.id}, path=${entryFile.absolutePath}", error)
+        }.getOrNull()
+
+        if (normalText != null) {
+            Log.d(
+                TAG,
+                "readPublicScriptSourceFromMetadata: selected id=${metadata.id}, path=$entryPath, source=file, chars=${normalText.length}, debugPackage=${debugPackageName.orEmpty()}"
+            )
+            return ScriptSource(normalizedMetadata, entryFile, normalText, "file")
+        }
+
+        if (allowRootFallback) {
+            val cat = runRootCommand("cat ${shellQuote(entryFile.absolutePath)}", timeoutSeconds = 10)
+            if (!cat.timedOut && cat.exitCode == 0) {
+                Log.d(
+                    TAG,
+                    "readPublicScriptSourceFromMetadata: selected id=${metadata.id}, path=$entryPath, source=root, chars=${cat.stdout.length}, debugPackage=${debugPackageName.orEmpty()}"
+                )
+                return ScriptSource(normalizedMetadata, entryFile, cat.stdout, "root")
+            }
+            Log.w(
+                TAG,
+                "readPublicScriptSourceFromMetadata(root): read failed id=${metadata.id}, path=${entryFile.absolutePath}, exit=${cat.exitCode}, timeout=${cat.timedOut}, stderr=${cat.stderr.trim()}"
+            )
+        }
+
+        Log.w(TAG, "readPublicScriptSourceFromMetadata: selected script missing/unreadable id=${metadata.id}, path=$entryPath")
+        return null
+    }
+
+    private fun selectedScriptSourcesForPackageFromCache(
+        prefs: SharedPreferences,
+        targetPackage: String,
+        allowRootFallback: Boolean
+    ): List<ScriptSource> {
+        val selectedMetadata = loadScriptMetadataForSync(prefs)
+            .filter { metadata ->
+                metadata.supportsPackage(targetPackage) &&
+                    prefs.getBoolean(ScriptPrefs.scriptEnabledKey(targetPackage, metadata.id), false)
+            }
+        Log.d(
+            TAG,
+            "selectedScriptSourcesForPackageFromCache: package=$targetPackage, selected=${selectedMetadata.size}, ids=${selectedMetadata.joinToString { it.id }}"
+        )
+        return selectedMetadata.mapNotNull { metadata ->
+            readPublicScriptSourceFromMetadata(metadata, targetPackage, allowRootFallback)
+        }
+    }
+
+    private fun selectedScriptSourcesForEnabledAppsFromCache(
+        prefs: SharedPreferences,
+        enabledPackages: List<String>,
+        allowRootFallback: Boolean
+    ): List<ScriptSource> {
+        val enabledPackageSet = enabledPackages.toSet()
+        val selectedMetadata = loadScriptMetadataForSync(prefs)
+            .filter { metadata ->
+                val matchedPackages = enabledPackageSet.filter { packageName -> metadata.supportsPackage(packageName) }
+                matchedPackages.any { packageName ->
+                    prefs.getBoolean(ScriptPrefs.scriptEnabledKey(packageName, metadata.id), false)
+                }
+            }
+        Log.d(
+            TAG,
+            "selectedScriptSourcesForEnabledAppsFromCache: enabledPackages=${enabledPackages.joinToString()}, selected=${selectedMetadata.size}, ids=${selectedMetadata.joinToString { it.id }}"
+        )
+        return selectedMetadata.mapNotNull { metadata ->
+            readPublicScriptSourceFromMetadata(metadata, null, allowRootFallback)
+        }
+    }
+
     fun syncPublicScriptsToRemote(
         service: XposedService?,
         prefs: SharedPreferences?,
@@ -550,22 +852,31 @@ xposed.onPackageLoaded(function (param) {
         }
 
         val previousManifest = parseSyncManifest(prefs.getString(ScriptPrefs.SYNC_MANIFEST_JSON, "{}"))
+        val remoteFiles = listRemoteFileNames(service)
         val currentFiles = linkedMapOf<String, RemoteManifestFile>()
-        val scripts = readPublicScriptSources(debugPackageName, allowRootFallback).map { source ->
-            syncScriptUnitToRemote(service, source, previousManifest, currentFiles)
+        val sources = readPublicScriptSources(debugPackageName, allowRootFallback)
+        val scripts = sources.map { source ->
+            syncScriptUnitToRemote(service, source, previousManifest, remoteFiles, currentFiles)
         }
 
-        val indexJson = scripts.toJson()
+        val indexJson = scripts.toJson(prefs)
         val manifestJson = buildSyncManifestJson(debugPackageName, scripts, currentFiles.values.toList())
+        val hashConfigJson = buildScriptHashConfigJson(debugPackageName, prefs, scripts, currentFiles.values.toList())
         val staleRemoteNames = previousManifest.keys - currentFiles.keys
         val cleanup = cleanupStaleRemoteFiles(service, staleRemoteNames)
 
-        prefs.edit()
+        val targetPackages = debugPackageName?.trim()?.takeIf { it.isNotBlank() }?.let { listOf(it) } ?: enabledPackagesFromPrefs(prefs)
+        val editor = prefs.edit()
+            // Legacy global keys are kept for migration/debug only. HookEntry reads the package-scoped key first.
             .putString(ScriptPrefs.SCRIPT_INDEX_JSON, indexJson.toString())
             .putString(ScriptPrefs.SYNC_MANIFEST_JSON, manifestJson.toString())
-            .commit()
+            .putString(ScriptPrefs.SCRIPT_HASH_CONFIG_JSON, hashConfigJson.toString())
+        targetPackages.forEach { pkg -> putPackageRuntimePrefs(editor, prefs, pkg, scripts, currentFiles.values) }
+        editor.commit()
 
-        Log.d(TAG, "syncPublicScriptsToRemote: saved index count=${scripts.size}, files=${currentFiles.size}, skippedUnchanged=${currentFiles.values.count { previousManifest[it.remoteName] == it.sha256 }}, stale=${staleRemoteNames.size}, cleanup=$cleanup")
+        val targetCacheSync = finishTargetPrivateCacheSync(prefs, targetPackages, scripts, sources)
+
+        Log.d(TAG, "syncPublicScriptsToRemote: saved legacyIndex count=${scripts.size}, packageIndexes=${targetPackages.size}, files=${currentFiles.size}, hashes=${currentFiles.size}, skippedUnchanged=${currentFiles.values.count { previousManifest[it.remoteName] == it.sha256 }}, stale=${staleRemoteNames.size}, cleanup=$cleanup, targetCacheSync=${targetCacheSync.toJson()}")
         scripts
     }
 
@@ -583,6 +894,7 @@ xposed.onPackageLoaded(function (param) {
         }
 
         val previousManifest = parseSyncManifest(prefs.getString(ScriptPrefs.SYNC_MANIFEST_JSON, "{}"))
+        val remoteFiles = listRemoteFileNames(service)
         val currentFiles = linkedMapOf<String, RemoteManifestFile>()
 
         val enabledPackages = prefs.all
@@ -593,46 +905,54 @@ xposed.onPackageLoaded(function (param) {
             .toList()
 
         if (enabledPackages.isEmpty()) {
-            val cleanup = cleanupStaleRemoteFiles(service, previousManifest.keys)
-            prefs.edit()
+            val packageManifestNames = prefs.all.keys
+                .filter { ScriptPrefs.isPackageScopedKey(it, ScriptPrefs.SYNC_MANIFEST_JSON) }
+                .flatMap { key -> parseSyncManifest(prefs.getString(key, null)).keys }
+                .toSet()
+            val cleanup = cleanupStaleRemoteFiles(service, previousManifest.keys + packageManifestNames)
+            val editor = prefs.edit()
                 .putString(ScriptPrefs.SCRIPT_INDEX_JSON, JSONArray().toString())
                 .putString(ScriptPrefs.SYNC_MANIFEST_JSON, buildSyncManifestJson(null, emptyList(), emptyList()).toString())
-                .commit()
+                .putString(ScriptPrefs.SCRIPT_HASH_CONFIG_JSON, buildScriptHashConfigJson(null, prefs, emptyList(), emptyList()).toString())
+            removeAllPackageRuntimePrefs(editor, prefs).commit()
+            lastTargetCacheSyncSummary = TargetCacheSyncSummary(
+                rootSyncEnabled = isRootScriptCacheSyncEnabled(prefs),
+                rootAvailable = isRootAvailable(),
+                usedRoot = false
+            )
             Log.d(TAG, "syncEnabledAppsScriptsToRemote: no enabled apps, clear remote index, cleanup=$cleanup")
             return@runCatching emptyList()
         }
 
-        val enabledPackageSet = enabledPackages.toSet()
-        val sources = readPublicScriptSources(debugPackageName = null, allowRootFallback = allowRootFallback)
-        val selected = sources.filter { source ->
-            val matchedPackages = enabledPackageSet.filter { packageName -> source.metadata.supportsPackage(packageName) }
-            val enabledForAnyPackage = matchedPackages.any { packageName ->
-                prefs.getBoolean(ScriptPrefs.scriptEnabledKey(packageName, source.metadata.id), false)
-            }
-            Log.d(
-                TAG,
-                "syncEnabledAppsScriptsToRemote: inspect id=${source.metadata.id}, matchedPackages=$matchedPackages, enabledForAnyPackage=$enabledForAnyPackage"
-            )
-            enabledForAnyPackage
-        }
+        val selected = selectedScriptSourcesForEnabledAppsFromCache(
+            prefs = prefs,
+            enabledPackages = enabledPackages,
+            allowRootFallback = allowRootFallback
+        )
 
         val scripts = selected.map { source ->
-            syncScriptUnitToRemote(service, source, previousManifest, currentFiles)
+            syncScriptUnitToRemote(service, source, previousManifest, remoteFiles, currentFiles)
         }
 
-        val indexJson = scripts.toJson()
+        val indexJson = scripts.toJson(prefs)
         val manifestJson = buildSyncManifestJson(null, scripts, currentFiles.values.toList())
+        val hashConfigJson = buildScriptHashConfigJson(null, prefs, scripts, currentFiles.values.toList())
         val staleRemoteNames = previousManifest.keys - currentFiles.keys
         val cleanup = cleanupStaleRemoteFiles(service, staleRemoteNames)
 
-        prefs.edit()
+        val editor = prefs.edit()
+            // Legacy global keys keep a union for migration/debug; target processes read their own package key.
             .putString(ScriptPrefs.SCRIPT_INDEX_JSON, indexJson.toString())
             .putString(ScriptPrefs.SYNC_MANIFEST_JSON, manifestJson.toString())
-            .commit()
+            .putString(ScriptPrefs.SCRIPT_HASH_CONFIG_JSON, hashConfigJson.toString())
+        enabledPackages.forEach { pkg -> putPackageRuntimePrefs(editor, prefs, pkg, scripts, currentFiles.values) }
+        editor.commit()
+
+        val targetCacheSync = finishTargetPrivateCacheSync(prefs, enabledPackages, scripts, selected)
 
         Log.d(
             TAG,
-            "syncEnabledAppsScriptsToRemote: saved index count=${scripts.size}, files=${currentFiles.size}, stale=${staleRemoteNames.size}, cleanup=$cleanup, enabledPackages=${enabledPackages.joinToString()}"
+            "syncEnabledAppsScriptsToRemote: saved legacyIndex count=${scripts.size}, packageIndexes=${enabledPackages.size}, files=${currentFiles.size}, hashes=${currentFiles.size}, stale=${staleRemoteNames.size}, cleanup=$cleanup, enabledPackages=${enabledPackages.joinToString()}, targetCacheSync=${targetCacheSync.toJson()}"
         )
         scripts
     }
@@ -654,48 +974,56 @@ xposed.onPackageLoaded(function (param) {
             throw IllegalArgumentException("packageName 不能为空")
         }
 
-        val previousManifest = parseSyncManifest(prefs.getString(ScriptPrefs.SYNC_MANIFEST_JSON, "{}"))
+        val previousManifest = packageManifest(prefs, targetPackage)
+        val remoteFiles = listRemoteFileNames(service)
         val currentFiles = linkedMapOf<String, RemoteManifestFile>()
 
         val appEnabled = prefs.getBoolean(ScriptPrefs.appEnabledKey(targetPackage), false)
         if (!appEnabled) {
-            val cleanup = cleanupStaleRemoteFiles(service, previousManifest.keys)
-            prefs.edit()
-                .putString(ScriptPrefs.SCRIPT_INDEX_JSON, JSONArray().toString())
-                .putString(ScriptPrefs.SYNC_MANIFEST_JSON, buildSyncManifestJson(targetPackage, emptyList(), emptyList()).toString())
-                .commit()
-            Log.d(TAG, "syncEnabledScriptsForPackageToRemote: app disabled, clear remote index, package=$targetPackage, cleanup=$cleanup")
+            val cleanup = cleanupStaleRemoteFiles(
+                service,
+                previousManifest.keys - remoteNamesReferencedByOtherPackageManifests(prefs, targetPackage)
+            )
+            removePackageRuntimePrefs(prefs.edit(), targetPackage).commit()
+            val cleared = clearTargetScriptCacheByRoot(targetPackage, ScriptPrefs.normalizeTargetScriptCacheDir(prefs.getString(ScriptPrefs.targetScriptCacheDirKey(targetPackage), ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR)))
+            lastTargetCacheSyncSummary = TargetCacheSyncSummary(
+                rootSyncEnabled = isRootScriptCacheSyncEnabled(prefs),
+                rootAvailable = isRootAvailable(),
+                usedRoot = false,
+                cleanedPackages = if (cleared) listOf(targetPackage) else emptyList(),
+                targetProcessFallbackPackages = if (cleared) emptyList() else listOf(targetPackage)
+            )
+            Log.d(TAG, "syncEnabledScriptsForPackageToRemote: app disabled, clear remote index, package=$targetPackage, cleanup=$cleanup, clearedTargetCache=$cleared")
             return@runCatching emptyList()
         }
 
-        val sources = readPublicScriptSources(debugPackageName = targetPackage, allowRootFallback = allowRootFallback)
-        val selected = sources.filter { source ->
-            val supportsPackage = source.metadata.supportsPackage(targetPackage)
-            val scriptEnabled = prefs.getBoolean(ScriptPrefs.scriptEnabledKey(targetPackage, source.metadata.id), false)
-            Log.d(
-                TAG,
-                "syncEnabledScriptsForPackageToRemote: inspect id=${source.metadata.id}, supportsPackage=$supportsPackage, scriptEnabled=$scriptEnabled"
-            )
-            supportsPackage && scriptEnabled
-        }
+        val selected = selectedScriptSourcesForPackageFromCache(
+            prefs = prefs,
+            targetPackage = targetPackage,
+            allowRootFallback = allowRootFallback
+        )
 
         val scripts = selected.map { source ->
-            syncScriptUnitToRemote(service, source, previousManifest, currentFiles)
+            syncScriptUnitToRemote(service, source, previousManifest, remoteFiles, currentFiles)
         }
 
-        val indexJson = scripts.toJson()
+        val indexJson = scripts.toJson(prefs)
         val manifestJson = buildSyncManifestJson(targetPackage, scripts, currentFiles.values.toList())
-        val staleRemoteNames = previousManifest.keys - currentFiles.keys
+        val hashConfigJson = buildScriptHashConfigJson(targetPackage, prefs, scripts, currentFiles.values.toList())
+        val staleRemoteNames = previousManifest.keys - currentFiles.keys - remoteNamesReferencedByOtherPackageManifests(prefs, targetPackage)
         val cleanup = cleanupStaleRemoteFiles(service, staleRemoteNames)
 
         prefs.edit()
-            .putString(ScriptPrefs.SCRIPT_INDEX_JSON, indexJson.toString())
-            .putString(ScriptPrefs.SYNC_MANIFEST_JSON, manifestJson.toString())
+            .putString(ScriptPrefs.scriptIndexJsonKey(targetPackage), indexJson.toString())
+            .putString(ScriptPrefs.syncManifestJsonKey(targetPackage), manifestJson.toString())
+            .putString(ScriptPrefs.scriptHashConfigJsonKey(targetPackage), hashConfigJson.toString())
             .commit()
+
+        val targetCacheSync = finishTargetPrivateCacheSync(prefs, listOf(targetPackage), scripts, selected)
 
         Log.d(
             TAG,
-            "syncEnabledScriptsForPackageToRemote: saved index count=${scripts.size}, files=${currentFiles.size}, stale=${staleRemoteNames.size}, cleanup=$cleanup, package=$targetPackage"
+            "syncEnabledScriptsForPackageToRemote: saved packageIndex count=${scripts.size}, files=${currentFiles.size}, hashes=${currentFiles.size}, stale=${staleRemoteNames.size}, cleanup=$cleanup, package=$targetPackage, targetCacheSync=${targetCacheSync.toJson()}"
         )
         scripts
     }
@@ -739,9 +1067,21 @@ xposed.onPackageLoaded(function (param) {
         )
     }
 
-    fun List<ScriptMetadata>.toJson(): JSONArray {
+    fun List<ScriptMetadata>.toJson(prefs: SharedPreferences? = null): JSONArray {
+        val enabledPackages = enabledPackagesFromPrefs(prefs)
         val array = JSONArray()
         forEach { script ->
+            val cachePackages = enabledPackages
+                .filter { packageName -> script.supportsPackage(packageName) && (prefs?.getBoolean(ScriptPrefs.cacheScriptsToPrivateDirKey(packageName), true) == true) }
+                .sorted()
+            val cacheDirByPackage = enabledPackages
+                .filter { packageName -> script.supportsPackage(packageName) }
+                .sorted()
+                .associateWith { packageName ->
+                    ScriptPrefs.normalizeTargetScriptCacheDir(
+                        prefs?.getString(ScriptPrefs.targetScriptCacheDirKey(packageName), ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR)
+                    )
+                }
             array.put(JSONObject().apply {
                 put("id", script.id)
                 put("name", script.name)
@@ -760,8 +1100,19 @@ xposed.onPackageLoaded(function (param) {
                 put("rootPath", script.rootPath)
                 put("hasSettings", script.hasSettings)
                 put("settingsPath", script.settingsPath)
-                put("settingsSchema", if (script.settingsSchema.isNotBlank()) JSONObject(script.settingsSchema) else JSONObject.NULL)
-                put("settingsDefaults", if (script.settingsSchema.isNotBlank()) ScriptSettings.defaults(JSONObject(script.settingsSchema)) else JSONObject())
+                val settingsSchemaJson = script.settingsSchemaJsonOrNull()
+                put("settingsSchema", settingsSchemaJson ?: JSONObject.NULL)
+                put("settingsDefaults", settingsSchemaJson?.let { ScriptSettings.defaults(it) } ?: JSONObject())
+                if (prefs != null) {
+                    put("cacheScriptsToPrivateDir", cachePackages.isNotEmpty())
+                    put("cacheScriptsToPrivateDirPackages", JSONArray(cachePackages))
+                    put("targetScriptCacheDirByPackage", JSONObject().apply {
+                        cacheDirByPackage.forEach { (packageName, dir) -> put(packageName, dir) }
+                    })
+                    if (cacheDirByPackage.size == 1) {
+                        put("targetScriptCacheDir", cacheDirByPackage.values.first())
+                    }
+                }
                 put("files", JSONArray().apply {
                     script.files.forEach { asset ->
                         put(JSONObject().apply {
@@ -810,7 +1161,7 @@ xposed.onPackageLoaded(function (param) {
                             rootPath = obj.optString("rootPath", ""),
                             hasSettings = obj.optBoolean("hasSettings", false),
                             settingsPath = obj.optString("settingsPath", ""),
-                            settingsSchema = obj.optJSONObject("settingsSchema")?.toString() ?: obj.optString("settingsSchema", ""),
+                            settingsSchema = obj.normalizedSettingsSchemaString(),
                             files = obj.optJSONArray("files").toScriptFileAssets(),
                             assets = obj.optJSONArray("assets").toScriptFileAssets()
                         )
@@ -823,11 +1174,29 @@ xposed.onPackageLoaded(function (param) {
         }
     }
 
+    private fun ScriptMetadata.settingsSchemaJsonOrNull(): JSONObject? {
+        val raw = settingsSchema.trim()
+        if (raw.isBlank() || raw.equals("null", ignoreCase = true)) return null
+        return runCatching { JSONObject(raw) }
+            .onFailure { Log.w(TAG, "忽略无效 settingsSchema: id=$id", it) }
+            .getOrNull()
+    }
+
+    private fun JSONObject.normalizedSettingsSchemaString(): String {
+        if (!has("settingsSchema") || isNull("settingsSchema")) return ""
+        val value = opt("settingsSchema") ?: return ""
+        if (value == JSONObject.NULL) return ""
+        if (value is JSONObject) return value.toString()
+        val raw = value.toString().trim()
+        return raw.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) } ?: ""
+    }
+
 
     private fun syncScriptUnitToRemote(
         service: XposedService,
         source: ScriptSource,
         previousManifest: Map<String, String>,
+        remoteFiles: Set<String>?,
         currentFiles: MutableMap<String, RemoteManifestFile>
     ): ScriptMetadata {
         val metadata = source.metadata
@@ -843,7 +1212,10 @@ xposed.onPackageLoaded(function (param) {
                 remoteNameForScriptAsset(metadata.id, assetFile.path)
             }
             val sha256 = sha256(assetFile.content)
-            val unchanged = previousManifest[remoteName] == sha256
+            val unchanged = previousManifest[remoteName] == sha256 && (remoteFiles == null || remoteName in remoteFiles)
+            if (previousManifest[remoteName] == sha256 && remoteFiles != null && remoteName !in remoteFiles) {
+                Log.w(TAG, "[XHH] remote manifest unchanged but file missing, resync: remoteName=$remoteName")
+            }
             Log.d(
                 TAG,
                 "syncScriptUnitToRemote: ${if (unchanged) "skip" else "write"} path=${assetFile.path}, remoteName=$remoteName, sha256=$sha256, id=${metadata.id}, kind=${metadata.kind}, source=${assetFile.source}, chars=${assetFile.content.length}"
@@ -857,7 +1229,10 @@ xposed.onPackageLoaded(function (param) {
 
         if (jsFiles.none { it.path == metadata.path }) {
             val sha256 = sha256(entryContent)
-            val unchanged = previousManifest[entryRemoteName] == sha256
+            val unchanged = previousManifest[entryRemoteName] == sha256 && (remoteFiles == null || entryRemoteName in remoteFiles)
+            if (previousManifest[entryRemoteName] == sha256 && remoteFiles != null && entryRemoteName !in remoteFiles) {
+                Log.w(TAG, "[XHH] remote manifest unchanged but file missing, resync: remoteName=$entryRemoteName")
+            }
             Log.d(TAG, "syncScriptUnitToRemote: entry not in asset list, ${if (unchanged) "skip" else "write"} fallback path=${metadata.path}, remoteName=$entryRemoteName, sha256=$sha256")
             if (!unchanged) {
                 writeRemoteFile(service, entryRemoteName, entryContent)
@@ -870,7 +1245,10 @@ xposed.onPackageLoaded(function (param) {
         collectScriptAssets(source).forEach { assetFile ->
             val remoteName = remoteNameForScriptAsset(metadata.id, assetFile.path)
             val sha256 = sha256(assetFile.bytes)
-            val unchanged = previousManifest[remoteName] == sha256
+            val unchanged = previousManifest[remoteName] == sha256 && (remoteFiles == null || remoteName in remoteFiles)
+            if (previousManifest[remoteName] == sha256 && remoteFiles != null && remoteName !in remoteFiles) {
+                Log.w(TAG, "[XHH] remote manifest unchanged but file missing, resync: remoteName=$remoteName")
+            }
             Log.d(
                 TAG,
                 "syncScriptAssetToRemote: ${if (unchanged) "skip" else "write"} path=${assetFile.path}, remoteName=$remoteName, sha256=$sha256, id=${metadata.id}, source=${assetFile.source}, bytes=${assetFile.bytes.size}"
@@ -987,6 +1365,247 @@ xposed.onPackageLoaded(function (param) {
     }
 
 
+
+    private fun finishTargetPrivateCacheSync(
+        prefs: SharedPreferences?,
+        packageNames: Collection<String>,
+        scripts: List<ScriptMetadata>,
+        sources: List<ScriptSource>
+    ): TargetCacheSyncSummary {
+        val packages = packageNames.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        val rootSyncEnabled = isRootScriptCacheSyncEnabled(prefs)
+        val rootAvailable = if (rootSyncEnabled) isRootAvailable() else false
+        val syncedPackages = mutableListOf<String>()
+        val cleanedPackages = mutableListOf<String>()
+        val fallbackPackages = mutableListOf<String>()
+        val errors = mutableListOf<String>()
+        val sourcesById = sources.associateBy { it.metadata.id }
+
+        packages.forEach { pkg ->
+            val targetDir = ScriptPrefs.normalizeTargetScriptCacheDir(
+                prefs?.getString(ScriptPrefs.targetScriptCacheDirKey(pkg), ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR)
+            )
+            val cacheEnabled = prefs?.getBoolean(ScriptPrefs.cacheScriptsToPrivateDirKey(pkg), true) ?: true
+            if (!cacheEnabled) {
+                val cleaned = if (rootAvailable) clearTargetScriptCacheByRoot(pkg, targetDir) else false
+                if (cleaned) cleanedPackages += pkg else fallbackPackages += pkg
+                return@forEach
+            }
+
+            if (rootSyncEnabled && rootAvailable) {
+                val result = syncTargetPrivateCacheByRoot(pkg, targetDir, scripts, sourcesById, prefs)
+                result.onSuccess { count ->
+                    syncedPackages += pkg
+                    Log.i(TAG, "[XHH] target private cache synced by Root: package=$pkg, dir=$targetDir, files=$count")
+                }.onFailure { error ->
+                    errors += "$pkg: ${error.message ?: error.javaClass.simpleName}"
+                    fallbackPackages += pkg
+                    Log.w(TAG, "[XHH] Root cache sync failed; target process will self-cache: package=$pkg", error)
+                }
+            } else {
+                fallbackPackages += pkg
+            }
+        }
+
+        val summary = TargetCacheSyncSummary(
+            rootSyncEnabled = rootSyncEnabled,
+            rootAvailable = rootAvailable,
+            usedRoot = syncedPackages.isNotEmpty() || cleanedPackages.isNotEmpty(),
+            syncedPackages = syncedPackages,
+            cleanedPackages = cleanedPackages,
+            targetProcessFallbackPackages = fallbackPackages.distinct(),
+            errors = errors
+        )
+        lastTargetCacheSyncSummary = summary
+        return summary
+    }
+
+    private fun syncTargetPrivateCacheByRoot(
+        packageName: String,
+        targetDir: String,
+        scripts: List<ScriptMetadata>,
+        sourcesById: Map<String, ScriptSource>,
+        prefs: SharedPreferences?
+    ): Result<Int> = runCatching {
+        val pkg = packageName.trim()
+        require(pkg.matches(Regex("^[A-Za-z0-9_.]+$"))) { "非法包名：$pkg" }
+        val normalizedDir = ScriptPrefs.normalizeTargetScriptCacheDir(targetDir)
+        val packageScripts = scripts
+            .filter { script -> script.supportsPackage(pkg) && (prefs?.getBoolean(ScriptPrefs.scriptEnabledKey(pkg, script.id), false) == true) }
+            .distinctBy { it.id }
+
+        val rootTemp = File(XiaoHeiApplication.appContext.cacheDir, "xhh_target_cache_sync")
+        if (!rootTemp.exists()) rootTemp.mkdirs()
+        val sessionDir = File(rootTemp, "${safeFilePart(pkg)}_${System.currentTimeMillis()}")
+        if (!sessionDir.mkdirs()) throw IllegalStateException("无法创建临时目录：${sessionDir.absolutePath}")
+
+        var installedFileCount = 0
+        val indexScripts = JSONArray()
+        val copyCommands = mutableListOf<String>()
+        try {
+            packageScripts.forEach { script ->
+                val source = sourcesById[script.id] ?: return@forEach
+                val entryContent = source.content
+                val unitFiles = collectScriptUnitFiles(source, entryContent).associateBy { it.path.trim('/').replace('\\', '/') }
+                script.files.forEach { asset ->
+                    val path = asset.path.trim('/').replace('\\', '/')                    
+                    val unit = unitFiles[path]
+                    val content = unit?.content ?: if (path == script.path.trim('/') || path == script.entryPath.trim('/')) entryContent else null
+                    if (content == null) {
+                        Log.w(TAG, "syncTargetPrivateCacheByRoot: missing content for package=$pkg script=${script.id} path=$path")
+                        return@forEach
+                    }
+                    val expectedSha = asset.sha256.ifBlank { sha256(content) }
+                    val actualSha = sha256(content)
+                    if (!expectedSha.equals(actualSha, ignoreCase = true)) {
+                        throw IllegalStateException("缓存 SHA-256 不匹配：script=${script.id}, path=$path, expected=$expectedSha, actual=$actualSha")
+                    }
+                    val cacheId = targetCacheIdFor(script.id, path, asset.remoteName)
+                    val fileName = targetCacheFileName(cacheId, expectedSha)
+                    val tmp = File(sessionDir, fileName)
+                    tmp.writeText(content, StandardCharsets.UTF_8)
+                    copyCommands += """cp ${shellQuote(tmp.absolutePath)} "${'$'}TARGET_ROOT/scripts/$fileName" || fail ${shellQuote("copy failed: $fileName")}"""
+                    indexScripts.put(JSONObject()
+                        .put("scriptId", cacheId)
+                        .put("sha256", expectedSha)
+                        .put("path", "scripts/$fileName")
+                        .put("updatedAt", System.currentTimeMillis()))
+                    installedFileCount++
+                }
+            }
+
+            val index = JSONObject()
+                .put("version", 1)
+                .put("packageName", pkg)
+                .put("rootDir", normalizedDir)
+                .put("scripts", indexScripts)
+            val indexFile = File(sessionDir, "index.json")
+            indexFile.writeText(index.toString(2), StandardCharsets.UTF_8)
+
+            val scriptFile = File(sessionDir, "install.sh")
+            val body = buildString {
+                appendLine("set -u")
+                appendLine("""fail() { echo "[XHH Root cache sync] ${'$'}*" >&2; exit 1; }""")
+                appendLine("PKG=${shellQuote(pkg)}")
+                appendLine("REL_DIR=${shellQuote(normalizedDir)}")
+                appendLine("DATA_DIR_HINT=${shellQuote(targetPackageDataDirHint(pkg).orEmpty())}")
+                appendTargetBaseResolverShell()
+                appendLine("TARGET_BASES=\$(find_target_bases | sort -u)")
+                appendLine("""[ -n "${'$'}TARGET_BASES" ] || fail target_data_dir_not_found:${'$'}PKG:hint=${'$'}DATA_DIR_HINT""")
+                appendLine("""for TARGET_BASE in ${'$'}TARGET_BASES; do""")
+                appendLine("""  UIDGID=${'$'}(stat -c '%u:%g' "${'$'}TARGET_BASE" 2>/dev/null || ls -ldn "${'$'}TARGET_BASE" 2>/dev/null | awk '{print ${'$'}3 ":" ${'$'}4}')""")
+                appendLine("""  [ -n "${'$'}UIDGID" ] || fail cannot_resolve_uid_gid:${'$'}TARGET_BASE""")
+                appendLine("  TARGET_FILES=\"${'$'}TARGET_BASE/files\"")
+                appendLine("  TARGET_ROOT=\"${'$'}TARGET_FILES/${'$'}REL_DIR\"")
+                appendLine("""  mkdir -p "${'$'}TARGET_FILES" || fail mkdir_target_files_failed:${'$'}TARGET_FILES""")
+                appendLine("""  chown "${'$'}UIDGID" "${'$'}TARGET_FILES" 2>/dev/null || true""")
+                appendLine("""  chmod 700 "${'$'}TARGET_FILES" 2>/dev/null || true""")
+                appendLine("""  rm -rf "${'$'}TARGET_ROOT" || fail remove_old_cache_failed:${'$'}TARGET_ROOT""")
+                appendLine("""  mkdir -p "${'$'}TARGET_ROOT/scripts" || fail mkdir_target_cache_failed:${'$'}TARGET_ROOT/scripts""")
+                copyCommands.forEach { appendLine("  $it") }
+                appendLine("""  cp ${shellQuote(indexFile.absolutePath)} "${'$'}TARGET_ROOT/index.json" || fail copy_index_failed""")
+                appendLine("""  chown -R "${'$'}UIDGID" "${'$'}TARGET_ROOT" || fail chown_cache_failed:${'$'}UIDGID""")
+                appendLine("""  chmod 700 "${'$'}TARGET_ROOT" || fail chmod_cache_root_failed""")
+                appendLine("""  find "${'$'}TARGET_ROOT" -type d -exec chmod 700 {} \; 2>/dev/null || true""")
+                appendLine("""  find "${'$'}TARGET_ROOT" -type f -exec chmod 600 {} \; 2>/dev/null || true""")
+                appendLine("done")
+            }
+            scriptFile.writeText(body, StandardCharsets.UTF_8)
+            val result = runRootCommand("sh ${shellQuote(scriptFile.absolutePath)}", timeoutSeconds = 30)
+            if (result.timedOut || result.exitCode != 0) {
+                throw IllegalStateException("Root 同步失败：exit=${result.exitCode}, timeout=${result.timedOut}, stderr=${result.stderr.trim().ifBlank { result.stdout.trim() }}")
+            }
+            installedFileCount
+        } finally {
+            runCatching { sessionDir.deleteRecursively() }
+        }
+    }
+
+    private fun targetPackageDataDirHint(packageName: String): String? {
+        return runCatching {
+            val pm = XiaoHeiApplication.appContext.packageManager
+            val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getApplicationInfo(packageName, 0)
+            }
+            info.dataDir?.trim()?.takeIf { it.isNotBlank() }
+        }.onFailure { error ->
+            Log.w(TAG, "targetPackageDataDirHint failed: package=$packageName", error)
+        }.getOrNull()
+    }
+
+    private fun StringBuilder.appendTargetBaseResolverShell() {
+        appendLine("""find_target_bases() {""")
+        appendLine("""  for base in "${'$'}DATA_DIR_HINT" "/data/user/0/${'$'}PKG" "/data/data/${'$'}PKG" /data/user/*/"${'$'}PKG" /data_mirror/data_ce/null/*/"${'$'}PKG" /data_mirror/data_de/null/*/"${'$'}PKG" /data_mirror/data_ce/*/*/"${'$'}PKG" /data_mirror/data_de/*/*/"${'$'}PKG"; do""")
+        appendLine("""    [ -n "${'$'}base" ] || continue""")
+        appendLine("""    case "${'$'}base" in *'*'*) continue ;; esac""")
+        appendLine("""    [ -d "${'$'}base" ] || continue""")
+        appendLine("""    printf '%s\n' "${'$'}base"""")
+        appendLine("""  done""")
+        appendLine("""  DUMP_DATA=${'$'}( (cmd package dump "${'$'}PKG" 2>/dev/null || dumpsys package "${'$'}PKG" 2>/dev/null || pm dump "${'$'}PKG" 2>/dev/null) | sed -n 's/.*dataDir=//p' | sed 's/[[:space:]].*//' )""")
+        appendLine("""  for base in ${'$'}DUMP_DATA; do""")
+        appendLine("""    [ -d "${'$'}base" ] || continue""")
+        appendLine("""    printf '%s\n' "${'$'}base"""")
+        appendLine("""  done""")
+        appendLine("""}""")
+    }
+
+    private fun targetCacheIdFor(scriptId: String, path: String, remoteName: String): String {
+        var key = scriptId.trim()
+        val cleanPath = path.replace('\\', '/').trim('/')
+        if (cleanPath.isNotBlank()) key += "_$cleanPath"
+        val cleanRemote = remoteName.trim()
+        if (cleanRemote.isNotBlank()) key += "_$cleanRemote"
+        return key.ifBlank { "unnamed" }
+    }
+
+    private fun targetCacheFileName(cacheId: String, sha256: String): String {
+        val cleanSha = sha256.replace(Regex("[^A-Fa-f0-9]"), "").lowercase()
+        return "${safeFilePart(cacheId)}_$cleanSha.js"
+    }
+
+    private fun safeFilePart(value: String): String {
+        var clean = value.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        while (clean.startsWith("_")) clean = clean.removePrefix("_")
+        while (clean.endsWith("_")) clean = clean.removeSuffix("_")
+        return clean.ifBlank { "unnamed" }
+    }
+
+    private fun enabledPackagesFromPrefs(prefs: SharedPreferences?): List<String> {
+        return prefs?.all
+            ?.asSequence()
+            ?.filter { (key, value) -> key.startsWith("app_enabled_") && value == true }
+            ?.map { (key, _) -> key.removePrefix("app_enabled_") }
+            ?.filter { it.isNotBlank() }
+            ?.distinct()
+            ?.toList()
+            .orEmpty()
+    }
+
+    private fun listRemoteFileNames(service: XposedService): Set<String>? {
+        val method = runCatching { service.javaClass.methods.firstOrNull { it.name == "listRemoteFiles" && it.parameterTypes.isEmpty() } }.getOrNull()
+            ?: return null
+        return runCatching {
+            when (val value = method.invoke(service)) {
+                null -> emptySet()
+                is Array<*> -> value.mapNotNull { it?.toString()?.trim() }.filter { it.isNotBlank() }.toSet()
+                is Iterable<*> -> value.mapNotNull { it?.toString()?.trim() }.filter { it.isNotBlank() }.toSet()
+                is JSONArray -> buildSet {
+                    for (i in 0 until value.length()) {
+                        val item = value.optString(i, "").trim()
+                        if (item.isNotBlank()) add(item)
+                    }
+                }
+                is String -> value.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toSet()
+                else -> emptySet()
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "listRemoteFileNames failed; skip remote existence self-heal", error)
+        }.getOrNull()
+    }
+
     private fun parseSyncManifest(raw: String?): Map<String, String> {
         if (raw.isNullOrBlank()) return emptyMap()
         return runCatching {
@@ -1055,6 +1674,109 @@ xposed.onPackageLoaded(function (param) {
                     })
                 }
             })
+        }
+    }
+
+    private fun buildScriptHashConfigJson(
+        packageName: String?,
+        prefs: SharedPreferences?,
+        scripts: List<ScriptMetadata>,
+        files: List<RemoteManifestFile>
+    ): JSONObject {
+        val enabledPackages = if (packageName.isNullOrBlank()) enabledPackagesFromPrefs(prefs) else listOf(packageName.trim())
+        val byRemoteName = JSONObject()
+        val byPath = JSONObject()
+        val byScriptId = JSONObject()
+        val filesArray = JSONArray()
+        val byPackage = JSONObject()
+
+        fun putHash(scriptId: String, path: String, remoteName: String, sha256: String, type: String) {
+            val cleanRemote = remoteName.trim()
+            val cleanPath = path.trim('/')
+            val cleanSha = sha256.trim()
+            if (cleanRemote.isBlank() || cleanSha.isBlank()) return
+            byRemoteName.put(cleanRemote, cleanSha)
+            if (cleanPath.isNotBlank()) byPath.put(cleanPath, cleanSha)
+            filesArray.put(JSONObject().apply {
+                put("scriptId", scriptId)
+                put("path", cleanPath)
+                put("remoteName", cleanRemote)
+                put("sha256", cleanSha)
+                put("type", type)
+            })
+
+            val scriptObj = byScriptId.optJSONObject(scriptId) ?: JSONObject().also { byScriptId.put(scriptId, it) }
+            val key = if (type == "asset") "assets" else "files"
+            val hashObj = scriptObj.optJSONObject(key) ?: JSONObject().also { scriptObj.put(key, it) }
+            if (cleanPath.isNotBlank()) hashObj.put(cleanPath, cleanSha)
+            val remoteHashObj = scriptObj.optJSONObject("remoteNames") ?: JSONObject().also { scriptObj.put("remoteNames", it) }
+            remoteHashObj.put(cleanRemote, cleanSha)
+            if (type == "entry") {
+                scriptObj.put("entryPath", cleanPath)
+                scriptObj.put("entryRemoteName", cleanRemote)
+                scriptObj.put("entrySha256", cleanSha)
+            }
+        }
+
+        scripts.forEach { script ->
+            val entryPath = script.entryPath.ifBlank { script.path }
+            val entryRemoteName = script.remoteName.ifBlank { remoteNameFor(script.id) }
+            val entrySha = script.files.firstOrNull { it.path == entryPath || it.remoteName == entryRemoteName }?.sha256.orEmpty()
+            putHash(script.id, entryPath, entryRemoteName, entrySha, "entry")
+            script.files.forEach { asset ->
+                val type = if (asset.path == entryPath || asset.remoteName == entryRemoteName) "entry" else "script"
+                putHash(script.id, asset.path, asset.remoteName, asset.sha256, type)
+            }
+            script.assets.forEach { asset ->
+                putHash(script.id, asset.path, asset.remoteName, asset.sha256, "asset")
+            }
+        }
+
+        files.forEach { file ->
+            if (file.remoteName.isNotBlank() && file.sha256.isNotBlank()) {
+                byRemoteName.put(file.remoteName, file.sha256)
+                if (file.path.isNotBlank()) byPath.put(file.path.trim('/'), file.sha256)
+            }
+        }
+
+        enabledPackages.sorted().forEach { pkg ->
+            val packageFiles = JSONObject()
+            val packagePaths = JSONObject()
+            val packageScripts = JSONArray()
+            scripts.filter { script -> script.supportsPackage(pkg) && (prefs?.getBoolean(ScriptPrefs.scriptEnabledKey(pkg, script.id), false) == true || packageName == pkg) }
+                .forEach { script ->
+                    packageScripts.put(script.id)
+                    val entryPath = script.entryPath.ifBlank { script.path }
+                    val entryRemoteName = script.remoteName.ifBlank { remoteNameFor(script.id) }
+                    script.files.forEach { asset ->
+                        if (asset.remoteName.isNotBlank() && asset.sha256.isNotBlank()) packageFiles.put(asset.remoteName, asset.sha256)
+                        if (asset.path.isNotBlank() && asset.sha256.isNotBlank()) packagePaths.put(asset.path.trim('/'), asset.sha256)
+                    }
+                    script.assets.forEach { asset ->
+                        if (asset.remoteName.isNotBlank() && asset.sha256.isNotBlank()) packageFiles.put(asset.remoteName, asset.sha256)
+                        if (asset.path.isNotBlank() && asset.sha256.isNotBlank()) packagePaths.put(asset.path.trim('/'), asset.sha256)
+                    }
+                    val entrySha = script.files.firstOrNull { it.path == entryPath || it.remoteName == entryRemoteName }?.sha256.orEmpty()
+                    if (entryRemoteName.isNotBlank() && entrySha.isNotBlank()) packageFiles.put(entryRemoteName, entrySha)
+                    if (entryPath.isNotBlank() && entrySha.isNotBlank()) packagePaths.put(entryPath.trim('/'), entrySha)
+                }
+            byPackage.put(pkg, JSONObject().apply {
+                put("scripts", packageScripts)
+                put("byRemoteName", packageFiles)
+                put("byPath", packagePaths)
+            })
+        }
+
+        return JSONObject().apply {
+            put("version", 1)
+            put("packageName", packageName ?: JSONObject.NULL)
+            put("generatedAt", System.currentTimeMillis())
+            put("fileCount", files.size)
+            put("byRemoteName", byRemoteName)
+            put("byPath", byPath)
+            put("byScriptId", byScriptId)
+            put("byPackage", byPackage)
+            put("files", filesArray)
         }
     }
 

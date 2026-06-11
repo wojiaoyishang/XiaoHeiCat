@@ -15,6 +15,7 @@ import type {
   ScriptFileListResponse,
   ScriptSettingsResponse,
   ScriptSettingsSaveResponse,
+  TargetCacheSyncSummary,
 } from "./types/webide";
 import { TopBar } from "./components/TopBar";
 import { AppListPanel } from "./components/AppListPanel";
@@ -38,6 +39,27 @@ interface OpenTab {
 }
 
 let nextLogId = 1;
+
+function describeTargetCacheSync(summary?: TargetCacheSyncSummary): string | null {
+  if (!summary) return null;
+  const synced = summary.syncedPackages || [];
+  const cleaned = summary.cleanedPackages || [];
+  const fallback = summary.targetProcessFallbackPackages || [];
+  const errors = summary.errors || [];
+  if (synced.length > 0) {
+    return `已使用 Root 同步目标应用脚本缓存：${synced.join(", ")}`;
+  }
+  if (cleaned.length > 0) {
+    return `已使用 Root 清理目标应用旧脚本缓存：${cleaned.join(", ")}`;
+  }
+  if (summary.rootSyncEnabled && !summary.rootAvailable && fallback.length > 0) {
+    return `Root 不可用，已回退为目标进程自行缓存：${fallback.join(", ")}`;
+  }
+  if (errors.length > 0) {
+    return `Root 缓存同步失败，已回退目标进程自行缓存：${errors.join("; ")}`;
+  }
+  return null;
+}
 
 export function App() {
   const [status, setStatus] = useState<ApiStatus | null>(null);
@@ -81,6 +103,9 @@ export function App() {
   const [codeGeneratorOpen, setCodeGeneratorOpen] = useState(false);
   const [uiDialog, setUiDialog] = useState<UiDialogRequest | null>(null);
   const [uiDialogValue, setUiDialogValue] = useState("");
+  const [disableFileLogging, setDisableFileLogging] = useState(false);
+  const [savingDisableFileLogging, setSavingDisableFileLogging] = useState(false);
+  const [hookSavingKeys, setHookSavingKeys] = useState<Record<string, boolean>>({});
 
   const selectedPackage = selectedApp?.packageName;
   const activeTab = useMemo(
@@ -105,6 +130,26 @@ export function App() {
       });
     return paused?.line || null;
   }, [activeTab, debugEvents]);
+
+  const setHookSaving = useCallback((key: string, saving: boolean) => {
+    setHookSavingKeys((old) => {
+      if (saving) return old[key] ? old : { ...old, [key]: true };
+      if (!old[key]) return old;
+      const next = { ...old };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const savingScriptIdsForSelected = useMemo(() => {
+    if (!selectedPackage) return new Set<string>();
+    const prefix = `script:${selectedPackage}:`;
+    return new Set(
+      Object.keys(hookSavingKeys)
+        .filter((key) => key.startsWith(prefix))
+        .map((key) => key.slice(prefix.length)),
+    );
+  }, [hookSavingKeys, selectedPackage]);
 
   const statusText = useMemo(() => {
     if (!status) return "未连接";
@@ -222,6 +267,11 @@ export function App() {
   const loadStatus = useCallback(async () => {
     const data = await api<ApiStatus>("/api/status");
     setStatus(data);
+  }, []);
+
+  const loadLoggingSettings = useCallback(async () => {
+    const data = await api<{ ok: boolean; disableFileLogging: boolean }>("/api/settings/logging");
+    setDisableFileLogging(!!data.disableFileLogging);
   }, []);
 
   const loadApps = useCallback(async (force = false) => {
@@ -812,33 +862,119 @@ module.exports = { install };
   const setAppEnabled = useCallback(
     async (enabled: boolean) => {
       if (!selectedPackage) return;
-      const data = await post<{ ok: boolean; enabled: boolean }>(
-        "/api/hook-settings/app-enabled",
-        {
-          packageName: selectedPackage,
-          enabled,
-        },
-      );
-      log(`${enabled ? "启用" : "禁用"}应用：${selectedPackage}`, "ok");
-      setSelectedApp((old) => (old ? { ...old, enabled: data.enabled } : old));
-      await loadApps();
-      await loadHookSettings(selectedPackage);
+      const packageName = selectedPackage;
+      const savingKey = `app:${packageName}`;
+      setHookSaving(savingKey, true);
+      try {
+        const data = await post<{ ok: boolean; enabled: boolean }>(
+          "/api/hook-settings/app-enabled",
+          {
+            packageName,
+            enabled,
+          },
+        );
+        log(`${enabled ? "启用" : "禁用"}应用：${packageName}`, "ok");
+        setSelectedApp((old) => (old ? { ...old, enabled: data.enabled } : old));
+        await loadApps();
+        await loadHookSettings(packageName);
+      } finally {
+        setHookSaving(savingKey, false);
+      }
     },
-    [selectedPackage, loadApps, loadHookSettings, log],
+    [selectedPackage, loadApps, loadHookSettings, log, setHookSaving],
   );
 
   const setScriptEnabled = useCallback(
     async (scriptId: string, enabled: boolean) => {
       if (!selectedPackage) return;
-      await post("/api/hook-settings/script-enabled", {
-        packageName: selectedPackage,
-        scriptId,
-        enabled,
-      });
-      log(`${enabled ? "启用" : "禁用"}脚本：${scriptId}`, "ok");
-      await loadHookSettings(selectedPackage);
+      const packageName = selectedPackage;
+      const savingKey = `script:${packageName}:${scriptId}`;
+      setHookSaving(savingKey, true);
+      try {
+        await post("/api/hook-settings/script-enabled", {
+          packageName,
+          scriptId,
+          enabled,
+        });
+        log(`${enabled ? "启用" : "禁用"}脚本：${scriptId}`, "ok");
+        await loadHookSettings(packageName);
+      } finally {
+        setHookSaving(savingKey, false);
+      }
     },
-    [selectedPackage, loadHookSettings, log],
+    [selectedPackage, loadHookSettings, log, setHookSaving],
+  );
+
+  const setCachePrivateDir = useCallback(
+    async (enabled: boolean, targetScriptCacheDir?: string) => {
+      if (!selectedPackage) return;
+      const packageName = selectedPackage;
+      const savingKey = `cache:${packageName}`;
+      setHookSaving(savingKey, true);
+      try {
+        const data = await post<{ ok: boolean; cacheScriptsToPrivateDir: boolean; targetScriptCacheDir: string; sync?: { targetCacheSync?: TargetCacheSyncSummary } }>(
+          "/api/hook-settings/cache-private-dir",
+          {
+            packageName,
+            enabled,
+            targetScriptCacheDir: targetScriptCacheDir || hookSettings?.targetScriptCacheDir || ".xhh_scripts",
+          },
+        );
+        log(`${data.cacheScriptsToPrivateDir ? "开启" : "关闭"}脚本私有缓存：${packageName}，目录 ${data.targetScriptCacheDir}`, "ok");
+        const cacheMessage = describeTargetCacheSync(data.sync?.targetCacheSync);
+        if (cacheMessage) log(cacheMessage, "ok");
+        await loadHookSettings(packageName);
+      } finally {
+        setHookSaving(savingKey, false);
+      }
+    },
+    [selectedPackage, hookSettings?.targetScriptCacheDir, loadHookSettings, log, setHookSaving],
+  );
+
+  const saveTargetCacheDir = useCallback(
+    async (targetScriptCacheDir: string) => {
+      if (!selectedPackage) return;
+      const packageName = selectedPackage;
+      const savingKey = `dir:${packageName}`;
+      setHookSaving(savingKey, true);
+      try {
+        const enabled = hookSettings?.cacheScriptsToPrivateDir !== false;
+        const data = await post<{ ok: boolean; cacheScriptsToPrivateDir: boolean; targetScriptCacheDir: string; sync?: { targetCacheSync?: TargetCacheSyncSummary } }>(
+          "/api/hook-settings/cache-private-dir",
+          {
+            packageName,
+            enabled,
+            targetScriptCacheDir,
+          },
+        );
+        log(`已保存目标缓存目录：${packageName} -> ${data.targetScriptCacheDir}`, "ok");
+        const cacheMessage = describeTargetCacheSync(data.sync?.targetCacheSync);
+        if (cacheMessage) log(cacheMessage, "ok");
+        await loadHookSettings(packageName);
+      } finally {
+        setHookSaving(savingKey, false);
+      }
+    },
+    [selectedPackage, hookSettings?.cacheScriptsToPrivateDir, loadHookSettings, log, setHookSaving],
+  );
+
+  const toggleDisableFileLogging = useCallback(
+    async (enabled: boolean) => {
+      setSavingDisableFileLogging(true);
+      try {
+        const data = await post<{ ok: boolean; disableFileLogging: boolean }>(
+          "/api/settings/logging",
+          { disableFileLogging: enabled },
+        );
+        setDisableFileLogging(!!data.disableFileLogging);
+        log(data.disableFileLogging
+          ? "已开启不记录日志：只实时同步到 WebIDE，不再写入日志文件"
+          : "已关闭不记录日志：恢复写入日志文件", "ok");
+      } finally {
+        setSavingDisableFileLogging(false);
+      }
+    },
+    [log],
   );
 
   const syncCurrentApp = useCallback(async () => {
@@ -852,6 +988,7 @@ module.exports = { install };
       count: number;
       scripts?: string[];
       extra?: Record<string, unknown>;
+      targetCacheSync?: TargetCacheSyncSummary;
     }>("/api/hook-settings/sync", {
       packageName: selectedPackage,
       restart: false,
@@ -862,6 +999,8 @@ module.exports = { install };
       `同步完成：${data.count} 个脚本 ${JSON.stringify(data.scripts || [])}`,
       "ok",
     );
+    const cacheMessage = describeTargetCacheSync(data.targetCacheSync);
+    if (cacheMessage) log(cacheMessage, "ok");
     setDebugEnabledState(false);
   }, [selectedPackage, activeTab, saveTab, log]);
 
@@ -891,6 +1030,7 @@ module.exports = { install };
       count: number;
       scripts?: string[];
       extra?: Record<string, unknown>;
+      targetCacheSync?: TargetCacheSyncSummary;
     }>("/api/hook-settings/sync", {
       packageName: selectedPackage,
       restart: true,
@@ -901,6 +1041,8 @@ module.exports = { install };
       `同步并重启完成：${data.count} 个脚本 ${JSON.stringify(data.scripts || [])}`,
       "ok",
     );
+    const cacheMessage = describeTargetCacheSync(data.targetCacheSync);
+    if (cacheMessage) log(cacheMessage, "ok");
     setDebugEnabledState(false);
   }, [selectedPackage, activeTab, saveTab, log]);
 
@@ -1203,13 +1345,14 @@ module.exports = { install };
   useEffect(() => {
     run(async () => {
       await loadStatus();
+      await loadLoggingSettings();
       await loadApps();
       await loadAllScripts();
       await loadScriptTree();
       await loadScriptFiles("");
       await loadScripts();
     });
-  }, []);
+  }, [loadStatus, loadLoggingSettings, loadApps, loadAllScripts, loadScriptTree, loadScriptFiles, loadScripts, run]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => run(loadApps), 250);
@@ -1636,12 +1779,26 @@ module.exports = { install };
             {rightMode === "apps" ? (
               <HookSettingsPanel
                 settings={hookSettings}
-                metadata={metadata}
                 onAppEnabledChange={(enabled) =>
                   run(() => setAppEnabled(enabled))
                 }
                 onScriptEnabledChange={(scriptId, enabled) =>
                   run(() => setScriptEnabled(scriptId, enabled))
+                }
+                onCachePrivateDirChange={(enabled, targetScriptCacheDir) =>
+                  run(() => setCachePrivateDir(enabled, targetScriptCacheDir))
+                }
+                onTargetCacheDirSave={(targetScriptCacheDir) =>
+                  run(() => saveTargetCacheDir(targetScriptCacheDir))
+                }
+                savingAppEnabled={!!selectedPackage && !!hookSavingKeys[`app:${selectedPackage}`]}
+                savingScriptIds={savingScriptIdsForSelected}
+                savingCachePrivateDir={!!selectedPackage && !!hookSavingKeys[`cache:${selectedPackage}`]}
+                savingTargetCacheDir={!!selectedPackage && !!hookSavingKeys[`dir:${selectedPackage}`]}
+                disableFileLogging={disableFileLogging}
+                savingDisableFileLogging={savingDisableFileLogging}
+                onDisableFileLoggingChange={(enabled) =>
+                  run(() => toggleDisableFileLogging(enabled))
                 }
                 onOpenScript={(path) => run(async () => {
                   setPageMode("scripts");

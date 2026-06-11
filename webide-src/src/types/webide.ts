@@ -142,12 +142,26 @@ export interface HookScriptInfo {
   settingsPath?: string
 }
 
+
+export interface TargetCacheSyncSummary {
+  rootSyncEnabled: boolean
+  rootAvailable: boolean
+  usedRoot: boolean
+  syncedPackages?: string[]
+  cleanedPackages?: string[]
+  targetProcessFallbackPackages?: string[]
+  errors?: string[]
+}
+
 export interface HookSettings {
   ok: boolean
   packageName: string
   label: string
   appEnabled: boolean
   scopeEnabled?: boolean
+  cacheScriptsToPrivateDir?: boolean
+  targetScriptCacheDir?: string
+  defaultTargetScriptCacheDir?: string
   scripts: HookScriptInfo[]
 }
 

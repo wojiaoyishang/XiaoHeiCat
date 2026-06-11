@@ -368,11 +368,20 @@ fun AppsScreen(
                     }
                     if (restartResult.forceStopOk) {
                         Toast.makeText(context, context.getString(R.string.sync_enabled_restart_done, app.label), Toast.LENGTH_SHORT).show()
+                        ScriptRepository.lastTargetCacheSyncSummary()?.takeIf { it.syncedPackages.isNotEmpty() }?.let {
+                            Toast.makeText(context, context.getString(R.string.root_script_cache_sync_used), Toast.LENGTH_SHORT).show()
+                        }
                     } else {
                         Toast.makeText(context, context.getString(R.string.app_restart_force_stop_failed_launch_attempted), Toast.LENGTH_LONG).show()
                     }
                 } else {
                     Toast.makeText(context, context.getString(R.string.sync_enabled_for_app_done, synced.size, matchedCount), Toast.LENGTH_SHORT).show()
+                    val cacheSummary = ScriptRepository.lastTargetCacheSyncSummary()
+                    if (cacheSummary?.syncedPackages?.isNotEmpty() == true) {
+                        Toast.makeText(context, context.getString(R.string.root_script_cache_sync_used), Toast.LENGTH_SHORT).show()
+                    } else if (cacheSummary?.cleanedPackages?.isNotEmpty() == true) {
+                        Toast.makeText(context, context.getString(R.string.root_script_cache_sync_cleaned), Toast.LENGTH_SHORT).show()
+                    }
                 }
             }.onFailure {
                 Log.e(TAG, "syncScriptsForApp: failed package=${app.packageName}", it)
@@ -559,6 +568,12 @@ fun AppsScreen(
                         }
                         result.onSuccess { synced ->
                             Toast.makeText(context, context.getString(R.string.sync_enabled_done, synced.size), Toast.LENGTH_SHORT).show()
+                    val cacheSummary = ScriptRepository.lastTargetCacheSyncSummary()
+                    if (cacheSummary?.syncedPackages?.isNotEmpty() == true) {
+                        Toast.makeText(context, context.getString(R.string.root_script_cache_sync_used), Toast.LENGTH_SHORT).show()
+                    } else if (cacheSummary?.cleanedPackages?.isNotEmpty() == true) {
+                        Toast.makeText(context, context.getString(R.string.root_script_cache_sync_cleaned), Toast.LENGTH_SHORT).show()
+                    }
                         }.onFailure {
                             Toast.makeText(context, it.message ?: context.getString(R.string.sync_failed), Toast.LENGTH_LONG).show()
                         }
@@ -974,6 +989,12 @@ private fun ScriptEnableScreen(
     }
     var menuExpanded by remember { mutableStateOf(false) }
     var showScriptHelpDialog by remember { mutableStateOf(false) }
+    var showTargetCacheDirDialog by remember { mutableStateOf(false) }
+    var targetCacheDirDraft by remember(app.packageName) { mutableStateOf(ScopeController.targetScriptCacheDir(app.packageName)) }
+    var targetCacheDir by remember(app.packageName, XiaoHeiApplication.remotePreferences) { mutableStateOf(ScopeController.targetScriptCacheDir(app.packageName)) }
+    var cacheScriptsToPrivateDir by remember(app.packageName, XiaoHeiApplication.remotePreferences) {
+        mutableStateOf(ScopeController.isCacheScriptsToPrivateDirEnabled(app.packageName))
+    }
     var settingsScript by remember { mutableStateOf<ScriptMetadata?>(null) }
 
     LaunchedEffect(app.packageName, initialAutoScan) {
@@ -1020,6 +1041,48 @@ private fun ScriptEnableScreen(
             confirmButton = {
                 TextButton(onClick = { showScriptHelpDialog = false }) {
                     Text(stringResource(R.string.common_got_it))
+                }
+            }
+        )
+    }
+
+    if (showTargetCacheDirDialog) {
+        AlertDialog(
+            onDismissRequest = { showTargetCacheDirDialog = false },
+            title = { Text(stringResource(R.string.script_cache_dir_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.script_cache_dir_message, app.packageName))
+                    OutlinedTextField(
+                        value = targetCacheDirDraft,
+                        onValueChange = { targetCacheDirDraft = it },
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.script_cache_dir_label)) },
+                        placeholder = { Text(ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = stringResource(R.string.script_cache_dir_current, targetCacheDir),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val normalized = ScopeController.setTargetScriptCacheDir(app.packageName, targetCacheDirDraft)
+                    targetCacheDir = normalized
+                    targetCacheDirDraft = normalized
+                    showTargetCacheDirDialog = false
+                    Toast.makeText(context, context.getString(R.string.script_cache_dir_saved, normalized), Toast.LENGTH_SHORT).show()
+                    if (moduleActive && appEnabled) onSyncScripts()
+                }) {
+                    Text(stringResource(R.string.common_save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTargetCacheDirDialog = false }) {
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )
@@ -1130,6 +1193,27 @@ private fun ScriptEnableScreen(
                         leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
                         enabled = moduleActive && appEnabled && !scanningScripts,
                         onClick = { menuExpanded = false; onSyncAndRestart() }
+                    )
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.script_cache_to_private_dir)) },
+                        leadingIcon = { Checkbox(checked = cacheScriptsToPrivateDir, onCheckedChange = null) },
+                        onClick = {
+                            menuExpanded = false
+                            val next = !cacheScriptsToPrivateDir
+                            cacheScriptsToPrivateDir = next
+                            ScopeController.setCacheScriptsToPrivateDir(app.packageName, next)
+                            if (moduleActive && appEnabled) onSyncScripts()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.script_cache_dir_menu)) },
+                        leadingIcon = { Icon(Icons.Filled.Folder, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            targetCacheDirDraft = targetCacheDir
+                            showTargetCacheDirDialog = true
+                        }
                     )
                     HorizontalDivider()
                     DropdownMenuItem(
@@ -1253,6 +1337,10 @@ private fun AppLogScreen(
     var logText by remember(app.packageName) { mutableStateOf("") }
     var loading by remember(app.packageName) { mutableStateOf(false) }
     var logFontSize by remember(app.packageName) { mutableStateOf(12f) }
+    var logMenuExpanded by remember { mutableStateOf(false) }
+    var disableFileLogging by remember(XiaoHeiApplication.remotePreferences) {
+        mutableStateOf(AppLogRepository.isFileLoggingDisabled())
+    }
     val verticalScroll = rememberScrollState()
     val horizontalScroll = rememberScrollState()
 
@@ -1326,20 +1414,56 @@ private fun AppLogScreen(
                     logFontSize = (logFontSize + 1f).coerceAtMost(28f)
                 }
                 CompactLogIconButton(
-                    icon = Icons.AutoMirrored.Filled.OpenInNew,
-                    contentDescription = stringResource(R.string.log_open_external),
-                    onClick = { openLogFileWithExternalEditor(context, app.packageName) }
-                )
-                CompactLogIconButton(
                     icon = Icons.Filled.Refresh,
                     contentDescription = stringResource(R.string.log_refresh),
                     onClick = { reloadLog() }
                 )
-                CompactLogIconButton(
-                    icon = Icons.Filled.Delete,
-                    contentDescription = stringResource(R.string.log_clear),
-                    onClick = { clearLog() }
-                )
+                Box {
+                    CompactLogIconButton(
+                        icon = Icons.Filled.MoreVert,
+                        contentDescription = stringResource(R.string.common_more),
+                        onClick = { logMenuExpanded = true }
+                    )
+                    DropdownMenu(
+                        expanded = logMenuExpanded,
+                        onDismissRequest = { logMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.log_open_external)) },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) },
+                            onClick = {
+                                logMenuExpanded = false
+                                openLogFileWithExternalEditor(context, app.packageName)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.log_disable_file_logging)) },
+                            leadingIcon = { Checkbox(checked = disableFileLogging, onCheckedChange = null) },
+                            onClick = {
+                                val next = !disableFileLogging
+                                if (AppLogRepository.setFileLoggingDisabled(next)) {
+                                    disableFileLogging = next
+                                    Toast.makeText(
+                                        context,
+                                        if (next) context.getString(R.string.log_disable_file_logging_on) else context.getString(R.string.log_disable_file_logging_off),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    Toast.makeText(context, context.getString(R.string.script_settings_remote_prefs_disconnected), Toast.LENGTH_LONG).show()
+                                }
+                                logMenuExpanded = false
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.log_clear)) },
+                            leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                            onClick = {
+                                logMenuExpanded = false
+                                clearLog()
+                            }
+                        )
+                    }
+                }
             }
         }
 
@@ -1657,6 +1781,10 @@ private fun openScriptFile(context: Context, relativePath: String) {
 
 private fun openLogFileWithExternalEditor(context: Context, packageName: String) {
     val file = AppLogRepository.moduleLogFile(context, packageName)
+    if (AppLogRepository.isFileLoggingDisabled() && !file.exists()) {
+        Toast.makeText(context, context.getString(R.string.log_file_logging_disabled_no_file), Toast.LENGTH_LONG).show()
+        return
+    }
     runCatching {
         file.parentFile?.mkdirs()
         if (!file.exists()) file.writeText("")

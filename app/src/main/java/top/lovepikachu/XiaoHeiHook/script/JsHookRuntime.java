@@ -873,6 +873,21 @@ public final class JsHookRuntime {
                 intent.putExtra("throwable", sw.toString());
             }
             context.sendBroadcast(intent);
+
+            android.content.Intent liveIntent = new android.content.Intent("top.lovepikachu.XiaoHeiHook.LOG_EVENT_LIVE");
+            liveIntent.setPackage("top.lovepikachu.XiaoHeiHook");
+            liveIntent.putExtra("packageName", packageName);
+            liveIntent.putExtra("processName", processName);
+            liveIntent.putExtra("priority", priority);
+            liveIntent.putExtra("tag", tag);
+            liveIntent.putExtra("message", msg);
+            liveIntent.putExtra("line", line);
+            if (tr != null) {
+                StringWriter sw = new StringWriter();
+                tr.printStackTrace(new PrintWriter(sw));
+                liveIntent.putExtra("throwable", sw.toString());
+            }
+            context.sendBroadcast(liveIntent);
         } catch (Throwable broadcastError) {
             try {
                 module.log(Log.WARN, TAG, "发送日志广播失败: " + broadcastError);

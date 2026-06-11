@@ -8,6 +8,7 @@
    build
    modules
    sync
+   remote_preferences_cache
    logs
    webide
    debugging

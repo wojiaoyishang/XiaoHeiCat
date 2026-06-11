@@ -157,15 +157,24 @@ XiaoHeiHook 的执行脚本链路可以理解为：
    :align: center
 
 
-整体调用链可以理解为从 LSPosed 框架层进入 XiaoHeiHook 应用层的执行流程。
+整体调用链可以理解为从 LSPosed 框架层进入 XiaoHeiHook 目标进程运行时的执行流程。
 
 首先，LSPosed 在目标进程中加载模块，进入继承自 ``XposedModule`` 的 ``HookEntry``。随后框架会按时机触发生命周期方法，例如 ``onModuleLoaded``、``onPackageLoaded``、``onPackageReady`` 等。
 
-进入 XiaoHeiHook  的 Hook 入口之后，模块不会直接执行全部脚本，而是先根据配置进行筛选，包括应用开关、脚本开关、``@target``、``@process``、``@run-at`` 等条件。只有匹配当前应用和进程的脚本才会继续执行。
+进入 XiaoHeiHook 的 Hook 入口之后，模块不会直接执行全部脚本，而是先读取 LSPosed Remote Preferences。目标进程会优先读取当前包名自己的运行索引：
 
-筛选完成后，XiaoHeiHook 会从 Remote Files 中读取已经同步到 LSPosed 的脚本源码，并交给 ``JsHookRuntime``。运行时负责创建 Rhino JavaScript 环境，注入 ``xposed``、``Java``、``env``、``settings`` 等全局对象。
+.. code-block:: text
 
-最后，用户脚本在 JS 环境中运行，通过 ``xposed.hook`` 等接口间接调用现代 LSPosed/libxposed 的 Hook 能力，从而完成方法拦截、日志输出、配置读取等操作。
+   <packageName>_script_index_json
+   <packageName>_script_hash_config_json
+
+如果当前包名的索引不存在，才回退到旧版全局 ``script_index_json``。随后模块根据应用开关、脚本开关、``@target``、``@process``、``@run-at`` 等条件进行筛选。只有匹配当前应用和进程的脚本才会继续执行。
+
+筛选完成后，XiaoHeiHook 会根据 hash 配置读取脚本源码。若 Remote Preferences 中的 ``cache_scripts_to_private_dir_<packageName>`` 为 ``true``，模块会先尝试读取目标 App ``filesDir`` 下的私有缓存；缓存不存在或 SHA-256 不匹配时，再从 LSPosed Remote Files 读取 ``remoteName`` 对应的源码。无论来自私有缓存还是 Remote Files，源码都必须通过 SHA-256 校验后才会交给 ``JsHookRuntime``。
+
+运行时负责创建 Rhino JavaScript 环境，注入 ``xposed``、``Java``、``env``、``settings`` 等全局对象。最后，用户脚本在 JS 环境中运行，通过 ``xposed.hook`` 等接口间接调用现代 LSPosed/libxposed 的 Hook 能力，从而完成方法拦截、日志输出、配置读取等操作。
+
+Remote Preferences、每应用独立索引、Remote Files 和目标 App 私有缓存之间的详细记录方式见 :ref:`development-remote-preferences-cache`。
 
 
 脚本文件、Remote Files 与目标 App 私有目录

@@ -1,8 +1,10 @@
 package top.lovepikachu.XiaoHeiHook.webide
 
 import android.app.ActivityManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Process
 import io.github.libxposed.service.XposedService
@@ -13,6 +15,7 @@ import top.lovepikachu.XiaoHeiHook.data.AppControl
 import top.lovepikachu.XiaoHeiHook.data.AppLogRepository
 import top.lovepikachu.XiaoHeiHook.data.AppRepository
 import top.lovepikachu.XiaoHeiHook.data.InstalledAppInfo
+import top.lovepikachu.XiaoHeiHook.data.LogReceiver
 import top.lovepikachu.XiaoHeiHook.data.ScriptMetadata
 import top.lovepikachu.XiaoHeiHook.data.ScriptPrefs
 import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
@@ -25,6 +28,7 @@ import java.io.RandomAccessFile
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -36,6 +40,7 @@ class WebIdeApi(private val context: Context) {
             when (request.path) {
                 "/api/status" -> status()
                 "/api/logs" -> logs(request)
+                "/api/settings/logging" -> loggingSettings(request)
 
                 "/api/debug/events" -> debugEvents(request)
                 "/api/debug/enabled" -> debugEnabled(request)
@@ -73,6 +78,7 @@ class WebIdeApi(private val context: Context) {
                 "/api/hook-settings" -> hookSettings(request)
                 "/api/hook-settings/app-enabled" -> setAppEnabled(request)
                 "/api/hook-settings/script-enabled" -> setScriptEnabled(request)
+                "/api/hook-settings/cache-private-dir" -> setCachePrivateDir(request)
                 "/api/hook-settings/sync" -> syncHookSettings(request)
 
                 "/api/script-settings" -> scriptSettings(request)
@@ -110,9 +116,39 @@ class WebIdeApi(private val context: Context) {
         )
     }
 
+    private fun loggingSettings(request: HttpRequest): HttpResponse {
+        if (request.method.equals("POST", ignoreCase = true)) {
+            val body = request.jsonBody()
+            val disabled = body.optBoolean("disableFileLogging", false)
+            bridge.putBoolean(ScriptPrefs.DISABLE_FILE_LOGGING, disabled)
+            return json(
+                JSONObject()
+                    .put("ok", true)
+                    .put("disableFileLogging", disabled)
+            )
+        }
+        return json(
+            JSONObject()
+                .put("ok", true)
+                .put("disableFileLogging", bridge.getBoolean(ScriptPrefs.DISABLE_FILE_LOGGING, false))
+        )
+    }
+
     fun streamLogs(request: HttpRequest, output: OutputStream, isRunning: () -> Boolean) {
         val packageName = request.param("packageName").orEmpty().trim()
         val out = java.io.BufferedOutputStream(output)
+        val liveQueue = LinkedBlockingQueue<String>()
+        var receiverRegistered = false
+        val liveReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != LogReceiver.ACTION_LOG_EVENT_LIVE) return
+                val eventPackage = intent.getStringExtra(LogReceiver.EXTRA_PACKAGE_NAME).orEmpty()
+                if (eventPackage != packageName) return
+                val line = intent.getStringExtra(LogReceiver.EXTRA_LINE).orEmpty()
+                if (line.isNotBlank()) liveQueue.offer(line)
+            }
+        }
+
         fun writeRaw(text: String) {
             out.write(text.toByteArray(StandardCharsets.UTF_8))
             out.flush()
@@ -140,42 +176,47 @@ class WebIdeApi(private val context: Context) {
             return
         }
 
-        val file = AppLogRepository.moduleLogFile(context, packageName)
-        val initial = AppLogRepository.readLog(context, packageName, maxLines = 200).getOrDefault("")
-        initial.lineSequence()
-            .filter { it.isNotBlank() }
-            .forEach { line ->
-                writeEvent("log", JSONObject().put("ok", true).put("packageName", packageName).put("line", line))
+        val filter = IntentFilter(LogReceiver.ACTION_LOG_EVENT_LIVE)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(liveReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                context.registerReceiver(liveReceiver, filter)
             }
+            receiverRegistered = true
+        }.onFailure { error ->
+            writeEvent("error", JSONObject().put("ok", false).put("error", "实时日志接收器注册失败：${error.message ?: error.javaClass.simpleName}"))
+        }
 
-        var offset = if (file.exists()) file.length() else 0L
-        var tick = 0
-        while (isRunning()) {
-            if (file.exists()) {
-                val length = file.length()
-                if (length < offset) offset = 0L
-                if (length > offset) {
-                    val bytesToRead = (length - offset).coerceAtMost(256L * 1024L).toInt()
-                    val bytes = ByteArray(bytesToRead)
-                    RandomAccessFile(file, "r").use { raf ->
-                        raf.seek(offset)
-                        raf.readFully(bytes)
+        try {
+            val initial = AppLogRepository.readLog(context, packageName, maxLines = 200).getOrDefault("")
+            initial.lineSequence()
+                .filter { it.isNotBlank() }
+                .forEach { line ->
+                    writeEvent("log", JSONObject().put("ok", true).put("packageName", packageName).put("line", line))
+                }
+
+            var tick = 0
+            while (isRunning()) {
+                val firstLine = liveQueue.poll(1, TimeUnit.SECONDS)
+                if (firstLine != null) {
+                    writeEvent("log", JSONObject().put("ok", true).put("packageName", packageName).put("line", firstLine))
+                    while (true) {
+                        val line = liveQueue.poll() ?: break
+                        writeEvent("log", JSONObject().put("ok", true).put("packageName", packageName).put("line", line))
                     }
-                    offset += bytesToRead
-                    String(bytes, StandardCharsets.UTF_8)
-                        .lineSequence()
-                        .filter { it.isNotBlank() }
-                        .forEach { line ->
-                            writeEvent("log", JSONObject().put("ok", true).put("packageName", packageName).put("line", line))
-                        }
+                }
+
+                tick++
+                if (tick % 15 == 0) {
+                    writeRaw(": keep-alive\n\n")
                 }
             }
-
-            tick++
-            if (tick % 15 == 0) {
-                writeRaw(": keep-alive\n\n")
+        } finally {
+            if (receiverRegistered) {
+                runCatching { context.unregisterReceiver(liveReceiver) }
             }
-            Thread.sleep(1000)
         }
     }
 
@@ -405,6 +446,7 @@ class WebIdeApi(private val context: Context) {
             JSONObject()
                 .put("ok", true)
                 .put("packageName", packageName)
+                .put("disableFileLogging", bridge.getBoolean(ScriptPrefs.DISABLE_FILE_LOGGING, false))
                 .put("text", text)
                 .put("lines", JSONArray(text.lineSequence().toList()))
         )
@@ -448,6 +490,9 @@ class WebIdeApi(private val context: Context) {
                 .put("label", app?.label ?: packageName)
                 .put("system", app?.isSystemApp ?: false)
                 .put("appEnabled", bridge.appEnabled(packageName))
+                .put("cacheScriptsToPrivateDir", bridge.getBoolean(ScriptPrefs.cacheScriptsToPrivateDirKey(packageName), true))
+                .put("targetScriptCacheDir", ScriptPrefs.normalizeTargetScriptCacheDir(bridge.getString(ScriptPrefs.targetScriptCacheDirKey(packageName), ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR)))
+                .put("defaultTargetScriptCacheDir", ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR)
                 .put("serviceReady", bridgeStatus.xposedServiceReady)
                 .put("remotePrefsReady", bridgeStatus.remotePreferencesReady)
                 .put("scripts", JSONArray(matchedScripts.map { entry ->
@@ -474,6 +519,29 @@ class WebIdeApi(private val context: Context) {
         require(packageName.isNotBlank()) { "packageName 不能为空" }
         require(scriptId.isNotBlank()) { "scriptId 不能为空" }
         return json(bridge.setScriptEnabled(packageName, scriptId, enabled))
+    }
+
+    private fun setCachePrivateDir(request: HttpRequest): HttpResponse {
+        val body = request.jsonBody()
+        val packageName = body.optString("packageName").trim()
+        val enabled = body.optBoolean("enabled")
+        val targetDir = ScriptPrefs.normalizeTargetScriptCacheDir(
+            body.optString("targetScriptCacheDir", ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR)
+        )
+        require(packageName.isNotBlank()) { "packageName 不能为空" }
+        bridge.putBoolean(ScriptPrefs.cacheScriptsToPrivateDirKey(packageName), enabled)
+        bridge.putString(ScriptPrefs.targetScriptCacheDirKey(packageName), targetDir)
+        val syncResult = runCatching { bridge.syncScripts(packageName) }.getOrElse { error ->
+            JSONObject().put("ok", false).put("error", error.message ?: error.javaClass.simpleName)
+        }
+        return json(
+            JSONObject()
+                .put("ok", true)
+                .put("packageName", packageName)
+                .put("cacheScriptsToPrivateDir", enabled)
+                .put("targetScriptCacheDir", targetDir)
+                .put("sync", syncResult)
+        )
     }
 
     private fun syncHookSettings(request: HttpRequest): HttpResponse {

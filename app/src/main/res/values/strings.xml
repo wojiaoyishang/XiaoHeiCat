@@ -224,6 +224,21 @@
     <string name="script_sync">同步脚本</string>
     <string name="script_sync_and_restart">同步脚本并重启</string>
     <string name="script_switch">脚本开关</string>
+    <string name="script_cache_to_private_dir">脚本缓存到私有目录</string>
+    <string name="script_cache_dir_menu">设置脚本缓存路径</string>
+    <string name="script_cache_dir_title">目标应用脚本缓存路径</string>
+    <string name="script_cache_dir_label">相对目录</string>
+    <string name="script_cache_dir_message">为 %1$s 设置目标应用 filesDir 下的缓存目录。默认使用隐藏目录 .xhh_scripts；自定义目录会保存为普通可见目录，例如 xhh_scripts 或 cache/xhh_scripts。</string>
+    <string name="script_cache_dir_current">当前目录：%1$s</string>
+    <string name="script_cache_dir_saved">已保存缓存目录：%1$s</string>
+
+    <string name="root_script_cache_sync_title">使用 Root 同步应用私有脚本缓存</string>
+    <string name="root_script_cache_sync_body">默认在 Root 可用时开启。同步时由 XiaoHeiHook 直接写入目标应用 filesDir，并设置目标应用属主与私有权限；Root 不可用时会回退到目标进程自行缓存。</string>
+    <string name="root_script_cache_sync_no_root">当前未检测到 Root 权限。开启项会保持不可用，脚本缓存会由目标进程在 Hook 后自行写入。</string>
+    <string name="root_script_cache_sync_enabled">已开启 Root 私有缓存同步</string>
+    <string name="root_script_cache_sync_disabled">已关闭 Root 私有缓存同步</string>
+    <string name="root_script_cache_sync_used">已使用 Root 同步目标应用脚本缓存</string>
+    <string name="root_script_cache_sync_cleaned">已清理目标应用旧脚本缓存</string>
     <string name="script_no_matching_title">没有匹配脚本</string>
     <string name="script_no_matching_message">未找到匹配脚本。请确认脚本头部使用 @target %1$s 或 @target *；需要重新读取公共目录时，请从右上角“更多”菜单手动扫描。</string>
     <string name="package_copied">已复制包名：%1$s</string>
@@ -254,8 +269,13 @@
     <string name="log_clear">清空日志</string>
     <string name="log_empty">暂无日志</string>
     <string name="log_file_prepare_failed">无法准备日志文件</string>
+    <string name="log_file_logging_disabled_no_file">当前已开启“不记录日志”，不会创建新的日志文件。请在 WebIDE 查看实时日志，或关闭该选项后再记录。</string>
     <string name="log_file_uri_failed">无法生成日志文件 Uri</string>
     <string name="log_open_file_chooser">打开日志文件</string>
+    <string name="log_disable_file_logging">不记录日志</string>
+    <string name="log_disable_file_logging_desc">开启后不会写入日志文件，仅保留实时终端输出。WebIDE 仍可接收实时日志。</string>
+    <string name="log_disable_file_logging_on">已开启不记录日志：仅实时同步，不再写入文件</string>
+    <string name="log_disable_file_logging_off">已关闭不记录日志：恢复写入日志文件</string>
 
     <!-- Settings Forms -->
     <string name="settings_group">分组</string>

@@ -31,6 +31,7 @@ import top.lovepikachu.XiaoHeiHook.composables.AnimatedPressIcon
 import top.lovepikachu.XiaoHeiHook.composables.FullWidthTextButton
 import top.lovepikachu.XiaoHeiHook.composables.McpSettingsCard
 import top.lovepikachu.XiaoHeiHook.composables.ScriptRootSettingsCard
+import top.lovepikachu.XiaoHeiHook.composables.RootScriptCacheSyncSettingsCard
 import top.lovepikachu.XiaoHeiHook.composables.WebIdeSettingsCard
 import top.lovepikachu.XiaoHeiHook.composables.WebIdeLogMaintenanceCard
 import top.lovepikachu.XiaoHeiHook.ui.material.AppCard
@@ -54,6 +55,8 @@ fun AboutScreen(modifier: Modifier = Modifier) {
         item { AccessibilityKeepAliveCard() }
 
         item { ScriptRootSettingsCard() }
+
+        item { RootScriptCacheSyncSettingsCard() }
 
         item { WebIdeLogMaintenanceCard() }
 

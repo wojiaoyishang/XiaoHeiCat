@@ -25,6 +25,11 @@
       ↓ HookEntry 在目标进程读取
    JsHookRuntime 执行 JS 脚本
 
+.. seealso::
+
+   Remote Preferences、每应用独立运行索引、hash 配置和目标 App 私有缓存的完整开发说明，见
+   :ref:`development-remote-preferences-cache`。
+
 为什么需要脚本同步
 --------------------
 
@@ -107,16 +112,24 @@ Android 应用之间存在沙盒隔离，目标 App 进程无法直接访问 Xia
 
    * - key
      - 说明
-   * - ``script_index_json``
-     - 当前同步后的脚本索引。目标进程通过它知道有哪些脚本、脚本 ID、远程文件名、目标包名、运行时机等信息。
-   * - ``script_sync_manifest_json``
-     - 同步清单。记录远程文件名、原始路径、SHA-256，用于增量同步和清理过期 Remote Files。
+   * - ``<packageName>_script_index_json``
+     - 当前应用独立的脚本运行索引。目标进程优先读取这个 key，避免同步单个应用时覆盖其他应用的索引。
+   * - ``<packageName>_script_sync_manifest_json``
+     - 当前应用独立的同步清单。记录远程文件名、原始路径、SHA-256，用于增量同步和清理当前应用的过期 Remote Files。
+   * - ``<packageName>_script_hash_config_json``
+     - 当前应用独立的 hash 校验配置。目标进程读取 Remote File 或目标私有缓存时用它校验内容。
+   * - ``script_index_json`` / ``script_sync_manifest_json`` / ``script_hash_config_json``
+     - 旧版全局 key。新版本主要用于兼容、全量同步 union 诊断和迁移 fallback，不再作为目标进程的首选索引。
    * - ``app_enabled_<packageName>``
      - 应用总开关。关闭后该应用不会执行任何脚本。
    * - ``script_enabled_<packageName>_<scriptId>``
      - 某个应用中某个脚本的启用状态。
    * - ``script_settings_<packageName>_<scriptId>``
      - 某个应用中某个脚本的用户设置值。
+   * - ``cache_scripts_to_private_dir_<packageName>``
+     - 是否允许当前应用读取和写入目标私有脚本缓存。运行时以这个 Remote Preferences key 为准。
+   * - ``target_script_cache_dir_<packageName>``
+     - 当前应用的目标缓存目录。默认 ``.xhh_scripts``，位于目标 App 的 ``filesDir`` 下。
 
 脚本如何被启用或禁用
 --------------------
@@ -127,7 +140,7 @@ Android 应用之间存在沙盒隔离，目标 App 进程无法直接访问 Xia
 
    app_enabled_<packageName> 必须为 true
       ↓
-   script_index_json 中必须存在脚本
+   <packageName>_script_index_json 中必须存在脚本
       ↓
    脚本 @target 必须匹配当前 packageName
       ↓
@@ -165,7 +178,7 @@ Android 应用之间存在沙盒隔离，目标 App 进程无法直接访问 Xia
    * - 重新扫描
      - 只重新读取 ``Documents/XiaoHeiHook`` 中的脚本，不一定写入 Remote Files。适合检查脚本列表是否识别正确。
    * - 同步当前应用
-     - 扫描脚本并写入 Remote Files / Remote Preferences。目标进程下次加载时使用新脚本。
+     - 从已有脚本 metadata 缓存中筛选当前应用已勾选脚本，只同步这些脚本，并写入当前应用自己的 ``<packageName>_script_index_json`` 等运行时 key。
    * - 同步并重启应用
      - 同步后调用应用控制逻辑重启目标 App，适合验证 ``package-loaded`` 或 ``package-ready`` 时机执行的脚本。
 
@@ -173,25 +186,29 @@ Android 应用之间存在沙盒隔离，目标 App 进程无法直接访问 Xia
 
 .. code-block:: text
 
-   用户点击同步
+   用户点击同步当前应用
       ↓
-   ScriptRepository 扫描公共脚本目录
+   ScriptRepository 从 metadata 缓存读取脚本列表
       ↓
-   解析 metadata、settings.json、多文件依赖
+   只筛选当前应用已勾选且 supportsPackage=true 的脚本
       ↓
-   为每个脚本生成 remoteName
+   读取这些脚本的入口文件、目录 JS、settings.json 和 assets
       ↓
-   计算每个文件 SHA-256
+   为每个文件生成 remoteName 并计算 SHA-256
       ↓
    未变化的 Remote File 跳过写入
       ↓
    变化的 Remote File 覆盖写入
       ↓
-   更新 script_index_json
+   更新 <packageName>_script_index_json
       ↓
-   更新 script_sync_manifest_json
+   更新 <packageName>_script_sync_manifest_json
       ↓
-   目标应用重启后读取新脚本
+   更新 <packageName>_script_hash_config_json
+      ↓
+   如果启用目标私有缓存，执行 Root 同步或等待目标进程自缓存
+      ↓
+   目标应用重启后读取当前包名自己的运行索引
 
 同步 settings.json 与用户设置
 ------------------------------------
@@ -219,10 +236,13 @@ Android 应用之间存在沙盒隔离，目标 App 进程无法直接访问 Xia
 同步后的执行过程
 --------------------
 
-目标进程加载时，``HookEntry`` 会读取 ``script_index_json``，然后对每个脚本做匹配。匹配成功后，通过 ``openRemoteFile(script.remoteName)`` 读取入口脚本源码，并交给 ``JsHookRuntime`` 执行。
+目标进程加载时，``HookEntry`` 会优先读取当前包名对应的 ``<packageName>_script_index_json``。如果这个 key 不存在，才回退读取旧版全局 ``script_index_json``。
 
-多文件脚本中，入口脚本通过 ``require`` 读取依赖文件时，运行时会根据脚本索引中的 ``files`` 映射找到对应 Remote File。
+匹配成功后，``HookEntry`` 会读取当前应用对应的 ``<packageName>_script_hash_config_json``，先尝试命中目标 App 私有缓存；缓存未命中时，再通过 ``openRemoteFile(script.remoteName)`` 读取入口脚本源码。无论来自缓存还是 Remote File，源码都必须通过 SHA-256 校验，然后才会交给 ``JsHookRuntime`` 执行。
+
+多文件脚本中，入口脚本通过 ``require`` 读取依赖文件时，运行时会根据脚本索引中的 ``files`` 映射找到对应 Remote File 或目标私有缓存文件。
 
 .. important::
 
    WebIDE 中点击保存只会保存到本地脚本目录。只有执行同步后，目标 App 进程才能读取到新版本脚本。
+   每个应用都有自己的运行索引；同步单个应用不会覆盖其他应用的 ``<packageName>_script_index_json``。

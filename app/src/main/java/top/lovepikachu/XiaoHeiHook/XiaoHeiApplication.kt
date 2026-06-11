@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import top.lovepikachu.XiaoHeiHook.data.ScriptRepository
+import top.lovepikachu.XiaoHeiHook.data.RemotePrefsDiagnostics
 import top.lovepikachu.XiaoHeiHook.keepalive.MainProcessKeepAliveService
 import top.lovepikachu.XiaoHeiHook.mcp.McpManager
 import top.lovepikachu.XiaoHeiHook.webide.ProcessUtil
@@ -36,6 +37,9 @@ class XiaoHeiApplication : Application() {
         var remotePreferences: SharedPreferences? = null
             private set
 
+        lateinit var appContext: XiaoHeiApplication
+            private set
+
         fun getRemotePreferences(name: String = "XiaoHeiHookSetting"): SharedPreferences? {
             return xposedService?.getRemotePreferences(name)
         }
@@ -43,6 +47,7 @@ class XiaoHeiApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        appContext = this
 
         val currentProcess = ProcessUtil.currentProcessName(this)
         if (currentProcess == packageName) {
@@ -68,6 +73,9 @@ class XiaoHeiApplication : Application() {
                 xposedService = service
                 remotePreferences = getRemotePreferences()
                 ScriptRepository.applyScriptRootFromPrefs(remotePreferences)
+                if (currentProcess == packageName) {
+                    RemotePrefsDiagnostics.logOnAppOpen(this@XiaoHeiApplication, remotePreferences, "xposed-service-bound", force = true)
+                }
                 if (resetVolatileServicesOnBind) {
                     resetVolatileServicesOnBind = false
                     Log.i(TAG, "xposed service bound in main process; refresh remote MCP disabled state")

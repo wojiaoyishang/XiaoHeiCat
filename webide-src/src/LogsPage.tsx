@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api } from './api/client'
+import { api, post } from './api/client'
 import { Icon } from './components/Icon'
 import type { ApiStatus } from './types/webide'
 
@@ -46,6 +46,8 @@ export function LogsPage() {
   const [keyword, setKeyword] = useState('')
   const [level, setLevel] = useState('all')
   const [followLogs, setFollowLogs] = useState(true)
+  const [disableFileLogging, setDisableFileLogging] = useState(false)
+  const [savingLoggingSetting, setSavingLoggingSetting] = useState(false)
   const consoleRef = useRef<HTMLPreElement | null>(null)
 
   const append = useCallback((text: string, type?: LogLine['type']) => {
@@ -68,6 +70,9 @@ export function LogsPage() {
     api<ApiStatus>('/api/status')
       .then(setStatus)
       .catch((e) => append(`状态读取失败：${e?.message || e}`, 'err'))
+    api<{ ok: boolean; disableFileLogging: boolean }>('/api/settings/logging')
+      .then((data) => setDisableFileLogging(!!data.disableFileLogging))
+      .catch((e) => append(`日志设置读取失败：${e?.message || e}`, 'warn'))
   }, [append])
 
   useEffect(() => {
@@ -139,6 +144,20 @@ export function LogsPage() {
     }
   }, [connectedPackage, append])
 
+
+  const toggleDisableFileLogging = useCallback(async (next: boolean) => {
+    setSavingLoggingSetting(true)
+    try {
+      const data = await post<{ ok: boolean; disableFileLogging: boolean }>('/api/settings/logging', { disableFileLogging: next })
+      setDisableFileLogging(!!data.disableFileLogging)
+      append(data.disableFileLogging ? '已开启不记录日志：只实时同步到 WebIDE，不再写入日志文件' : '已关闭不记录日志：恢复写入日志文件', 'ok')
+    } catch (e: any) {
+      append(`日志设置保存失败：${e?.message || e}`, 'err')
+    } finally {
+      setSavingLoggingSetting(false)
+    }
+  }, [append])
+
   const connect = useCallback(() => {
     const pkg = packageName.trim()
     if (!pkg) {
@@ -182,6 +201,15 @@ export function LogsPage() {
           <option value="target">Target</option>
         </select>
         <button className={followLogs ? 'active' : ''} onClick={enableFollowLogs} title="跟踪最新日志；手动滚动会暂停自动滚动">跟踪</button>
+        <label className="toolbar-check" title="开启后只通过实时广播同步到 WebIDE，不再持久化写入日志文件">
+          <input
+            type="checkbox"
+            checked={disableFileLogging}
+            disabled={savingLoggingSetting}
+            onChange={(ev) => toggleDisableFileLogging(ev.target.checked)}
+          />
+          不记录日志
+        </label>
         <button onClick={clear} title="清空当前日志"><Icon name="clear" /> 清空</button>
         <button onClick={() => window.location.href = '/'} title="返回 WebIDE"><Icon name="apps" /> 返回 IDE</button>
         <span className={connected ? 'terminal-state ok' : 'terminal-state warn'}>{connected ? '已连接' : '未连接'}</span>

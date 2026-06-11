@@ -182,7 +182,14 @@ class WebIdeBridgeProvider : ContentProvider() {
             return errorBundle(error)
         }
 
-        prefs.edit().putBoolean(ScriptPrefs.appEnabledKey(packageName), true).commit()
+        val editor = prefs.edit().putBoolean(ScriptPrefs.appEnabledKey(packageName), true)
+        if (!prefs.contains(ScriptPrefs.cacheScriptsToPrivateDirKey(packageName))) {
+            editor.putBoolean(ScriptPrefs.cacheScriptsToPrivateDirKey(packageName), true)
+        }
+        if (!prefs.contains(ScriptPrefs.targetScriptCacheDirKey(packageName))) {
+            editor.putString(ScriptPrefs.targetScriptCacheDirKey(packageName), ScriptPrefs.DEFAULT_TARGET_SCRIPT_CACHE_DIR)
+        }
+        editor.commit()
         return okBundle()
             .putStringValue("packageName", packageName)
             .putBool("enabled", true)
@@ -218,6 +225,7 @@ class WebIdeBridgeProvider : ContentProvider() {
                     .put("count", scripts.size)
                     .put("scripts", JSONArray(scripts.map { it.id }))
                     .put("enabledOnly", true)
+                    .put("targetCacheSync", ScriptRepository.lastTargetCacheSyncSummaryJson())
                 okBundle().putStringValue("json", obj.toString())
             },
             onFailure = { error -> errorBundle(error.message ?: error.javaClass.simpleName) }

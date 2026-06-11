@@ -69,6 +69,17 @@ class WebIdeBridgeClient(private val context: Context) {
         return JSONObject().put("ok", true).put("value", b.getString("value") ?: value)
     }
 
+    fun putBoolean(key: String, value: Boolean): JSONObject {
+        val b = callChecked(
+            WebIdeBridgeProvider.METHOD_PUT_BOOLEAN,
+            Bundle().apply {
+                putString(WebIdeBridgeProvider.ARG_KEY, key)
+                putBoolean(WebIdeBridgeProvider.ARG_VALUE, value)
+            }
+        )
+        return JSONObject().put("ok", true).put("value", b.getBoolean("value", value))
+    }
+
     fun remove(key: String): JSONObject {
         callChecked(
             WebIdeBridgeProvider.METHOD_REMOVE,

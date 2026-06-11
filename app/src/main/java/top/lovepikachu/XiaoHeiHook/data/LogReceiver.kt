@@ -21,6 +21,7 @@ class LogReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "XiaoHeiHook-LogReceiver"
         const val ACTION_LOG_EVENT = "top.lovepikachu.XiaoHeiHook.LOG_EVENT"
+        const val ACTION_LOG_EVENT_LIVE = "top.lovepikachu.XiaoHeiHook.LOG_EVENT_LIVE"
         const val EXTRA_PACKAGE_NAME = "packageName"
         const val EXTRA_LINE = "line"
     }
