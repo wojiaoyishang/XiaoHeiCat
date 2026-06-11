@@ -2,7 +2,7 @@ name: Build and deploy Sphinx docs
 
 on:
   push:
-    branches: ["master"]
+    branches: ["main"]
     paths:
       - "docs/**"
       - ".github/workflows/docs.yml"
@@ -42,6 +42,11 @@ jobs:
       - name: Add .nojekyll
         run: |
           touch "${{ runner.temp }}/sphinx-html/.nojekyll"
+
+      - name: Check build output
+        run: |
+          ls -la "${{ runner.temp }}/sphinx-html"
+          test -f "${{ runner.temp }}/sphinx-html/index.html"
 
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
