@@ -989,8 +989,11 @@ module.exports = { install };
       scripts?: string[];
       extra?: Record<string, unknown>;
       targetCacheSync?: TargetCacheSyncSummary;
+      refreshedScriptMetadata?: boolean;
+      metadataCount?: number | null;
     }>("/api/hook-settings/sync", {
       packageName: selectedPackage,
+      refreshScripts: true,
       restart: false,
       launch: false,
       debug: false,
@@ -999,6 +1002,9 @@ module.exports = { install };
       `同步完成：${data.count} 个脚本 ${JSON.stringify(data.scripts || [])}`,
       "ok",
     );
+    if (data.refreshedScriptMetadata) {
+      log(`已扫描脚本目录：${data.metadataCount ?? 0} 个脚本`, "ok");
+    }
     const cacheMessage = describeTargetCacheSync(data.targetCacheSync);
     if (cacheMessage) log(cacheMessage, "ok");
     setDebugEnabledState(false);
@@ -1009,15 +1015,33 @@ module.exports = { install };
       log("请选择应用", "warn");
       return;
     }
-    const data = await post<{ ok: boolean; packageName: string }>(
-      "/api/apps/restart",
-      {
-        packageName: selectedPackage,
-        launch: true,
-      },
+    if (activeTab?.dirty) await saveTab(activeTab);
+    const data = await post<{
+      ok: boolean;
+      count: number;
+      scripts?: string[];
+      extra?: Record<string, unknown>;
+      targetCacheSync?: TargetCacheSyncSummary;
+      refreshedScriptMetadata?: boolean;
+      metadataCount?: number | null;
+    }>("/api/hook-settings/sync", {
+      packageName: selectedPackage,
+      refreshScripts: true,
+      restart: true,
+      launch: true,
+      debug: false,
+    });
+    log(
+      `已扫描、同步并重启应用：${selectedPackage}，同步 ${data.count} 个脚本 ${JSON.stringify(data.scripts || [])}`,
+      "ok",
     );
-    log(`已重启应用：${data.packageName}`, "ok");
-  }, [selectedPackage, log]);
+    if (data.refreshedScriptMetadata) {
+      log(`已扫描脚本目录：${data.metadataCount ?? 0} 个脚本`, "ok");
+    }
+    const cacheMessage = describeTargetCacheSync(data.targetCacheSync);
+    if (cacheMessage) log(cacheMessage, "ok");
+    setDebugEnabledState(false);
+  }, [selectedPackage, activeTab, saveTab, log]);
 
   const syncAndRestartCurrentApp = useCallback(async () => {
     if (!selectedPackage) {
@@ -1031,8 +1055,11 @@ module.exports = { install };
       scripts?: string[];
       extra?: Record<string, unknown>;
       targetCacheSync?: TargetCacheSyncSummary;
+      refreshedScriptMetadata?: boolean;
+      metadataCount?: number | null;
     }>("/api/hook-settings/sync", {
       packageName: selectedPackage,
+      refreshScripts: true,
       restart: true,
       launch: true,
       debug: false,
@@ -1041,6 +1068,9 @@ module.exports = { install };
       `同步并重启完成：${data.count} 个脚本 ${JSON.stringify(data.scripts || [])}`,
       "ok",
     );
+    if (data.refreshedScriptMetadata) {
+      log(`已扫描脚本目录：${data.metadataCount ?? 0} 个脚本`, "ok");
+    }
     const cacheMessage = describeTargetCacheSync(data.targetCacheSync);
     if (cacheMessage) log(cacheMessage, "ok");
     setDebugEnabledState(false);
@@ -1056,14 +1086,18 @@ module.exports = { install };
       ok: boolean;
       packageName: string;
       debug: boolean;
-      sync?: { count?: number; scripts?: string[] };
+      sync?: { count?: number; scripts?: string[]; refreshedScriptMetadata?: boolean; metadataCount?: number | null };
       extra?: Record<string, unknown>;
     }>("/api/debug/start", {
       packageName: selectedPackage,
+      refreshScripts: true,
       restart: true,
       launch: true,
     });
     setDebugEnabledState(true);
+    if (data.sync?.refreshedScriptMetadata) {
+      log(`已扫描脚本目录：${data.sync.metadataCount ?? 0} 个脚本`, "ok");
+    }
     log(`调试运行已启动：${data.packageName}，仅本次 WebIDE 调试会话启用断点`, "warn");
   }, [selectedPackage, activeTab, saveTab, log]);
 

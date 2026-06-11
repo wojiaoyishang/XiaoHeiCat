@@ -75,7 +75,7 @@ export function TopBar(props: Props) {
             <span className="sep"/>
             <button className="icon-btn" onClick={props.onSync} title="同步当前应用 Ctrl+Shift+S"><Icon name="sync"/>
             </button>
-            <button className="icon-btn" onClick={props.onRestart} title="重启应用 Alt+R"><Icon name="restart"/>
+            <button className="icon-btn" onClick={props.onRestart} title="扫描、同步并重启应用 Alt+R"><Icon name="restart"/>
             </button>
             <button className="icon-btn run-btn" onClick={props.onSyncRestart} title="运行：普通模式同步并重启应用 F5">
                 <Icon name="run"/></button>

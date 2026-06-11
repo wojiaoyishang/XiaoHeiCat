@@ -198,10 +198,19 @@ class WebIdeBridgeProvider : ContentProvider() {
 
     private fun syncScripts(extras: Bundle?): Bundle {
         val packageName = extras?.getString(ARG_PACKAGE)?.trim()?.ifBlank { null }
+        val refreshScripts = extras?.getBoolean(ARG_REFRESH_SCRIPTS, false) ?: false
         val prefs = awaitRemotePreferences(2000) ?: return errorBundle("LSPosed Remote Preferences 未连接")
         val service = awaitXposedService(2000) ?: return errorBundle("LSPosed 服务未连接")
 
+        val refreshedScripts = if (refreshScripts) {
+            ScriptRepository.refreshScriptMetadataCache(prefs, allowRootFallback = true)
+                .getOrElse { error -> return errorBundle("扫描脚本失败：${error.message ?: error.javaClass.simpleName}") }
+        } else {
+            null
+        }
+
         // WebIDE 的“同步脚本”只同步已经启用的脚本：
+        // - refreshScripts=true：先在主进程强制刷新脚本 Metadata 缓存，再按启用状态同步。
         // - 指定 packageName：只同步该应用下已启用的脚本。
         // - 未指定 packageName：同步所有已启用应用中已启用的脚本。
         val result = if (packageName.isNullOrBlank()) {
@@ -225,6 +234,9 @@ class WebIdeBridgeProvider : ContentProvider() {
                     .put("count", scripts.size)
                     .put("scripts", JSONArray(scripts.map { it.id }))
                     .put("enabledOnly", true)
+                    .put("refreshedScriptMetadata", refreshScripts)
+                    .put("metadataCount", refreshedScripts?.size ?: JSONObject.NULL)
+                    .put("metadataScripts", if (refreshedScripts != null) JSONArray(refreshedScripts.map { it.id }) else JSONObject.NULL)
                     .put("targetCacheSync", ScriptRepository.lastTargetCacheSyncSummaryJson())
                 okBundle().putStringValue("json", obj.toString())
             },
@@ -411,5 +423,6 @@ class WebIdeBridgeProvider : ContentProvider() {
         const val ARG_PAYLOAD_JSON = "payloadJson"
         const val ARG_SCRIPT_PATH = "scriptPath"
         const val ARG_LINES_JSON = "linesJson"
+        const val ARG_REFRESH_SCRIPTS = "refreshScripts"
     }
 }

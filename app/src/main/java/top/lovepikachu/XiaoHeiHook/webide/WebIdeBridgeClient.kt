@@ -198,10 +198,13 @@ class WebIdeBridgeClient(private val context: Context) {
             .put("command", b.getString("command") ?: command)
     }
 
-    fun syncScripts(packageName: String?): JSONObject {
+    fun syncScripts(packageName: String?, refreshScripts: Boolean = false): JSONObject {
         val b = callChecked(
             WebIdeBridgeProvider.METHOD_SYNC_SCRIPTS,
-            Bundle().apply { putString(WebIdeBridgeProvider.ARG_PACKAGE, packageName.orEmpty()) }
+            Bundle().apply {
+                putString(WebIdeBridgeProvider.ARG_PACKAGE, packageName.orEmpty())
+                putBoolean(WebIdeBridgeProvider.ARG_REFRESH_SCRIPTS, refreshScripts)
+            }
         )
         return JSONObject(b.getString("json") ?: "{\"ok\":true,\"count\":0,\"scripts\":[]}")
     }

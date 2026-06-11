@@ -322,8 +322,9 @@ class WebIdeApi(private val context: Context) {
         val launch = body.optBoolean("launch", true)
         require(packageName.isNotBlank()) { "packageName 不能为空" }
 
+        val refreshScripts = body.optBoolean("refreshScripts", true)
         val enabled = bridge.setDebugEnabled(packageName, true)
-        val sync = bridge.syncScripts(packageName)
+        val sync = bridge.syncScripts(packageName, refreshScripts = refreshScripts)
         val extra = JSONObject().put("debugEnabled", enabled)
         if (restart) {
             val restartResult = AppControl.restartPackage(context, packageName, launch = launch, appendLog = true)
@@ -550,12 +551,13 @@ class WebIdeApi(private val context: Context) {
         val restart = body.optBoolean("restart", false)
         val launch = body.optBoolean("launch", false)
         val debug = body.optBoolean("debug", false)
+        val refreshScripts = body.optBoolean("refreshScripts", false)
         val extra = JSONObject()
         if (!packageName.isNullOrBlank() && !debug) {
             // 普通同步/运行必须关闭 WebIDE 调试模式，避免手机端或普通运行进入 Rhino 行调试慢路径。
             extra.put("debugDisabled", bridge.setDebugEnabled(packageName, false))
         }
-        val obj = bridge.syncScripts(packageName)
+        val obj = bridge.syncScripts(packageName, refreshScripts = refreshScripts)
         if (!packageName.isNullOrBlank() && restart) {
             val restartResult = AppControl.restartPackage(context, packageName, launch = launch, appendLog = true)
             extra.put("forceStop", if (restartResult.forceStopOk) "ok" else restartResult.forceStopMessage.orEmpty())
@@ -644,13 +646,24 @@ class WebIdeApi(private val context: Context) {
         val body = request.jsonBody()
         val packageName = body.optString("packageName").trim()
         val launch = body.optBoolean("launch", true)
+        val refreshScripts = body.optBoolean("refreshScripts", false)
         require(packageName.isNotBlank()) { "packageName 不能为空" }
+        val scan = if (refreshScripts) {
+            runCatching { bridge.syncScripts(packageName, refreshScripts = true) }.fold(
+                onSuccess = { it },
+                onFailure = { JSONObject().put("ok", false).put("error", it.message ?: it.javaClass.simpleName) }
+            )
+        } else {
+            JSONObject.NULL
+        }
         val restartResult = AppControl.restartPackage(context, packageName, launch = launch, appendLog = true)
         return json(
             JSONObject()
                 .put("ok", true)
                 .put("packageName", packageName)
                 .put("launch", launch)
+                .put("refreshScripts", refreshScripts)
+                .put("scan", scan)
                 .put("restart", restartResultJson(restartResult))
         )
     }
@@ -844,7 +857,8 @@ class WebIdeApi(private val context: Context) {
     private fun syncScripts(request: HttpRequest): HttpResponse {
         val body = request.jsonBody(required = false)
         val packageName = body.optString("packageName").ifBlank { null }
-        return json(bridge.syncScripts(packageName))
+        val refreshScripts = body.optBoolean("refreshScripts", false)
+        return json(bridge.syncScripts(packageName, refreshScripts = refreshScripts))
     }
 
 
