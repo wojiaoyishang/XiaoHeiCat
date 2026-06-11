@@ -23,8 +23,8 @@ android {
         applicationId = "top.lovepikachu.XiaoHeiHook"
         minSdk = 26
         targetSdk = 36
-        versionCode = 110
-        versionName = "1.33"
+        versionCode = 111
+        versionName = "1.34"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

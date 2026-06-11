@@ -15,10 +15,51 @@
 # 项目简介
 
 > ⚠️ 模块属于自用开发阶段，出现问题请提 PR，不确保不同品牌手机的兼容性。
+> 
+> 此模块的开发服务于 **方便个人逆向** 所搭建的一套工具集，大部分代码由 **语言模型编写** ，大部分代码经过审计与测试，但仍然不能保证不同设备上的可靠性，请三思之后使用此模块。
 
 XiaoHeiHook 是 **一个基于现代 LSPosed 与 Rhino 的动态 Hook 脚本模块**。
 
 目标是让开发者能够使用极简的 JS 脚本调用 LSPosed 提供的强大 Hook 功能，而无需为了每个应用程序都撰写一个独立的 LSPosed 模块。
+
+![程序流程](./docs/source/_static/极短示例.svg)
+
+<details>
+  <summary>查看完整代码</summary>
+
+```javascript
+// ==LSPosedScript==
+// @name         脚本名称
+// @id           example.script.test
+// @version      1.0.0
+// @author       XiaoHeiHook
+// @description  极短的 Hook 示例
+// @target       com.example.app
+// @process      *
+// @run-at       package-loaded
+// @grant        java.full
+// @grant        xposed.full
+// @grant        xposed.raw
+// ==/LSPosedScript==
+
+xposed.onPackageLoaded(function (param) {
+  console.log("脚本加载成功：", "package=", param.getPackageName(), "process=", env.processName);
+  
+  const loader = param.getClassLoader();
+  const method = loader.loadClass("pc.a").getDeclaredMethod("d");
+  method.setAccessible(true);
+
+  xposed.hook(method)
+    .setPriority(xposed.PRIORITY_DEFAULT)
+    .setExceptionMode(xposed.ExceptionMode.PROTECTIVE)
+    .intercept(function (chain) {
+      const args = chain.getArgsMutable();
+      return chain.proceed(args);
+    });
+});
+```
+
+</details>
 
 在现代设备上，LSPosed 注入的隐藏能力已经远大于 Firda 脚本，使用 LSPosed 框架编写代码可以减少大部分环境问题。
 
